@@ -597,13 +597,13 @@ public final class ActionExecutionFunction implements SkyFunction {
 
     /** Compute the inputs to request from Skyframe. */
     NestedSet<Artifact> getAllInputs() {
-      NestedSetBuilder<Artifact> builder = NestedSetBuilder.newBuilder(Order.STABLE_ORDER);
-      builder.addTransitive(defaultInputs);
-      if (actionCacheInputs != null) {
-        // actionCacheInputs is never a NestedSet.
-        builder.addAll(actionCacheInputs);
+      if (actionCacheInputs == null || actionCacheInputs.isEmpty()) {
+        return defaultInputs;
       }
-      return builder.build();
+      return NestedSetBuilder.<Artifact>newBuilder(Order.STABLE_ORDER)
+          .addTransitive(defaultInputs)
+          .addAll(actionCacheInputs)
+          .build();
     }
   }
 
