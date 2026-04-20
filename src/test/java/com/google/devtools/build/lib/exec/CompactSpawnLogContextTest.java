@@ -49,6 +49,9 @@ import com.google.devtools.build.lib.vfs.SyscallCache;
 import com.google.devtools.common.options.Options;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
+import java.io.BufferedOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -314,6 +317,54 @@ public final class CompactSpawnLogContextTest extends SpawnLogContextTestBase {
     assertThat(storedEventHandler.getPosts()).isEmpty();
   }
 
+  @Test
+  public void testStreaming() throws Exception {
+    Artifact file = ActionsTestUtil.createArtifact(rootDir, "file");
+    writeFile(file, "abc");
+
+    SpawnBuilder spawn = defaultSpawnBuilder().withInput(file);
+
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    BufferedOutputStream out = new BufferedOutputStream(baos);
+
+    SpawnLogContext context =
+        new CompactSpawnLogContext(
+            out,
+            "stream",
+            execRoot.asFragment(),
+            TestConstants.WORKSPACE_NAME,
+            siblingRepositoryLayout,
+            Options.getDefaults(RemoteOptions.class),
+            DigestHashFunction.SHA256,
+            SyscallCache.NO_CACHE,
+            UUID.fromString("00000000-0000-0000-0000-000000000000"),
+            storedEventHandler);
+
+    context.logSpawn(
+        spawn.build(),
+        createInputMetadataProvider(file),
+        createInputMap(file),
+        fs,
+        defaultTimeout(),
+        defaultSpawnResult());
+
+    context.close();
+
+    ArrayList<SpawnExec> actual = new ArrayList<>();
+    try (InputStream in = new ByteArrayInputStream(baos.toByteArray());
+        SpawnLogReconstructor reconstructor = new SpawnLogReconstructor(in)) {
+      SpawnExec ex;
+      while ((ex = reconstructor.read()) != null) {
+        actual.add(ex);
+      }
+    }
+
+    assertThat(actual)
+        .containsExactly(
+            defaultSpawnExecBuilder()
+                .addInputs(File.newBuilder().setPath("file").setDigest(getDigest("abc")))
+                .build());
+  }
   @Override
   protected SpawnLogContext createSpawnLogContext(ImmutableMap<String, String> platformProperties)
       throws IOException, InterruptedException {
@@ -321,7 +372,8 @@ public final class CompactSpawnLogContextTest extends SpawnLogContextTestBase {
     remoteOptions.remoteDefaultExecProperties = platformProperties.entrySet().asList();
 
     return new CompactSpawnLogContext(
-        logPath,
+        new BufferedOutputStream(logPath.getOutputStream()),
+        logPath.toString(),
         execRoot.asFragment(),
         TestConstants.WORKSPACE_NAME,
         siblingRepositoryLayout,
