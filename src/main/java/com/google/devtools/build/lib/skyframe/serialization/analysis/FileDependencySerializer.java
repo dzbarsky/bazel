@@ -33,6 +33,7 @@ import static com.google.devtools.build.lib.vfs.RootedPath.toRootedPath;
 import static java.lang.Math.max;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.github.luben.zstd.RecyclingBufferPool;
 import com.github.luben.zstd.ZstdOutputStream;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
@@ -659,7 +660,7 @@ final class FileDependencySerializer {
     // not using a threshold to compress, the default level provided a 2x better compression. Since
     // we do use a threshold and there is no wall time regression, we favor the better compression
     // ratio.
-    return new ZstdOutputStream(outputStream);
+    return new ZstdOutputStream(outputStream, RecyclingBufferPool.INSTANCE);
   }
 
   /**
