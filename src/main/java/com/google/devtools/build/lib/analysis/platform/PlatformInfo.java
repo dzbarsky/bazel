@@ -34,7 +34,6 @@ import java.util.List;
 import java.util.Objects;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.Printer;
-import net.starlark.java.syntax.Location;
 
 /** Provider for a platform, which is a group of constraints and values. */
 @Immutable
@@ -98,9 +97,7 @@ public class PlatformInfo extends NativeInfo
       ImmutableList<ConfigMatchingProvider> requiredSettings,
       boolean checkToolchainTypes,
       ImmutableList<Label> allowedToolchainTypes,
-      String missingToolchainErrorMessage,
-      Location creationLocation) {
-    super(creationLocation);
+      String missingToolchainErrorMessage) {
     this.label = label;
     this.constraints = constraints;
     this.remoteExecutionProperties = Strings.nullToEmpty(remoteExecutionProperties);
@@ -228,7 +225,6 @@ public class PlatformInfo extends NativeInfo
     private final ImmutableList.Builder<Label> allowedToolchainTypes =
         new ImmutableList.Builder<>();
     @Nullable private String missingToolchainErrorMessage = null;
-    private Location creationLocation = Location.BUILTIN;
 
     /**
      * Sets the parent {@link PlatformInfo} that this platform inherits from. Constraint values set
@@ -432,8 +428,7 @@ public class PlatformInfo extends NativeInfo
           settings,
           checkToolchainTypes,
           allowedToolchainTypes.build(),
-          missingToolchainErrorMessage,
-          creationLocation);
+          missingToolchainErrorMessage);
     }
 
     private static String mergeRemoteExecutionProperties(
