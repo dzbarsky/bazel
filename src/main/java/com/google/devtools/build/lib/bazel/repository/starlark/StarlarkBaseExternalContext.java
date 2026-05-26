@@ -296,7 +296,7 @@ public abstract class StarlarkBaseExternalContext implements AutoCloseable, Star
 
   // There is no unregister(). We don't have that many futures in each repository and it just
   // introduces the failure mode of erroneously unregistering async work that's not done.
-  private final void registerAsyncTask(AsyncTask task) {
+  private void registerAsyncTask(AsyncTask task) {
     asyncTasks.add(task);
   }
 
@@ -561,7 +561,7 @@ public abstract class StarlarkBaseExternalContext implements AutoCloseable, Star
       out.put("sha256", finalChecksum.toString());
     }
     out.put("size_bytes", StarlarkInt.of(size));
-    return StarlarkInfo.create(StructProvider.STRUCT, out.buildOrThrow(), Location.BUILTIN);
+    return StarlarkInfo.create(StructProvider.STRUCT, out.buildOrThrow());
   }
 
   private class PendingDownload implements StarlarkValue, AsyncTask {
@@ -647,8 +647,7 @@ public abstract class StarlarkBaseExternalContext implements AutoCloseable, Star
       }
     } catch (IOException e) {
       if (pendingDownload.allowFail) {
-        return StarlarkInfo.create(
-            StructProvider.STRUCT, ImmutableMap.of("success", false), Location.BUILTIN);
+        return StarlarkInfo.create(StructProvider.STRUCT, ImmutableMap.of("success", false));
       } else {
         throw new RepositoryFunctionException(e, Transience.TRANSIENT);
       }
@@ -1141,8 +1140,7 @@ Strip the given number of leading components from file paths on extraction. Only
     } catch (IOException e) {
       env.getListener().post(w);
       if (allowFail) {
-        return StarlarkInfo.create(
-            StructProvider.STRUCT, ImmutableMap.of("success", false), Location.BUILTIN);
+        return StarlarkInfo.create(StructProvider.STRUCT, ImmutableMap.of("success", false));
       } else {
         throw new RepositoryFunctionException(e, Transience.TRANSIENT);
       }
