@@ -903,7 +903,8 @@ int OutputZipFile::WriteEmptyFile(const char *filename) {
   entry->uncompressed_length = 0;
   entry->compression_method = 0;
   entry->extra_field = (const u1 *)"";
-  entry->file_name = (u1*) strdup((const char *) file_name);
+  entry->file_name = new u1[file_name_length];
+  memcpy(entry->file_name, file_name, file_name_length);
   entries_.push_back(entry);
 
   return 0;
@@ -999,8 +1000,8 @@ u1* OutputZipFile::WriteLocalFileHeader(const char* filename, const u4 attr) {
   entry->local_header_offset = Offset(q);
   entry->file_name_length = file_name_length_;
   entry->file_name = new u1[file_name_length_];
-  entry->external_attr = attr;
   memcpy(entry->file_name, filename, file_name_length_);
+  entry->external_attr = attr;
   entry->extra_field_length = 0;
   entry->extra_field = (const u1 *)"";
   entry->crc32 = 0;
@@ -1053,12 +1054,22 @@ int OutputZipFile::Finish() {
 
   finished_ = true;
   WriteCentralDirectory();
+
+  int ret = 0;
   if (output_file_->Close(GetSize()) < 0) {
-    return error("%s", output_file_->Error());
+    ret = error("%s", output_file_->Error());
   }
+
   delete output_file_;
-  output_file_ = NULL;
-  return 0;
+  output_file_ = nullptr;
+
+  for (LocalFileEntry* entry : entries_) {
+    delete[] entry->file_name;
+    delete entry;
+  }
+  entries_.clear();
+
+  return ret;
 }
 
 u1* OutputZipFile::NewFile(const char* filename, const u4 attr) {
