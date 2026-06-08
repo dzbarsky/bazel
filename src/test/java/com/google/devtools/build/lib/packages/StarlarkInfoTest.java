@@ -79,6 +79,9 @@ public class StarlarkInfoTest {
     // different sets of fields => unequal
     assertThat(makeInfoWithF1F2Values(provider1, StarlarkInt.of(4), StarlarkInt.of(5)))
         .isNotEqualTo(makeInfoWithF1F2Values(provider1, StarlarkInt.of(4), null));
+    // different field names with the same values => unequal
+    assertThat(makeInfoWithF1F2Values(provider1, StarlarkInt.of(4), null))
+        .isNotEqualTo(makeInfoWithF1F2Values(provider1, null, StarlarkInt.of(4)));
   }
 
   @Test

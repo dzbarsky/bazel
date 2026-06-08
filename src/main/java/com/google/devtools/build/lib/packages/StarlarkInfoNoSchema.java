@@ -20,6 +20,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Interner;
 import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -244,6 +245,24 @@ public class StarlarkInfoNoSchema extends StarlarkInfo {
     }
 
     return new StarlarkInfoNoSchema(x.provider, fields.build(), ztable, Location.BUILTIN);
+  }
+
+  @Override
+  public final boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (!(o instanceof StarlarkInfoNoSchema other)) {
+      return false;
+    }
+    return provider.equals(other.provider)
+        && fieldNames.equals(other.fieldNames)
+        && Arrays.equals(table, other.table);
+  }
+
+  @Override
+  public final int hashCode() {
+    return 31 * (31 * provider.hashCode() + fieldNames.hashCode()) + Arrays.hashCode(table);
   }
 
   @Override
