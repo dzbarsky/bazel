@@ -94,7 +94,6 @@ java_library(
         "ExecException.java",
         "Executor.java",
         "FailAction.java",
-        "FullSpawnMetrics.java",
         "HasDigest.java",
         "InjectedActionExecutionEvent.java",
         "InputFileErrorException.java",
