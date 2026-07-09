@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.runtime.BlazeService;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
+import java.util.logging.LogManager;
 
 /**
  * The main class.
@@ -106,8 +107,24 @@ public final class Bazel {
   public static final ImmutableList<BlazeService> BAZEL_SERVICES = ImmutableList.of();
 
   public static void main(String[] args) {
+    configureNativeImageLogging();
     BlazeVersionInfo.setBuildInfo(tryGetBuildInfo());
     BlazeRuntime.main(BAZEL_MODULES, BAZEL_SERVICES, args);
+  }
+
+  private static void configureNativeImageLogging() {
+    if (!isNativeImage()) {
+      return;
+    }
+    try {
+      LogManager.getLogManager().readConfiguration();
+    } catch (IOException | RuntimeException e) {
+      System.err.println("Failed to configure native-image server logging: " + e.getMessage());
+    }
+  }
+
+  private static boolean isNativeImage() {
+    return System.getProperty("org.graalvm.nativeimage.imagecode") != null;
   }
 
   /**
