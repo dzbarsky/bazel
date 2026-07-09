@@ -21,9 +21,16 @@ sh_library(
 sh_library(
     name = "test-deps-minimal-bazel",
     testonly = 1,
-    srcs = [
-        "//src:bazel-bin_jdk_minimal",
-        "//src/test/shell:bin/bazel_jdk_minimal",
+    srcs = select({
+        "//src/test/shell/bazel:do_use_native_bazel": [
+            "//src:bazel_native",
+            "//src/test/shell:bin/bazel_native",
+        ],
+        "//conditions:default": [
+            "//src:bazel-bin_jdk_minimal",
+            "//src/test/shell:bin/bazel_jdk_minimal",
+        ],
+    }) + [
         "//src/test/shell/bazel:test-deps-wo-bazel",
     ],
 )
@@ -31,9 +38,16 @@ sh_library(
 sh_library(
     name = "test-deps-nojdk",
     testonly = 1,
-    srcs = [
-        "//src:bazel-bin_nojdk",
-        "//src/test/shell:bin/bazel_nojdk",
+    srcs = select({
+        "//src/test/shell/bazel:do_use_native_bazel": [
+            "//src:bazel_native",
+            "//src/test/shell:bin/bazel_native",
+        ],
+        "//conditions:default": [
+            "//src:bazel-bin_nojdk",
+            "//src/test/shell:bin/bazel_nojdk",
+        ],
+    }) + [
         "//src/test/shell/bazel:test-deps-wo-bazel",
     ],
 )
@@ -895,6 +909,19 @@ sh_test(
 )
 
 sh_test(
+    name = "test_test_native_image",
+    size = "large",
+    srcs = ["test_test.sh"],
+    data = [
+        ":test-deps",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
+    env = {
+        "TESTBRIDGE_TEST_ONLY": "test_interrupt_streamed_output_local:test_interrupt_streamed_output_sandboxed",
+    },
+)
+
+sh_test(
     name = "toolchain_test",
     size = "large",
     srcs = ["toolchain_test.sh"],
@@ -1025,5 +1052,24 @@ sh_test(
 
 test_suite(
     name = "all_tests",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "native_image_core_tests",
+    tests = [
+        ":bazel_java_test",
+        ":minimal_jdk_test",
+        ":nojdk_startup_options_test",
+        ":build_event_stream_test",
+        ":client_test",
+        ":run_test",
+        ":sandboxing_test",
+        ":starlark_dependency_pruning_test",
+        ":startup_options_test",
+        ":test_test_native_image",
+        ":unicode_test",
+        ":watchfs_test",
+    ],
     visibility = ["//visibility:public"],
 )

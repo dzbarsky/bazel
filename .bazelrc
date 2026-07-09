@@ -8,6 +8,10 @@ common:buildbuddy-cache --remote_upload_local_results
 common:buildbuddy-cache --remote_download_toplevel
 common:buildbuddy-cache --remote_timeout=600
 
+common:native-image-tests --//src/test/shell/bazel:use_native_bazel
+common:native-image-tests --test_env=BAZEL_NATIVE_IMAGE_TEST=1
+common:native-image-tests --test_env=BAZEL_NATIVE_IMAGE_CAPTURE_SERVER_LOGS=1
+
 common:macos --host_macos_minimum_os=10.13
 common:macos --macos_minimum_os=10.13
 
