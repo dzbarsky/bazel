@@ -1,0 +1,205 @@
+name: Build and publish Bazel 9.3
+
+on:
+  push:
+    branches:
+      - codex/bazel-9.3-buildbuddy-release
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Bazelisk-compatible release tag (for example, 9.3.0-dzbarsky123)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Select release tag
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.release_tag.outputs.release_tag }}
+    steps:
+      - name: Select release tag
+        id: release_tag
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          release_tag="${INPUT_RELEASE_TAG:-9.3.0-dzbarsky${GITHUB_RUN_NUMBER}}"
+          if [[ ! "${release_tag}" =~ ^9\.3\.0-[A-Za-z0-9]+$ ]]; then
+            echo "Invalid Bazelisk release tag: ${release_tag}" >&2
+            exit 1
+          fi
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build ${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    container:
+      image: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            container: oraclelinux:8
+            bazelisk_os: linux
+            bazelisk_arch: amd64
+            artifact_os: linux
+            artifact_arch: x86_64
+          - runner: ubuntu-24.04-arm
+            container: oraclelinux:8
+            bazelisk_os: linux
+            bazelisk_arch: arm64
+            artifact_os: linux
+            artifact_arch: arm64
+          - runner: macos-15-intel
+            bazelisk_os: darwin
+            bazelisk_arch: amd64
+            artifact_os: darwin
+            artifact_arch: x86_64
+          - runner: macos-15
+            bazelisk_os: darwin
+            bazelisk_arch: arm64
+            artifact_os: darwin
+            artifact_arch: arm64
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+    steps:
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          dnf install -y \
+            curl \
+            gcc-c++ \
+            git \
+            java-21-openjdk \
+            python3 \
+            unzip \
+            which \
+            zip
+
+      - name: Check out Bazel
+        uses: actions/checkout@v4
+
+      - name: Install Bazelisk
+        env:
+          BAZELISK_OS: ${{ matrix.bazelisk_os }}
+          BAZELISK_ARCH: ${{ matrix.bazelisk_arch }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --output bazelisk \
+            "https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-${BAZELISK_OS}-${BAZELISK_ARCH}"
+          chmod +x bazelisk
+
+      - name: Build Bazel
+        run: |
+          set -euo pipefail
+          if [[ -z "${BUILDBUDDY_API_KEY}" ]]; then
+            echo 'Missing the BUILDBUDDY_API_KEY Actions secret.' >&2
+            exit 1
+          fi
+          ./bazelisk --batch --nohome_rc --nosystem_rc build \
+            --config=buildbuddy-cache \
+            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
+            --verbose_failures \
+            --compilation_mode=opt \
+            --jobs=2 \
+            --stamp \
+            "--embed_label=${RELEASE_TAG}" \
+            //src:bazel
+
+      - name: Verify and package Bazel
+        env:
+          ARTIFACT_OS: ${{ matrix.artifact_os }}
+          ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
+        run: |
+          set -euo pipefail
+          asset_name="bazel-${RELEASE_TAG}-${ARTIFACT_OS}-${ARTIFACT_ARCH}"
+          mkdir -p artifacts
+          cp bazel-bin/src/bazel "artifacts/${asset_name}"
+          chmod +x "artifacts/${asset_name}"
+          "artifacts/${asset_name}" --batch --ignore_all_rc_files version | tee bazel-version.txt
+          grep -Fq "Build label: ${RELEASE_TAG}" bazel-version.txt
+          if command -v sha256sum > /dev/null; then
+            (cd artifacts && sha256sum "${asset_name}" > "${asset_name}.sha256")
+          else
+            (cd artifacts && shasum -a 256 "${asset_name}" > "${asset_name}.sha256")
+          fi
+
+      - name: Upload Bazel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-${{ needs.prepare.outputs.release_tag }}-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+    steps:
+      - name: Download Bazel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bazel-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Verify Bazel artifacts
+        run: |
+          set -euo pipefail
+          for artifact_os in linux darwin; do
+            for artifact_arch in x86_64 arm64; do
+              asset_name="bazel-${RELEASE_TAG}-${artifact_os}-${artifact_arch}"
+              test -f "artifacts/${asset_name}"
+              test -f "artifacts/${asset_name}.sha256"
+              (cd artifacts && sha256sum --check "${asset_name}.sha256")
+            done
+          done
+
+      - name: Upload Bazel artifacts to GitHub release
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            existing_target=$(gh release view "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json targetCommitish \
+              --jq .targetCommitish)
+            if [[ "${existing_target}" != "${GITHUB_SHA}" ]]; then
+              echo "Release ${RELEASE_TAG} already targets ${existing_target}, expected ${GITHUB_SHA}." >&2
+              exit 1
+            fi
+            gh release upload "${RELEASE_TAG}" artifacts/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
+          else
+            gh release create "${RELEASE_TAG}" artifacts/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "${RELEASE_TAG}" \
+              --notes "Bazel 9.3 binaries for Linux and macOS. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
+          fi
