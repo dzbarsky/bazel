@@ -36,6 +36,8 @@ filegroup(
             ".*",  # mainly .git* files
         ],
     ) + [
+        ".bazelrc",
+        ".bazelversion",
         "//:MODULE.bazel.lock.dist",
         "//docs:srcs",
         "//examples:srcs",
@@ -46,9 +48,6 @@ filegroup(
         "//src/main/starlark/tests/builtins_bzl:srcs",
         "//third_party:srcs",
         "//tools:srcs",
-    ] + glob([".bazelci/*"]) + [
-        ".bazelrc",
-        ".bazelversion",
     ],
     applicable_licenses = ["@io_bazel//:license"],
     visibility = ["//src/test/shell/bazel:__pkg__"],
