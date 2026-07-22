@@ -67,6 +67,7 @@ java_library(
             "BuildWithoutTheBytesIntegrationTestBase.java",
             "ChunkedTransferBenchmark.java",
             "ChunkedCacheIntegrationTest.java",
+            "ChunkedCacheRepMaxIntegrationTest.java",
             "ChunkedDiskCacheIntegrationTest.java",
             "DiskCacheIntegrationTest.java",
         ],
@@ -224,8 +225,7 @@ java_opt_binary(
     main_class = "org.openjdk.jmh.Main",
     deps = [
         "//src/main/java/com/google/devtools/build/lib/clock",
-        "//src/main/java/com/google/devtools/build/lib/remote:combined_cache",
-        "//src/main/java/com/google/devtools/build/lib/remote:grpc_cache_client",
+        "//src/main/java/com/google/devtools/build/lib/remote",
         "//src/main/java/com/google/devtools/build/lib/remote/chunking",
         "//src/main/java/com/google/devtools/build/lib/remote/common",
         "//src/main/java/com/google/devtools/build/lib/remote/util:digest_util",
@@ -299,6 +299,37 @@ java_test(
 java_test(
     name = "ChunkedCacheIntegrationTest",
     srcs = ["ChunkedCacheIntegrationTest.java"],
+    jvm_flags = ["-Djava.lang.Thread.allowVirtualThreads=true"],
+    tags = ["requires-network"],
+    runtime_deps = [
+        "//third_party/grpc-java:grpc-jar",
+    ],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib:runtime",
+        "//src/main/java/com/google/devtools/build/lib/authandtls/credentialhelper:credential_module",
+        "//src/main/java/com/google/devtools/build/lib/remote",
+        "//src/main/java/com/google/devtools/build/lib/remote/util:tracing_metadata_utils",
+        "//src/main/java/com/google/devtools/build/lib/standalone",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/test/java/com/google/devtools/build/lib/buildtool/util",
+        "//src/test/java/com/google/devtools/build/lib/remote/util:integration_test_utils",
+        "//third_party:guava",
+        "//third_party:junit4",
+        "//third_party:truth",
+        "@googleapis//google/bytestream:bytestream_java_grpc",
+        "@googleapis//google/bytestream:bytestream_java_proto",
+        "@grpc-java//api",
+        "@remoteapis//:build_bazel_remote_execution_v2_remote_execution_java_grpc",
+        "@remoteapis//:build_bazel_remote_execution_v2_remote_execution_java_proto",
+    ],
+)
+
+java_test(
+    name = "ChunkedCacheRepMaxIntegrationTest",
+    srcs = [
+        "ChunkedCacheIntegrationTest.java",
+        "ChunkedCacheRepMaxIntegrationTest.java",
+    ],
     jvm_flags = ["-Djava.lang.Thread.allowVirtualThreads=true"],
     tags = ["requires-network"],
     runtime_deps = [
