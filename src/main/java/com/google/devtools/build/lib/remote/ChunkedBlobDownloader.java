@@ -17,10 +17,12 @@ package com.google.devtools.build.lib.remote;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static com.google.devtools.build.lib.remote.util.Utils.getFromFuture;
 
+import build.bazel.remote.execution.v2.ChunkingFunction;
 import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.SplitBlobResponse;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.devtools.build.lib.remote.chunking.ChunkingConfig;
 import com.google.devtools.build.lib.remote.common.BlobNotSplittableException;
 import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.util.DigestOutputStream;
@@ -45,12 +47,19 @@ public class ChunkedBlobDownloader {
   private final GrpcCacheClient grpcCacheClient;
   private final CombinedCache combinedCache;
   private final DigestUtil digestUtil;
+  private final ChunkingFunction.Value chunkingFunction;
+  private final long maxChunkSize;
 
   public ChunkedBlobDownloader(
-      GrpcCacheClient grpcCacheClient, CombinedCache combinedCache, DigestUtil digestUtil) {
+      GrpcCacheClient grpcCacheClient,
+      CombinedCache combinedCache,
+      ChunkingConfig chunkingConfig,
+      DigestUtil digestUtil) {
     this.grpcCacheClient = grpcCacheClient;
     this.combinedCache = combinedCache;
     this.digestUtil = digestUtil;
+    this.chunkingFunction = chunkingConfig.chunkingFunction();
+    this.maxChunkSize = chunkingConfig.maxChunkSize();
   }
 
   /**
@@ -86,7 +95,7 @@ public class ChunkedBlobDownloader {
       return ImmutableList.of();
     }
     ListenableFuture<SplitBlobResponse> splitResponseFuture =
-        grpcCacheClient.splitBlob(context, blobDigest);
+        grpcCacheClient.splitBlob(context, blobDigest, chunkingFunction);
     if (splitResponseFuture == null) {
       throw new BlobNotSplittableException(blobDigest);
     }
@@ -94,7 +103,45 @@ public class ChunkedBlobDownloader {
     if (chunkDigests.isEmpty()) {
       throw new BlobNotSplittableException(blobDigest);
     }
+    validateChunkDigests(blobDigest, chunkDigests);
     return chunkDigests;
+  }
+
+  private void validateChunkDigests(Digest blobDigest, List<Digest> chunkDigests)
+      throws IOException {
+    long remainingSize = blobDigest.getSizeBytes();
+    if (remainingSize < 0) {
+      throw new IOException(
+          "Invalid SplitBlob response for %s: blob size is negative"
+              .formatted(DigestUtil.toString(blobDigest)));
+    }
+    for (Digest chunkDigest : chunkDigests) {
+      long chunkSize = chunkDigest.getSizeBytes();
+      if (chunkSize <= 0) {
+        throw new IOException(
+            "Invalid SplitBlob response for %s: chunk %s has non-positive size"
+                .formatted(DigestUtil.toString(blobDigest), DigestUtil.toString(chunkDigest)));
+      }
+      if (chunkSize > maxChunkSize) {
+        throw new IOException(
+            "Invalid SplitBlob response for %s: chunk %s exceeds max chunk size %d"
+                .formatted(
+                    DigestUtil.toString(blobDigest),
+                    DigestUtil.toString(chunkDigest),
+                    maxChunkSize));
+      }
+      if (chunkSize > remainingSize) {
+        throw new IOException(
+            "Invalid SplitBlob response for %s: chunk sizes exceed blob size"
+                .formatted(DigestUtil.toString(blobDigest)));
+      }
+      remainingSize -= chunkSize;
+    }
+    if (remainingSize != 0) {
+      throw new IOException(
+          "Invalid SplitBlob response for %s: chunk sizes do not match blob size"
+              .formatted(DigestUtil.toString(blobDigest)));
+    }
   }
 
   private static final class PendingDownload {

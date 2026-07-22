@@ -53,7 +53,6 @@ import com.google.common.util.concurrent.SettableFuture;
 import com.google.devtools.build.lib.authandtls.CallCredentialsProvider;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.remote.RemoteRetrier.ProgressiveBackoff;
-import com.google.devtools.build.lib.remote.chunking.ChunkingConfig;
 import com.google.devtools.build.lib.remote.common.BlobNotSplittableException;
 import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.MissingDigestsFinder;
@@ -179,7 +178,10 @@ public class GrpcCacheClient extends RemoteCacheClient implements MissingDigests
   @Override
   @Nullable
   public ListenableFuture<Void> spliceBlob(
-      RemoteActionExecutionContext context, Digest blobDigest, List<Digest> chunkDigests) {
+      RemoteActionExecutionContext context,
+      Digest blobDigest,
+      List<Digest> chunkDigests,
+      ChunkingFunction.Value chunkingFunction) {
     if (!options.experimentalRemoteCacheChunking) {
       return null;
     }
@@ -189,7 +191,7 @@ public class GrpcCacheClient extends RemoteCacheClient implements MissingDigests
             .setBlobDigest(blobDigest)
             .addAllChunkDigests(chunkDigests)
             .setDigestFunction(digestUtil.getDigestFunction())
-            .setChunkingFunction(ChunkingFunction.Value.FAST_CDC_2020)
+            .setChunkingFunction(chunkingFunction)
             .build();
     return Futures.catchingAsync(
         Futures.transform(
@@ -217,7 +219,9 @@ public class GrpcCacheClient extends RemoteCacheClient implements MissingDigests
    */
   @Nullable
   public ListenableFuture<SplitBlobResponse> splitBlob(
-      RemoteActionExecutionContext context, Digest digest) {
+      RemoteActionExecutionContext context,
+      Digest digest,
+      ChunkingFunction.Value chunkingFunction) {
     if (!options.experimentalRemoteCacheChunking) {
       return null;
     }
@@ -226,7 +230,7 @@ public class GrpcCacheClient extends RemoteCacheClient implements MissingDigests
             .setInstanceName(options.remoteInstanceName)
             .setBlobDigest(digest)
             .setDigestFunction(digestUtil.getDigestFunction())
-            .setChunkingFunction(ChunkingFunction.Value.FAST_CDC_2020)
+            .setChunkingFunction(chunkingFunction)
             .build();
     return Futures.catchingAsync(
         Utils.refreshIfUnauthenticatedAsync(

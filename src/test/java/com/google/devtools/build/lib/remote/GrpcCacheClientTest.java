@@ -32,6 +32,7 @@ import static org.mockito.Mockito.when;
 import build.bazel.remote.execution.v2.Action;
 import build.bazel.remote.execution.v2.ActionCacheGrpc.ActionCacheImplBase;
 import build.bazel.remote.execution.v2.ActionResult;
+import build.bazel.remote.execution.v2.ChunkingFunction;
 import build.bazel.remote.execution.v2.Command;
 import build.bazel.remote.execution.v2.ContentAddressableStorageGrpc.ContentAddressableStorageImplBase;
 import build.bazel.remote.execution.v2.Digest;
@@ -313,7 +314,7 @@ public class GrpcCacheClientTest {
             /* diskCacheClient= */ null,
             /* symlinkTemplate= */ null,
             DIGEST_UTIL,
-            /* chunkingEnabled= */ false);
+            /* chunkingFunction= */ null);
     PathFragment execPath = PathFragment.create("my/exec/path");
     var virtualActionInput =
         new VirtualActionInput() {
@@ -601,7 +602,7 @@ public class GrpcCacheClientTest {
             /* diskCacheClient= */ null,
             /* symlinkTemplate= */ null,
             DIGEST_UTIL,
-            /* chunkingEnabled= */ false);
+            /* chunkingFunction= */ null);
 
     Digest fooDigest = DIGEST_UTIL.computeAsUtf8("foo-contents");
     Digest barDigest = DIGEST_UTIL.computeAsUtf8("bar-contents");
@@ -631,7 +632,7 @@ public class GrpcCacheClientTest {
             /* diskCacheClient= */ null,
             /* symlinkTemplate= */ null,
             DIGEST_UTIL,
-            /* chunkingEnabled= */ false);
+            /* chunkingFunction= */ null);
 
     final Digest fooDigest =
         fakeFileCache.createScratchInput(ActionInputHelper.fromPath("a/foo"), "xyz");
@@ -705,7 +706,7 @@ public class GrpcCacheClientTest {
             /* diskCacheClient= */ null,
             /* symlinkTemplate= */ null,
             DIGEST_UTIL,
-            /* chunkingEnabled= */ false);
+            /* chunkingFunction= */ null);
 
     final Digest barDigest =
         fakeFileCache.createScratchInputDirectory(
@@ -754,7 +755,7 @@ public class GrpcCacheClientTest {
             /* diskCacheClient= */ null,
             /* symlinkTemplate= */ null,
             DIGEST_UTIL,
-            /* chunkingEnabled= */ false);
+            /* chunkingFunction= */ null);
 
     final Digest wobbleDigest =
         fakeFileCache.createScratchInput(ActionInputHelper.fromPath("bar/test/wobble"), "xyz");
@@ -923,7 +924,7 @@ public class GrpcCacheClientTest {
             /* diskCacheClient= */ null,
             /* symlinkTemplate= */ null,
             DIGEST_UTIL,
-            /* chunkingEnabled= */ false);
+            /* chunkingFunction= */ null);
     var unused =
         combinedCache.downloadActionResult(
             context,
@@ -942,7 +943,7 @@ public class GrpcCacheClientTest {
             /* diskCacheClient= */ null,
             /* symlinkTemplate= */ null,
             DIGEST_UTIL,
-            /* chunkingEnabled= */ false);
+            /* chunkingFunction= */ null);
 
     final Digest fooDigest =
         fakeFileCache.createScratchInput(ActionInputHelper.fromPath("a/foo"), "xyz");
@@ -1024,7 +1025,7 @@ public class GrpcCacheClientTest {
             /* diskCacheClient= */ null,
             /* symlinkTemplate= */ null,
             DIGEST_UTIL,
-            /* chunkingEnabled= */ false);
+            /* chunkingFunction= */ null);
 
     final Digest fooDigest =
         fakeFileCache.createScratchInput(ActionInputHelper.fromPath("a/foo"), "xyz");
@@ -1095,7 +1096,7 @@ public class GrpcCacheClientTest {
             /* diskCacheClient= */ null,
             /* symlinkTemplate= */ null,
             DIGEST_UTIL,
-            /* chunkingEnabled= */ false);
+            /* chunkingFunction= */ null);
 
     final Digest fooDigest =
         fakeFileCache.createScratchInput(ActionInputHelper.fromPath("a/foo"), "xyz");
@@ -1649,6 +1650,6 @@ public class GrpcCacheClientTest {
     assertThrows(
         BlobNotSplittableException.class,
         () ->
-            getFromFuture(client.splitBlob(context, digest)));
+            getFromFuture(client.splitBlob(context, digest, ChunkingFunction.Value.FAST_CDC_2020)));
   }
 }
