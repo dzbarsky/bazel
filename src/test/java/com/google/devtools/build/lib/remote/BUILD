@@ -236,8 +236,7 @@ java_opt_binary(
     main_class = "org.openjdk.jmh.Main",
     deps = [
         "//src/main/java/com/google/devtools/build/lib/clock",
-        "//src/main/java/com/google/devtools/build/lib/remote:combined_cache",
-        "//src/main/java/com/google/devtools/build/lib/remote:grpc_cache_client",
+        "//src/main/java/com/google/devtools/build/lib/remote",
         "//src/main/java/com/google/devtools/build/lib/remote/chunking",
         "//src/main/java/com/google/devtools/build/lib/remote/common",
         "//src/main/java/com/google/devtools/build/lib/remote/util:digest_util",
