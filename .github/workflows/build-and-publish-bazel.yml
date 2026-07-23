@@ -184,6 +184,7 @@ jobs:
           done
 
       - name: Attest Bazel artifacts
+        id: attest_bazel
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
           subject-path: |
@@ -191,6 +192,21 @@ jobs:
             artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-linux-arm64
             artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-darwin-x86_64
             artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-darwin-arm64
+
+      - name: Write Bazel artifact attestations
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest_bazel.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          test -s "${ATTESTATION_BUNDLE}"
+          for artifact_os in linux darwin; do
+            for artifact_arch in x86_64 arm64; do
+              asset_name="bazel-${RELEASE_TAG}-${artifact_os}-${artifact_arch}"
+              jq --compact-output . "${ATTESTATION_BUNDLE}" \
+                > "artifacts/${asset_name}.intoto.jsonl"
+              test -s "artifacts/${asset_name}.intoto.jsonl"
+            done
+          done
 
       - name: Upload Bazel artifacts to GitHub release
         run: |
