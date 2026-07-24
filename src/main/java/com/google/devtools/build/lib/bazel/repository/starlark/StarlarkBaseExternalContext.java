@@ -2362,10 +2362,8 @@ func(
       try {
         remoteFs.ensureMaterialized(label.getRepository(), env.getListener());
       } catch (IOException e) {
-        throw new EvalException(
-            "Failed to materialize remote repo %s: %s"
-                .formatted(label.getRepository(), e.getMessage()),
-            e);
+        throw Starlark.errorf(
+            "Failed to materialize remote repo %s: %s", label.getRepository(), e.getMessage());
       }
     }
     StarlarkPath starlarkPath = new StarlarkPath(this, rootedPath.asPath());
