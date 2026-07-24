@@ -463,6 +463,7 @@ public final class SkyframeBuildView {
           /* hasLoadingError= */ false,
           /* hasAnalysisError= */ false,
           /* hasActionConflicts= */ false,
+          /* retryableAnalysisDetailedExitCode= */ null,
           cts,
           evaluationResult.getWalkableGraph(),
           aspects,
@@ -599,6 +600,7 @@ public final class SkyframeBuildView {
         errorProcessingResult.hasLoadingError(),
         evaluationResult.hasError() || foundActionConflictInLatestCheck,
         foundActionConflictInLatestCheck,
+        errorProcessingResult.retryableAnalysisDetailedExitCode(),
         cts,
         evaluationResult.getWalkableGraph(),
         aspects,
@@ -898,6 +900,7 @@ public final class SkyframeBuildView {
           /* hasAnalysisError= */ errorProcessingResult.hasAnalysisError()
               || foundActionConflictInLatestCheck,
           /* hasActionConflicts= */ foundActionConflictInLatestCheck,
+          errorProcessingResult.retryableAnalysisDetailedExitCode(),
           successfulConfiguredTargets,
           mainEvaluationResult.getWalkableGraph(),
           successfulAspects,
