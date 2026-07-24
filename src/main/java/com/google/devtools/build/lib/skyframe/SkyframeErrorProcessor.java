@@ -69,6 +69,7 @@ import com.google.devtools.build.lib.skyframe.TargetCompletionValue.TargetComple
 import com.google.devtools.build.lib.skyframe.TestCompletionValue.TestCompletionKey;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.DetailedExitCode.DetailedExitCodeComparator;
+import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.skyframe.CycleInfo;
 import com.google.devtools.build.skyframe.CyclesReporter;
 import com.google.devtools.build.skyframe.ErrorInfo;
@@ -101,6 +102,8 @@ public final class SkyframeErrorProcessor {
    * @param hasLoadingError whether there are loading errors.
    * @param hasAnalysisError whether there are analysis errors.
    * @param actionConflicts the action conflicts encountered during analysis.
+   * @param retryableAnalysisDetailedExitCode the detailed exit code for an analysis error that can
+   *     be resolved by retrying the build, or {@code null} if no such error was encountered.
    * @param executionDetailedExitCode the detailed exit code for execution errors. This is
    *     <ul>
    *       <li>{@code null}, if {@code result} had no errors or the errors were all analysis errors.
@@ -116,6 +119,7 @@ public final class SkyframeErrorProcessor {
       boolean hasLoadingError,
       boolean hasAnalysisError,
       ImmutableMap<ActionAnalysisMetadata, ActionConflictException> actionConflicts,
+      @Nullable DetailedExitCode retryableAnalysisDetailedExitCode,
       @Nullable DetailedExitCode executionDetailedExitCode,
       ImmutableList<ActionLookupKey> aspectKeysForConflictReporting) {
     public ErrorProcessingResult {
@@ -132,6 +136,7 @@ public final class SkyframeErrorProcessor {
       private boolean hasAnalysisError = false;
       private final Map<ActionAnalysisMetadata, ActionConflictException> actionConflicts =
           Maps.newHashMap();
+      @Nullable private DetailedExitCode retryableAnalysisDetailedExitCode = null;
       @Nullable private DetailedExitCode executionDetailedExitCode = null;
       private final ImmutableList.Builder<ActionLookupKey> aspectKeysForConflictReporting =
           ImmutableList.builder();
@@ -140,6 +145,17 @@ public final class SkyframeErrorProcessor {
         hasLoadingError = hasLoadingError || individualErrorProcessingResult.isLoadingError();
         hasAnalysisError = hasAnalysisError || individualErrorProcessingResult.isAnalysisError();
         actionConflicts.putAll(individualErrorProcessingResult.actionConflicts());
+        if (individualErrorProcessingResult.isAnalysisError()) {
+          for (Cause analysisRootCause :
+              individualErrorProcessingResult.analysisRootCauses().toList()) {
+            DetailedExitCode analysisDetailedExitCode = analysisRootCause.getDetailedExitCode();
+            if (ExitCode.REMOTE_CACHE_EVICTED.equals(analysisDetailedExitCode.getExitCode())) {
+              retryableAnalysisDetailedExitCode =
+                  DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie(
+                      retryableAnalysisDetailedExitCode, analysisDetailedExitCode);
+            }
+          }
+        }
         executionDetailedExitCode =
             DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie(
                 executionDetailedExitCode,
@@ -162,6 +178,7 @@ public final class SkyframeErrorProcessor {
             hasLoadingError,
             hasAnalysisError,
             ImmutableMap.copyOf(actionConflicts),
+            retryableAnalysisDetailedExitCode,
             executionDetailedExitCode,
             aspectKeysForConflictReporting.build());
       }
