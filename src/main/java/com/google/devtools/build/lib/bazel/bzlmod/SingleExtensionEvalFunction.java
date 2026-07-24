@@ -36,7 +36,6 @@ import com.google.devtools.build.lib.runtime.RepositoryRemoteExecutor;
 import com.google.devtools.build.lib.server.FailureDetails.ExternalDeps.Code;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.RepositoryMappingValue;
-import com.google.devtools.build.lib.vfs.DetailedIOException;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -479,11 +478,7 @@ public class SingleExtensionEvalFunction implements SkyFunction {
 
   private static final class SingleExtensionEvalFunctionException extends SkyFunctionException {
     SingleExtensionEvalFunctionException(ExternalDepsException cause) {
-      super(
-          cause,
-          cause.getCause() instanceof DetailedIOException detailedCause
-              ? detailedCause.getTransience()
-              : Transience.PERSISTENT);
+      super(cause, Transience.PERSISTENT);
     }
   }
 }
