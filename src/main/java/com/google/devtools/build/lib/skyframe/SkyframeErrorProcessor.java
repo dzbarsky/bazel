@@ -141,15 +141,8 @@ public final class SkyframeErrorProcessor {
       private void aggregateSingleResult(ClassifiedError error) {
         hasLoadingError = hasLoadingError || error.isLoadingError();
         hasAnalysisError = hasAnalysisError || error.isAnalysisError();
-        if (error.isAnalysisError()) {
-          for (Cause analysisRootCause : error.analysisRootCauses().toList()) {
-            DetailedExitCode analysisDetailedExitCode = analysisRootCause.getDetailedExitCode();
-            if (ExitCode.REMOTE_CACHE_EVICTED.equals(analysisDetailedExitCode.getExitCode())) {
-              retryableAnalysisDetailedExitCode =
-                  DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie(
-                      retryableAnalysisDetailedExitCode, analysisDetailedExitCode);
-            }
-          }
+        if (retryableAnalysisDetailedExitCode == null) {
+          retryableAnalysisDetailedExitCode = getRetryableAnalysisDetailedExitCode(error);
         }
         executionDetailedExitCode =
             DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie(
@@ -769,6 +762,25 @@ public final class SkyframeErrorProcessor {
     }
     return new ViewCreationFailedException(
         errorMsg, maybeContextualizeFailureDetail(e, errorMsg), e);
+  }
+
+  /**
+   * Returns the detailed exit code of an analysis root cause that can be resolved by retrying the
+   * build, e.g. a file that is no longer available in the remote cache, or null if there is none.
+   */
+  @Nullable
+  private static DetailedExitCode getRetryableAnalysisDetailedExitCode(
+      ClassifiedError error) {
+    if (!error.isAnalysisError()) {
+      return null;
+    }
+    for (Cause analysisRootCause : error.analysisRootCauses().toList()) {
+      DetailedExitCode detailedExitCode = analysisRootCause.getDetailedExitCode();
+      if (ExitCode.REMOTE_CACHE_EVICTED.equals(detailedExitCode.getExitCode())) {
+        return detailedExitCode;
+      }
+    }
+    return null;
   }
 
   /**
