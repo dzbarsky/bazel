@@ -145,16 +145,9 @@ public final class SkyframeErrorProcessor {
         hasLoadingError = hasLoadingError || individualErrorProcessingResult.isLoadingError();
         hasAnalysisError = hasAnalysisError || individualErrorProcessingResult.isAnalysisError();
         actionConflicts.putAll(individualErrorProcessingResult.actionConflicts());
-        if (individualErrorProcessingResult.isAnalysisError()) {
-          for (Cause analysisRootCause :
-              individualErrorProcessingResult.analysisRootCauses().toList()) {
-            DetailedExitCode analysisDetailedExitCode = analysisRootCause.getDetailedExitCode();
-            if (ExitCode.REMOTE_CACHE_EVICTED.equals(analysisDetailedExitCode.getExitCode())) {
-              retryableAnalysisDetailedExitCode =
-                  DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie(
-                      retryableAnalysisDetailedExitCode, analysisDetailedExitCode);
-            }
-          }
+        if (retryableAnalysisDetailedExitCode == null) {
+          retryableAnalysisDetailedExitCode =
+              getRetryableAnalysisDetailedExitCode(individualErrorProcessingResult);
         }
         executionDetailedExitCode =
             DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie(
@@ -743,6 +736,25 @@ public final class SkyframeErrorProcessor {
     }
     return new ViewCreationFailedException(
         errorMsg, maybeContextualizeFailureDetail(e, errorMsg), e);
+  }
+
+  /**
+   * Returns the detailed exit code of an analysis root cause that can be resolved by retrying the
+   * build, e.g. a file that is no longer available in the remote cache, or null if there is none.
+   */
+  @Nullable
+  private static DetailedExitCode getRetryableAnalysisDetailedExitCode(
+      IndividualErrorProcessingResult individualErrorProcessingResult) {
+    if (!individualErrorProcessingResult.isAnalysisError()) {
+      return null;
+    }
+    for (Cause analysisRootCause : individualErrorProcessingResult.analysisRootCauses().toList()) {
+      DetailedExitCode detailedExitCode = analysisRootCause.getDetailedExitCode();
+      if (ExitCode.REMOTE_CACHE_EVICTED.equals(detailedExitCode.getExitCode())) {
+        return detailedExitCode;
+      }
+    }
+    return null;
   }
 
   /**
