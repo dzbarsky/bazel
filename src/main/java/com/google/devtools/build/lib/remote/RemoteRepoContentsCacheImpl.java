@@ -299,8 +299,31 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
       return false;
     }
 
-    return remoteFs.injectRemoteRepo(
-        repoName, repoDirectoryContentFuture.resultNow(), markerFileContent);
+    Tree repoContents = repoDirectoryContentFuture.resultNow();
+    if (remoteFs.shouldValidateRepoContents()) {
+      // A failed materialization means other cached repositories may also have stale Trees. Check
+      // their remote blobs only on the recovery attempt so valid repositories remain cache hits
+      // without adding FindMissingBlobs requests to normal builds.
+      var repoFileDigests = ImmutableSet.<Digest>builder();
+      for (var file : repoContents.getRoot().getFilesList()) {
+        repoFileDigests.add(file.getDigest());
+      }
+      for (var directory : repoContents.getChildrenList()) {
+        for (var file : directory.getFilesList()) {
+          repoFileDigests.add(file.getDigest());
+        }
+      }
+      var missingDigestsFuture =
+          cache.findMissingDigests(
+              context.withWriteCachePolicy(CachePolicy.REMOTE_CACHE_ONLY),
+              repoFileDigests.build());
+      waitForBulkTransfer(ImmutableList.of(missingDigestsFuture));
+      if (!missingDigestsFuture.resultNow().isEmpty()) {
+        return false;
+      }
+    }
+
+    return remoteFs.injectRemoteRepo(repoName, repoContents, markerFileContent);
   }
 
   private enum CacheOp {
