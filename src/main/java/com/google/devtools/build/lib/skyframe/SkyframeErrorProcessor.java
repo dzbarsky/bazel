@@ -537,11 +537,15 @@ public final class SkyframeErrorProcessor {
     // cases like action conflict or execution-related errors.
     // TODO(b/249690006): Can we simplify things by moving aspects events here?
     if (errorKey.argument() instanceof AspectBaseKey) {
+      NestedSet<Cause> aspectAnalysisRootCauses =
+          NestedSetBuilder.emptySet(Order.STABLE_ORDER);
       if (exception instanceof TopLevelConflictException tlce) {
         actionConflicts = tlce.getTransitiveActionConflicts();
       } else if (exception instanceof ActionConflictException ace) {
         actionConflicts = ImmutableMap.of(ace.getAttemptedAction(), ace);
         aspectKeyForConflictReporting = ace.getAspectKey();
+      } else if (exception instanceof AspectCreationException ace) {
+        aspectAnalysisRootCauses = ace.getCauses();
       } else if (isExecutionException(exception)) {
         executionDetailedExitCode =
             getExecutionDetailedExitCodeFromCause(result, exception, bugReporter);
@@ -552,7 +556,7 @@ public final class SkyframeErrorProcessor {
       return IndividualErrorProcessingResult.create(
           actionConflicts,
           executionDetailedExitCode,
-          /* analysisRootCauses= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER),
+          /* analysisRootCauses= */ aspectAnalysisRootCauses,
           /* loadingRootCauses= */ ImmutableSet.of(),
           aspectKeyForConflictReporting);
     }
