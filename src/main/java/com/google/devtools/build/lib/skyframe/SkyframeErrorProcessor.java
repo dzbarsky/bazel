@@ -752,7 +752,14 @@ public final class SkyframeErrorProcessor {
     if (!individualErrorProcessingResult.isAnalysisError()) {
       return null;
     }
-    for (Cause analysisRootCause : individualErrorProcessingResult.analysisRootCauses().toList()) {
+    return getRetryableAnalysisDetailedExitCode(
+        individualErrorProcessingResult.analysisRootCauses());
+  }
+
+  @Nullable
+  private static DetailedExitCode getRetryableAnalysisDetailedExitCode(
+      NestedSet<Cause> analysisRootCauses) {
+    for (Cause analysisRootCause : analysisRootCauses.toList()) {
       DetailedExitCode detailedExitCode = analysisRootCause.getDetailedExitCode();
       if (ExitCode.REMOTE_CACHE_EVICTED.equals(detailedExitCode.getExitCode())) {
         return detailedExitCode;
@@ -976,6 +983,19 @@ public final class SkyframeErrorProcessor {
     Throwable undetailedCause = null;
     for (Map.Entry<SkyKey, ErrorInfo> error : result.errorMap().entrySet()) {
       Throwable cause = error.getValue().getException();
+      NestedSet<Cause> analysisRootCauses = null;
+      if (cause instanceof ConfiguredValueCreationException configuredCause) {
+        analysisRootCauses = configuredCause.getRootCauses();
+      } else if (cause instanceof AspectCreationException aspectCause) {
+        analysisRootCauses = aspectCause.getCauses();
+      }
+      if (analysisRootCauses != null) {
+        DetailedExitCode retryableAnalysisDetailedExitCode =
+            getRetryableAnalysisDetailedExitCode(analysisRootCauses);
+        if (retryableAnalysisDetailedExitCode != null) {
+          return retryableAnalysisDetailedExitCode;
+        }
+      }
       if (cause instanceof DetailedException) {
         // Update global exit code when current exit code is not null and global exit code has
         // a lower 'reporting' priority.
