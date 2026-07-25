@@ -145,16 +145,9 @@ public final class SkyframeErrorProcessor {
         hasLoadingError = hasLoadingError || individualErrorProcessingResult.isLoadingError();
         hasAnalysisError = hasAnalysisError || individualErrorProcessingResult.isAnalysisError();
         actionConflicts.putAll(individualErrorProcessingResult.actionConflicts());
-        if (individualErrorProcessingResult.isAnalysisError()) {
-          for (Cause analysisRootCause :
-              individualErrorProcessingResult.analysisRootCauses().toList()) {
-            DetailedExitCode analysisDetailedExitCode = analysisRootCause.getDetailedExitCode();
-            if (ExitCode.REMOTE_CACHE_EVICTED.equals(analysisDetailedExitCode.getExitCode())) {
-              retryableAnalysisDetailedExitCode =
-                  DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie(
-                      retryableAnalysisDetailedExitCode, analysisDetailedExitCode);
-            }
-          }
+        if (retryableAnalysisDetailedExitCode == null) {
+          retryableAnalysisDetailedExitCode =
+              getRetryableAnalysisDetailedExitCode(individualErrorProcessingResult);
         }
         executionDetailedExitCode =
             DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie(
@@ -544,11 +537,15 @@ public final class SkyframeErrorProcessor {
     // cases like action conflict or execution-related errors.
     // TODO(b/249690006): Can we simplify things by moving aspects events here?
     if (errorKey.argument() instanceof AspectBaseKey) {
+      NestedSet<Cause> aspectAnalysisRootCauses =
+          NestedSetBuilder.emptySet(Order.STABLE_ORDER);
       if (exception instanceof TopLevelConflictException tlce) {
         actionConflicts = tlce.getTransitiveActionConflicts();
       } else if (exception instanceof ActionConflictException ace) {
         actionConflicts = ImmutableMap.of(ace.getAttemptedAction(), ace);
         aspectKeyForConflictReporting = ace.getAspectKey();
+      } else if (exception instanceof AspectCreationException ace) {
+        aspectAnalysisRootCauses = ace.getCauses();
       } else if (isExecutionException(exception)) {
         executionDetailedExitCode =
             getExecutionDetailedExitCodeFromCause(result, exception, bugReporter);
@@ -559,7 +556,7 @@ public final class SkyframeErrorProcessor {
       return IndividualErrorProcessingResult.create(
           actionConflicts,
           executionDetailedExitCode,
-          /* analysisRootCauses= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER),
+          /* analysisRootCauses= */ aspectAnalysisRootCauses,
           /* loadingRootCauses= */ ImmutableSet.of(),
           aspectKeyForConflictReporting);
     }
@@ -743,6 +740,32 @@ public final class SkyframeErrorProcessor {
     }
     return new ViewCreationFailedException(
         errorMsg, maybeContextualizeFailureDetail(e, errorMsg), e);
+  }
+
+  /**
+   * Returns the detailed exit code of an analysis root cause that can be resolved by retrying the
+   * build, e.g. a file that is no longer available in the remote cache, or null if there is none.
+   */
+  @Nullable
+  private static DetailedExitCode getRetryableAnalysisDetailedExitCode(
+      IndividualErrorProcessingResult individualErrorProcessingResult) {
+    if (!individualErrorProcessingResult.isAnalysisError()) {
+      return null;
+    }
+    return getRetryableAnalysisDetailedExitCode(
+        individualErrorProcessingResult.analysisRootCauses());
+  }
+
+  @Nullable
+  private static DetailedExitCode getRetryableAnalysisDetailedExitCode(
+      NestedSet<Cause> analysisRootCauses) {
+    for (Cause analysisRootCause : analysisRootCauses.toList()) {
+      DetailedExitCode detailedExitCode = analysisRootCause.getDetailedExitCode();
+      if (ExitCode.REMOTE_CACHE_EVICTED.equals(detailedExitCode.getExitCode())) {
+        return detailedExitCode;
+      }
+    }
+    return null;
   }
 
   /**
@@ -960,6 +983,19 @@ public final class SkyframeErrorProcessor {
     Throwable undetailedCause = null;
     for (Map.Entry<SkyKey, ErrorInfo> error : result.errorMap().entrySet()) {
       Throwable cause = error.getValue().getException();
+      NestedSet<Cause> analysisRootCauses = null;
+      if (cause instanceof ConfiguredValueCreationException configuredCause) {
+        analysisRootCauses = configuredCause.getRootCauses();
+      } else if (cause instanceof AspectCreationException aspectCause) {
+        analysisRootCauses = aspectCause.getCauses();
+      }
+      if (analysisRootCauses != null) {
+        DetailedExitCode retryableAnalysisDetailedExitCode =
+            getRetryableAnalysisDetailedExitCode(analysisRootCauses);
+        if (retryableAnalysisDetailedExitCode != null) {
+          return retryableAnalysisDetailedExitCode;
+        }
+      }
       if (cause instanceof DetailedException) {
         // Update global exit code when current exit code is not null and global exit code has
         // a lower 'reporting' priority.
