@@ -2152,16 +2152,17 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     self.assertTrue(os.path.exists(os.path.join(repo_dir, 'data.txt')))
 
   def testLostRemoteFile_externalModuleExtensionUnusedPatch_keepGoing(self):
-    # Like Gazelle's go_deps, load the extension from a cached repository.
-    # Resolving the tool fully materializes that repository, including an
-    # unrelated test patch whose blob may have been evicted from the CAS.
+    # Like Gazelle's go_deps, a module extension reads two cached external
+    # repositories. Resolving their tools fully materializes both repositories,
+    # including unrelated test patches whose distinct blobs may be evicted.
     self.ScratchFile(
         'MODULE.bazel',
         [
             'repo = use_repo_rule("//:repo.bzl", "repo")',
-            'repo(name = "my_repo")',
-            'ext = use_extension("@my_repo//:extension.bzl", "ext")',
-            'use_repo(ext, "generated")',
+            'repo(name = "my_repo", contents = "extension")',
+            'repo(name = "support_repo", contents = "support")',
+            'ext = use_extension("//:extension.bzl", "ext")',
+            'use_repo(ext, "generated", "support_generated")',
         ],
     )
     self.ScratchFile('BUILD.bazel')
@@ -2175,12 +2176,26 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
                 ' \'patches/testify.patch\'])\\n'
                 'filegroup(name=\'metadata_only\')")'
             ),
-            '  rctx.file("tool.txt", "unique-extension-tool-contents")',
+            (
+                '  rctx.file("tool.txt",'
+                ' "unique-" + rctx.attr.contents + "-tool-contents")'
+            ),
             (
                 '  rctx.file("patches/testify.patch",'
-                ' "unique-unused-testify-patch")'
+                ' "unique-unused-" + rctx.attr.contents + "-testify-patch")'
             ),
-            '  rctx.file("extension.bzl", """',
+            '  rctx.file("extension.bzl", "marker = True\\n")',
+            '  print("JUST FETCHED " + rctx.attr.contents)',
+            '  return rctx.repo_metadata(reproducible=True)',
+            (
+                'repo = repository_rule(_repo_impl,'
+                ' attrs={"contents": attr.string(mandatory=True)})'
+            ),
+        ],
+    )
+    self.ScratchFile(
+        'extension.bzl',
+        [
             'def _generated_repo_impl(rctx):',
             '  rctx.file("BUILD.bazel", "exports_files([\'copy.txt\'])")',
             '  rctx.file("copy.txt", rctx.attr.contents)',
@@ -2190,13 +2205,17 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
                 ' attrs={"contents": attr.string(mandatory=True)})'
             ),
             'def _ext_impl(module_ctx):',
-            '  contents = module_ctx.read(Label("//:tool.txt"), watch = "no")',
-            '  generated_repo(name = "generated", contents = contents)',
+            (
+                '  extension = module_ctx.read('
+                'Label("@my_repo//:tool.txt"), watch="no")'
+            ),
+            (
+                '  support = module_ctx.read('
+                'Label("@support_repo//:tool.txt"), watch="no")'
+            ),
+            '  generated_repo(name="generated", contents=extension)',
+            '  generated_repo(name="support_generated", contents=support)',
             'ext = module_extension(_ext_impl)',
-            '""")',
-            '  print("JUST FETCHED")',
-            '  return rctx.repo_metadata(reproducible=True)',
-            'repo = repository_rule(_repo_impl)',
         ],
     )
 
@@ -2207,8 +2226,11 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
       main_build.append(
           (
               'genrule(name = "{}",'
-              ' srcs = ["@generated//:copy.txt"],'
-              ' outs = ["{}.txt"], cmd = "cat $< > $@")'
+              ' srcs = ["@generated//:copy.txt",'
+              ' "@support_generated//:copy.txt"],'
+              ' outs = ["{}.txt"],'
+              ' cmd = "cat $(location @generated//:copy.txt)'
+              ' $(location @support_generated//:copy.txt) > $@")'
           ).format(name, name)
       )
       targets.append('//main:' + name)
@@ -2221,18 +2243,36 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     self.ScratchFile('main/BUILD.bazel', main_build)
 
     repo_dir = self.RepoDir('my_repo')
-    _, _, stderr = self.RunBazel(['build', '@my_repo//:metadata_only'])
-    self.assertIn('JUST FETCHED', '\n'.join(stderr))
+    support_repo_dir = self.RepoDir('support_repo')
+    metadata_targets = [
+        '@my_repo//:metadata_only',
+        '@support_repo//:metadata_only',
+    ]
+    _, _, stderr = self.RunBazel(['build'] + metadata_targets)
+    stderr_text = '\n'.join(stderr)
+    self.assertIn('JUST FETCHED extension', stderr_text)
+    self.assertIn('JUST FETCHED support', stderr_text)
 
     self.RunBazel(['clean', '--expunge'])
-    _, _, stderr = self.RunBazel(['build', '@my_repo//:metadata_only'])
+    _, _, stderr = self.RunBazel(['build'] + metadata_targets)
     self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
     self.assertTrue(os.path.exists(os.path.join(repo_dir, 'extension.bzl')))
+    self.assertTrue(
+        os.path.exists(os.path.join(support_repo_dir, 'extension.bzl'))
+    )
     self.assertFalse(os.path.exists(os.path.join(repo_dir, 'tool.txt')))
+    self.assertFalse(
+        os.path.exists(os.path.join(support_repo_dir, 'tool.txt'))
+    )
     patch_path = os.path.join(repo_dir, 'patches', 'testify.patch')
+    support_patch_path = os.path.join(
+        support_repo_dir, 'patches', 'testify.patch'
+    )
     self.assertFalse(os.path.exists(patch_path))
+    self.assertFalse(os.path.exists(support_patch_path))
 
-    self.DeleteCasEntry(b'unique-unused-testify-patch')
+    self.DeleteCasEntry(b'unique-unused-extension-testify-patch')
+    self.DeleteCasEntry(b'unique-unused-support-testify-patch')
     _, _, stderr = self.RunBazel(['build', '--keep_going'] + targets)
     self.assertEqual(
         1,
@@ -2244,18 +2284,29 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     self.assertRegex(
         stderr,
         (
-            r'external/%s/patches/testify\.patch with digest .*/.* is no'
+            r'external/(?:%s|%s)/patches/testify\.patch with digest .*/.* is no'
             ' longer available in the remote cache'
         )
-        % re.escape(os.path.basename(repo_dir)),
+        % (
+            re.escape(os.path.basename(repo_dir)),
+            re.escape(os.path.basename(support_repo_dir)),
+        ),
     )
-    self.assertIn('JUST FETCHED', stderr)
+    self.assertIn('JUST FETCHED extension', stderr)
+    self.assertIn('JUST FETCHED support', stderr)
     self.assertTrue(os.path.exists(patch_path))
+    self.assertTrue(os.path.exists(support_patch_path))
     self.assertTrue(os.path.exists(os.path.join(repo_dir, 'tool.txt')))
+    self.assertTrue(
+        os.path.exists(os.path.join(support_repo_dir, 'tool.txt'))
+    )
     for index in range(4):
       output = self.Path('bazel-bin/main/dependent_{}.txt'.format(index))
       with open(output) as f:
-        self.assertEqual(f.read(), 'unique-extension-tool-contents')
+        self.assertEqual(
+            f.read(),
+            'unique-extension-tool-contentsunique-support-tool-contents',
+        )
     with open(self.Path('bazel-bin/main/healthy.txt')) as f:
       self.assertEqual(f.read(), 'healthy')
 
