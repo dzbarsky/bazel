@@ -1947,9 +1947,9 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
 
     # Build the other target: fails due to the lost input
     _, _, stderr = self.RunBazel(['build', '@my_repo//sub:sub'])
-    # First restart recovers @my_repo, the next one recovers @platforms.
+    # The recovery attempt refetches both @my_repo and @platforms.
     self.assertEqual(
-        2,
+        1,
         stderr.count(
             'Found transient remote cache error, retrying the build...'
         ),
