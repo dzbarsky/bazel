@@ -1947,9 +1947,9 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
 
     # Build the other target: fails due to the lost input
     _, _, stderr = self.RunBazel(['build', '@my_repo//sub:sub'])
-    # First restart recovers @my_repo, the next one recovers @platforms.
+    # The recovery attempt refetches both @my_repo and @platforms.
     self.assertEqual(
-        2,
+        1,
         stderr.count(
             'Found transient remote cache error, retrying the build...'
         ),
@@ -2151,6 +2151,165 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     )
     self.assertTrue(os.path.exists(os.path.join(repo_dir, 'data.txt')))
 
+  def testLostRemoteFile_externalModuleExtensionUnusedPatch_keepGoing(self):
+    # Like Gazelle's go_deps, a module extension reads two cached external
+    # repositories. Resolving their tools fully materializes both repositories,
+    # including unrelated test patches whose distinct blobs may be evicted.
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'repo = use_repo_rule("//:repo.bzl", "repo")',
+            'repo(name = "my_repo", contents = "extension")',
+            'repo(name = "support_repo", contents = "support")',
+            'ext = use_extension("//:extension.bzl", "ext")',
+            'use_repo(ext, "generated", "support_generated")',
+        ],
+    )
+    self.ScratchFile('BUILD.bazel')
+    self.ScratchFile(
+        'repo.bzl',
+        [
+            'def _repo_impl(rctx):',
+            (
+                '  rctx.file("BUILD.bazel",'
+                ' "exports_files([\'extension.bzl\', \'tool.txt\','
+                ' \'patches/testify.patch\'])\\n'
+                'filegroup(name=\'metadata_only\')")'
+            ),
+            (
+                '  rctx.file("tool.txt",'
+                ' "unique-" + rctx.attr.contents + "-tool-contents")'
+            ),
+            (
+                '  rctx.file("patches/testify.patch",'
+                ' "unique-unused-" + rctx.attr.contents + "-testify-patch")'
+            ),
+            '  rctx.file("extension.bzl", "marker = True\\n")',
+            '  print("JUST FETCHED " + rctx.attr.contents)',
+            '  return rctx.repo_metadata(reproducible=True)',
+            (
+                'repo = repository_rule(_repo_impl,'
+                ' attrs={"contents": attr.string(mandatory=True)})'
+            ),
+        ],
+    )
+    self.ScratchFile(
+        'extension.bzl',
+        [
+            'def _generated_repo_impl(rctx):',
+            '  rctx.file("BUILD.bazel", "exports_files([\'copy.txt\'])")',
+            '  rctx.file("copy.txt", rctx.attr.contents)',
+            '  return rctx.repo_metadata()',
+            (
+                'generated_repo = repository_rule(_generated_repo_impl,'
+                ' attrs={"contents": attr.string(mandatory=True)})'
+            ),
+            'def _ext_impl(module_ctx):',
+            (
+                '  extension = module_ctx.read('
+                'Label("@my_repo//:tool.txt"), watch="no")'
+            ),
+            (
+                '  support = module_ctx.read('
+                'Label("@support_repo//:tool.txt"), watch="no")'
+            ),
+            '  generated_repo(name="generated", contents=extension)',
+            '  generated_repo(name="support_generated", contents=support)',
+            'ext = module_extension(_ext_impl)',
+        ],
+    )
+
+    main_build = []
+    targets = []
+    for index in range(4):
+      name = 'dependent_{}'.format(index)
+      main_build.append(
+          (
+              'genrule(name = "{}",'
+              ' srcs = ["@generated//:copy.txt",'
+              ' "@support_generated//:copy.txt"],'
+              ' outs = ["{}.txt"],'
+              ' cmd = "cat $(location @generated//:copy.txt)'
+              ' $(location @support_generated//:copy.txt) > $@")'
+          ).format(name, name)
+      )
+      targets.append('//main:' + name)
+    main_build.append(
+        'genrule(name = "healthy", outs = ["healthy.txt"],'
+        ' cmd = "printf healthy > $@")'
+    )
+    targets.append('//main:healthy')
+    self.assertLen(targets, 5)
+    self.ScratchFile('main/BUILD.bazel', main_build)
+
+    repo_dir = self.RepoDir('my_repo')
+    support_repo_dir = self.RepoDir('support_repo')
+    metadata_targets = [
+        '@my_repo//:metadata_only',
+        '@support_repo//:metadata_only',
+    ]
+    _, _, stderr = self.RunBazel(['build'] + metadata_targets)
+    stderr_text = '\n'.join(stderr)
+    self.assertIn('JUST FETCHED extension', stderr_text)
+    self.assertIn('JUST FETCHED support', stderr_text)
+
+    self.RunBazel(['clean', '--expunge'])
+    _, _, stderr = self.RunBazel(['build'] + metadata_targets)
+    self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'extension.bzl')))
+    self.assertTrue(
+        os.path.exists(os.path.join(support_repo_dir, 'extension.bzl'))
+    )
+    self.assertFalse(os.path.exists(os.path.join(repo_dir, 'tool.txt')))
+    self.assertFalse(
+        os.path.exists(os.path.join(support_repo_dir, 'tool.txt'))
+    )
+    patch_path = os.path.join(repo_dir, 'patches', 'testify.patch')
+    support_patch_path = os.path.join(
+        support_repo_dir, 'patches', 'testify.patch'
+    )
+    self.assertFalse(os.path.exists(patch_path))
+    self.assertFalse(os.path.exists(support_patch_path))
+
+    self.DeleteCasEntry(b'unique-unused-extension-testify-patch')
+    self.DeleteCasEntry(b'unique-unused-support-testify-patch')
+    _, _, stderr = self.RunBazel(['build', '--keep_going'] + targets)
+    self.assertEqual(
+        1,
+        stderr.count(
+            'Found transient remote cache error, retrying the build...'
+        ),
+    )
+    stderr = '\n'.join(stderr)
+    self.assertRegex(
+        stderr,
+        (
+            r'external/(?:%s|%s)/patches/testify\.patch with digest .*/.* is no'
+            ' longer available in the remote cache'
+        )
+        % (
+            re.escape(os.path.basename(repo_dir)),
+            re.escape(os.path.basename(support_repo_dir)),
+        ),
+    )
+    self.assertIn('JUST FETCHED extension', stderr)
+    self.assertIn('JUST FETCHED support', stderr)
+    self.assertTrue(os.path.exists(patch_path))
+    self.assertTrue(os.path.exists(support_patch_path))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'tool.txt')))
+    self.assertTrue(
+        os.path.exists(os.path.join(support_repo_dir, 'tool.txt'))
+    )
+    for index in range(4):
+      output = self.Path('bazel-bin/main/dependent_{}.txt'.format(index))
+      with open(output) as f:
+        self.assertEqual(
+            f.read(),
+            'unique-extension-tool-contentsunique-support-tool-contents',
+        )
+    with open(self.Path('bazel-bin/main/healthy.txt')) as f:
+      self.assertEqual(f.read(), 'healthy')
+
   def testLostRemoteFile_sourceDirectoryMaterialization(self):
     # Like testLostRemoteFile_fullMaterialization, but with only the subtree
     # below a source directory input materialized for a local action. The only
@@ -2252,6 +2411,104 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     )
     with open(out) as f:
       self.assertEqual(f.read(), 'unique-source-dir-contents')
+
+  def doTestLostRemoteFile_analysisMaterialization(self, *, keep_going):
+    # Regression test for the retry of a lost blob discovered while fetching a
+    # repo that is only reachable via a dependency edge: the failure surfaces
+    # as an analysis error of the top-level target rather than during target
+    # pattern expansion, which is reported differently with and without
+    # --keep_going.
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'repo = use_repo_rule("//:repo.bzl", "repo")',
+            'repo(name = "my_repo")',
+            'other_repo = use_repo_rule("//:other_repo.bzl", "other_repo")',
+            'other_repo(name = "other", data = "@my_repo//:data.txt")',
+        ],
+    )
+    self.ScratchFile('BUILD.bazel')
+    self.ScratchFile(
+        'repo.bzl',
+        [
+            'def _repo_impl(rctx):',
+            (
+                '  rctx.file("BUILD.bazel",'
+                ' "exports_files([\'data.txt\'])\\n'
+                'filegroup(name=\'metadata_only\')")'
+            ),
+            '  rctx.file("data.txt", "unique-data-file-contents")',
+            '  print("JUST FETCHED")',
+            '  return rctx.repo_metadata(reproducible=True)',
+            'repo = repository_rule(_repo_impl)',
+        ],
+    )
+    self.ScratchFile(
+        'other_repo.bzl',
+        [
+            'def _other_repo_impl(rctx):',
+            (
+                '  rctx.file("BUILD.bazel",'
+                ' "exports_files([\'copy.txt\'])")'
+            ),
+            '  rctx.file("copy.txt", rctx.read(rctx.path(rctx.attr.data)))',
+            '  return rctx.repo_metadata()',
+            (
+                'other_repo = repository_rule(_other_repo_impl,'
+                ' attrs={"data": attr.label()})'
+            ),
+        ],
+    )
+    self.ScratchFile(
+        'main/BUILD.bazel',
+        [
+            'genrule(',
+            '  name = "bin",',
+            '  srcs = ["@other//:copy.txt"],',
+            '  outs = ["bin.txt"],',
+            '  cmd = "cat $< > $@",',
+            ')',
+        ],
+    )
+
+    repo_dir = self.RepoDir('my_repo')
+
+    # Populate the remote repo contents cache, then restore only the repo
+    # metadata into the in-memory overlay. data.txt remains remote-only.
+    _, _, stderr = self.RunBazel(['build', '@my_repo//:metadata_only'])
+    self.assertIn('JUST FETCHED', '\n'.join(stderr))
+    self.RunBazel(['clean', '--expunge'])
+    _, _, stderr = self.RunBazel(['build', '@my_repo//:metadata_only'])
+    self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
+    self.assertFalse(os.path.exists(os.path.join(repo_dir, 'data.txt')))
+
+    # Delete the CAS blob for data.txt while keeping the repo's action result
+    # and Tree. @other is fetched while analyzing //main:bin, which depends on
+    # it, and its repo rule reads data.txt through rctx.path()/rctx.read().
+    # The resulting analysis error must still result in a retry of the build.
+    self.DeleteCasEntry(b'unique-data-file-contents')
+    args = ['build']
+    if keep_going:
+      args.append('--keep_going')
+    args.append('//main:bin')
+    _, _, stderr = self.RunBazel(args)
+    self.assertEqual(
+        1,
+        stderr.count(
+            'Found transient remote cache error, retrying the build...'
+        ),
+    )
+    stderr = '\n'.join(stderr)
+    self.assertIn('JUST FETCHED', stderr)
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'data.txt')))
+    with open(self.Path('bazel-bin/main/bin.txt')) as f:
+      self.assertEqual(f.read(), 'unique-data-file-contents')
+
+  def testLostRemoteFile_analysisMaterialization(self):
+    self.doTestLostRemoteFile_analysisMaterialization(keep_going=False)
+
+  def testLostRemoteFile_analysisMaterialization_keepGoing(self):
+    self.doTestLostRemoteFile_analysisMaterialization(keep_going=True)
 
   def doTestMaterializationWithInternalAndExternalSymlinks(
       self, *, expect_symlinks, watch_dep_file=True
