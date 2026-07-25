@@ -3284,6 +3284,72 @@ public class SkyframeErrorProcessorTest {
         .isEqualTo(retryableExitCode);
   }
 
+  @Test
+  public void testProcessExecutionErrors_keepGoing_preservesRetryableAnalysisRootCause(
+      @TestParameter boolean topLevelAspect) throws Exception {
+    Label targetLabel = Label.parseCanonicalUnchecked("//analysis_err");
+    DetailedExitCode retryableExitCode =
+        DetailedExitCode.of(
+            FailureDetail.newBuilder()
+                .setMessage("a repository file is no longer available in the remote cache")
+                .setFilesystem(
+                    Filesystem.newBuilder().setCode(Filesystem.Code.REMOTE_FILE_EVICTED))
+                .build());
+    NestedSet<Cause> rootCauses =
+        NestedSetBuilder.create(Order.STABLE_ORDER, new LabelCause(targetLabel, retryableExitCode));
+
+    SkyKey errorKey;
+    Exception analysisException;
+    if (topLevelAspect) {
+      errorKey =
+          AspectKeyCreator.createTopLevelAspectsKey(
+              ImmutableList.of(),
+              targetLabel,
+              /* configuration= */ null,
+              /* topLevelAspectsParameters= */ ImmutableMap.of());
+      DetailedExitCode aspectExitCode =
+          DetailedExitCode.of(
+              FailureDetail.newBuilder()
+                  .setMessage("aspect creation failed")
+                  .setAnalysis(
+                      Analysis.newBuilder().setCode(Analysis.Code.ASPECT_CREATION_FAILED))
+                  .build());
+      analysisException =
+          new AspectCreationException("aspect creation failed", rootCauses, aspectExitCode);
+    } else {
+      errorKey = ConfiguredTargetKey.builder().setLabel(targetLabel).build();
+      analysisException =
+          new ConfiguredValueCreationException(
+              /* location= */ null,
+              "configured target creation failed",
+              targetLabel,
+              /* configuration= */ null,
+              rootCauses,
+              /* detailedExitCode= */ null);
+    }
+
+    ErrorInfo errorInfo =
+        ErrorInfo.fromException(
+            new ReifiedSkyFunctionException(
+                new DummySkyFunctionException(analysisException, Transience.TRANSIENT)),
+            /* isTransitivelyTransient= */ true);
+    EvaluationResult<SkyValue> result =
+        EvaluationResult.builder().addError(errorKey, errorInfo).build();
+
+    SkyframeErrorProcessor.ErrorProcessingResult errorProcessingResult =
+        SkyframeErrorProcessor.processExecutionErrors(
+            result,
+            /* cyclesReporter= */ new CyclesReporter(),
+            /* eventHandler= */ mock(ExtendedEventHandler.class),
+            /* keepGoing= */ true,
+            /* keepEdges= */ true,
+            /* eventBus= */ null,
+            bugReporter);
+
+    assertThat(errorProcessingResult.retryableAnalysisDetailedExitCode())
+        .isEqualTo(retryableExitCode);
+  }
+
   private static final class DummySkyFunctionException extends SkyFunctionException {
     DummySkyFunctionException(Exception cause, Transience transience) {
       super(cause, transience);
