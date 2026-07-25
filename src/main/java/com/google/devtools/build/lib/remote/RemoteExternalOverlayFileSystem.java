@@ -190,8 +190,12 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem implements
     // refer to the in-memory content and refetching is not atomic.
     materializedRepos.forEach(this::evictInMemoryRepo);
     reposToInvalidate.forEach(this::evictInMemoryRepo);
-    // The evaluator may have been replaced during the command.
-    invalidateRepoDirectories(evaluator.get(), reposToInvalidate);
+    if (hadLostRepoFiles) {
+      // Every repository directory must be re-evaluated so a stale cached repo that was not in
+      // the overlay marker snapshot cannot bypass validation during the same recovery attempt.
+      // The evaluator may have been replaced during the command.
+      evaluator.get().delete(key -> key.functionName().equals(SkyFunctions.REPOSITORY_DIRECTORY));
+    }
     reposToRefetch.addAll(reposWithLostFiles);
     reposWithLostFiles.clear();
     validateCachedRepoContents = hadLostRepoFiles;
