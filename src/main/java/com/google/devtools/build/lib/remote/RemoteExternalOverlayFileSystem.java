@@ -103,6 +103,10 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
   // cache. Remote cache lookups for them must be skipped so that they are fetched again and
   // their contents, including the lost files, are uploaded anew.
   private final Set<String> reposToRefetch = ConcurrentHashMap.newKeySet();
+  // Validate cached repo Trees only while recovering from a lost remote file. This avoids an
+  // extra FindMissingBlobs call on normal cache hits while allowing one retry to recover all
+  // repositories whose action results outlived their CAS blobs.
+  private volatile boolean validateCachedRepoContents;
 
   // Per-build information that is set in beforeCommand and cleared in afterCommand.
   @Nullable private CombinedCache cache;
@@ -165,6 +169,14 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
     materializationExecutor.shutdownNow();
     materializationExecutor.close();
 
+    boolean hadLostRepoFiles = !reposWithLostFiles.isEmpty();
+    ImmutableSet<String> reposToInvalidate =
+        hadLostRepoFiles
+            ? ImmutableSet.<String>builder()
+                .addAll(markerFileContents.keySet())
+                .addAll(reposWithLostFiles)
+                .build()
+            : ImmutableSet.of();
     this.cache = null;
     this.inputPrefetcher = null;
     this.reporter = null;
@@ -172,16 +184,22 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
     this.commandId = null;
     this.remoteCacheTtl = null;
     this.materializationExecutor = null;
-    // Clean up the in-memory contents of materialized repos to save memory, or those that need to
-    // be refetched to recover files that the remote cache has lost. This wouldn't be safe to do
-    // eagerly as ongoing repo rule evaluations may still refer to the in-memory content and
-    // refetching is not atomic.
+    // Clean up the in-memory contents of materialized repos to save memory. After a lost remote
+    // file, also discard every injected repo so the retry can validate each cached Tree before
+    // restoring it. This wouldn't be safe to do eagerly as ongoing repo rule evaluations may still
+    // refer to the in-memory content and refetching is not atomic.
     materializedRepos.forEach(this::evictInMemoryRepo);
-    reposWithLostFiles.forEach(this::evictInMemoryRepo);
-    invalidateRepoDirectories(evaluator, reposWithLostFiles);
+    reposToInvalidate.forEach(this::evictInMemoryRepo);
+    invalidateRepoDirectories(evaluator, reposToInvalidate);
     reposToRefetch.addAll(reposWithLostFiles);
     reposWithLostFiles.clear();
+    validateCachedRepoContents = hadLostRepoFiles;
     this.evaluator = null;
+  }
+
+  /** Returns whether cached repo Trees should be validated during a cache-eviction retry. */
+  public boolean shouldValidateRepoContents() {
+    return validateCachedRepoContents;
   }
 
   /**
