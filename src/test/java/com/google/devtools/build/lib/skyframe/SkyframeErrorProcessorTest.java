@@ -21,12 +21,15 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.TargetAndConfiguration;
 import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
+import com.google.devtools.build.lib.causes.Cause;
 import com.google.devtools.build.lib.causes.LabelCause;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.server.FailureDetails.Analysis;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Filesystem;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.TopLevelAspectsKey;
@@ -37,6 +40,7 @@ import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyFunctionException.ReifiedSkyFunctionException;
 import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
+import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
@@ -132,6 +136,72 @@ public class SkyframeErrorProcessorTest {
 
     assertThat(errorProcessingResult.retryableAnalysisDetailedExitCode())
         .isEqualTo(retryableExitCode);
+  }
+
+  @Test
+  public void testProcessExecutionErrors_legacyKeepGoing_preservesRetryableAnalysisRootCause(
+      @TestParameter boolean topLevelAspect) throws Exception {
+    Label targetLabel = Label.parseCanonicalUnchecked("//analysis_err");
+    DetailedExitCode retryableExitCode =
+        DetailedExitCode.of(
+            FailureDetail.newBuilder()
+                .setMessage("a repository file is no longer available in the remote cache")
+                .setFilesystem(
+                    Filesystem.newBuilder().setCode(Filesystem.Code.REMOTE_FILE_EVICTED))
+                .build());
+    NestedSet<Cause> rootCauses =
+        NestedSetBuilder.create(Order.STABLE_ORDER, new LabelCause(targetLabel, retryableExitCode));
+
+    SkyKey errorKey;
+    Exception analysisException;
+    if (topLevelAspect) {
+      errorKey =
+          AspectKeyCreator.createTopLevelAspectsKey(
+              ImmutableList.of(),
+              targetLabel,
+              /* configuration= */ null,
+              /* topLevelAspectsParameters= */ ImmutableMap.of());
+      DetailedExitCode aspectExitCode =
+          DetailedExitCode.of(
+              FailureDetail.newBuilder()
+                  .setMessage("aspect creation failed")
+                  .setAnalysis(
+                      Analysis.newBuilder().setCode(Analysis.Code.ASPECT_CREATION_FAILED))
+                  .build());
+      analysisException =
+          new AspectCreationException("aspect creation failed", rootCauses, aspectExitCode);
+    } else {
+      errorKey = ConfiguredTargetKey.builder().setLabel(targetLabel).build();
+      analysisException =
+          new ConfiguredValueCreationException(
+              /* location= */ null,
+              "configured target creation failed",
+              targetLabel,
+              /* configuration= */ null,
+              rootCauses,
+              /* detailedExitCode= */ null);
+    }
+
+    ErrorInfo errorInfo =
+        ErrorInfo.fromException(
+            new ReifiedSkyFunctionException(
+                new DummySkyFunctionException(analysisException, Transience.TRANSIENT)),
+            /* isTransitivelyTransient= */ true);
+    EvaluationResult<SkyValue> result =
+        EvaluationResult.builder().addError(errorKey, errorInfo).build();
+
+    SkyframeErrorProcessor.ErrorProcessingResult errorProcessingResult =
+        SkyframeErrorProcessor.processExecutionErrors(
+            result,
+            /* cyclesReporter= */ new CyclesReporter(),
+            /* eventHandler= */ mock(ExtendedEventHandler.class),
+            /* keepGoing= */ true,
+            /* keepEdges= */ true,
+            /* eventBus= */ null,
+            /* bugReporter= */ null,
+            /* skyframeErrorHandlingRefactor= */ false);
+
+    assertThat(errorProcessingResult.executionDetailedExitCode()).isEqualTo(retryableExitCode);
   }
 
   private static final class DummySkyFunctionException extends SkyFunctionException {
