@@ -16,6 +16,7 @@
 # pylint: disable=g-bad-todo
 
 import os
+import re
 import tempfile
 from absl.testing import absltest
 from src.test.py.bazel.bzlmod import remote_repo_contents_cache_test_base
@@ -2135,6 +2136,94 @@ class RemoteRepoContentsCacheTest(
       self.assertEqual(f.read(), 'dep_hello')
     if CROSS_REPO_SYMLINKS_CACHEABLE:
       self.assertFalse(os.path.exists(os.path.join(my_repo_dir, 'BUILD')))
+
+  def testLostRemoteFile_build(self):
+    # Create a repo with two BUILD files (one in a subpackage), build a target
+    # from one to cause it to be cached, then build that target again after
+    # expunging to verify it is cached.
+    # Then, restart the worker and build a target in the other build file.
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'repo = use_repo_rule("//:repo.bzl", "repo")',
+            'repo(name = "my_repo")',
+        ],
+    )
+
+    self.ScratchFile('BUILD.bazel')
+    self.ScratchFile(
+        'repo.bzl',
+        [
+            'def _repo_impl(rctx):',
+            (
+                '  rctx.file("BUILD", "filegroup(name=\'root\','
+                " srcs=['root.txt'])\")"
+            ),
+            '  rctx.file("root.txt", "root")',
+            (
+                '  rctx.file("sub/BUILD", "filegroup(name=\'sub\','
+                " srcs=['sub.txt'])\")"
+            ),
+            '  rctx.file("sub/sub.txt", "sub")',
+            '  print("JUST FETCHED")',
+            '  return rctx.repo_metadata(reproducible=True)',
+            'repo = repository_rule(_repo_impl)',
+        ],
+    )
+
+    repo_dir = self.RepoDir('my_repo')
+
+    # First fetch: not cached
+    _, _, stderr = self.RunBazel(['build', '@my_repo//:root'])
+    self.assertIn('JUST FETCHED', '\n'.join(stderr))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'BUILD')))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'root.txt')))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'sub/BUILD')))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'sub/sub.txt')))
+
+    # After expunging: cached
+    self.RunBazel(['clean', '--expunge'])
+    _, _, stderr = self.RunBazel(['build', '@my_repo//:root'])
+    self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
+    self.assertFalse(os.path.exists(os.path.join(repo_dir, 'BUILD')))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'root.txt')))
+    self.assertFalse(os.path.exists(os.path.join(repo_dir, 'sub/BUILD')))
+    self.assertFalse(os.path.exists(os.path.join(repo_dir, 'sub/sub.txt')))
+
+    # Lose all remote files.
+    self.ClearRemoteCache()
+
+    # Build the other target after losing its BUILD file.
+    _, _, stderr = self.RunBazel(['build', '@my_repo//sub:sub'])
+    # The recovery attempt refetches both @my_repo and @platforms.
+    self.assertEqual(
+        1,
+        stderr.count(
+            'Found transient remote cache error, retrying the build...'
+        ),
+    )
+    canonical_repo_name = os.path.basename(repo_dir)
+    stderr = '\n'.join(stderr)
+    self.assertRegex(
+        stderr,
+        'external/%s/sub/BUILD with digest .*/.* no longer available in the'
+        ' remote cache'
+        % re.escape(canonical_repo_name),
+    )
+    self.assertIn('JUST FETCHED', stderr)
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'BUILD')))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'root.txt')))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'sub/BUILD')))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'sub/sub.txt')))
+
+    # After expunging again: cached
+    self.RunBazel(['clean', '--expunge'])
+    _, _, stderr = self.RunBazel(['build', '@my_repo//sub:sub'])
+    self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
+    self.assertFalse(os.path.exists(os.path.join(repo_dir, 'BUILD')))
+    self.assertFalse(os.path.exists(os.path.join(repo_dir, 'root.txt')))
+    self.assertFalse(os.path.exists(os.path.join(repo_dir, 'sub/BUILD')))
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'sub/sub.txt')))
 
   def testMemoryPressureRestartDuringCachedFetch(self):
     # Regression test for a cached repo fetch that is interrupted by memory

@@ -68,6 +68,7 @@ import com.google.devtools.build.lib.server.FailureDetails.Analysis;
 import com.google.devtools.build.lib.server.FailureDetails.Execution;
 import com.google.devtools.build.lib.server.FailureDetails.ExternalDeps;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.server.FailureDetails.Filesystem;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading;
 import com.google.devtools.build.lib.skyframe.ArtifactNestedSetFunction.ArtifactNestedSetEvalException;
 import com.google.devtools.build.lib.skyframe.AspectCompletionValue.AspectCompletionKey;
@@ -3235,6 +3236,52 @@ public class SkyframeErrorProcessorTest {
     public void onLoadingFailure(LoadingFailureEvent event) {
       loadingFailures.add(event);
     }
+  }
+
+  @Test
+  public void testProcessErrors_aspectErrorKeepGoing_preservesRetryableRootCause(
+      @TestParameter boolean includeExecutionPhase) throws Exception {
+    Label targetLabel = Label.parseCanonicalUnchecked("//aspect_err");
+    DetailedExitCode retryableExitCode =
+        DetailedExitCode.of(
+            FailureDetail.newBuilder()
+                .setMessage("a repository file is no longer available in the remote cache")
+                .setFilesystem(
+                    Filesystem.newBuilder().setCode(Filesystem.Code.REMOTE_FILE_EVICTED))
+                .build());
+    AspectCreationException aspectException =
+        new AspectCreationException(
+            "aspect creation failed",
+            NestedSetBuilder.create(
+                Order.STABLE_ORDER, new LabelCause(targetLabel, retryableExitCode)),
+            retryableExitCode);
+    TopLevelAspectsKey aspectKey =
+        AspectKeyCreator.createTopLevelAspectsKey(
+            ImmutableList.of(),
+            targetLabel,
+            /* configuration= */ null,
+            /* topLevelAspectsParameters= */ ImmutableMap.of());
+    ErrorInfo aspectErrorInfo =
+        ErrorInfo.fromException(
+            new ReifiedSkyFunctionException(
+                new DummySkyFunctionException(aspectException, Transience.TRANSIENT)),
+            /* isTransitivelyTransient= */ true);
+    EvaluationResult<SkyValue> result =
+        EvaluationResult.builder().addError(aspectKey, aspectErrorInfo).build();
+
+    SkyframeErrorProcessor.ErrorProcessingResult errorProcessingResult =
+        SkyframeErrorProcessor.processErrors(
+            result,
+            /* cyclesReporter= */ new CyclesReporter(),
+            /* eventHandler= */ mock(ExtendedEventHandler.class),
+            /* keepGoing= */ true,
+            /* keepEdges= */ true,
+            /* eventBus= */ null,
+            /* bugReporter= */ null,
+            includeExecutionPhase);
+
+    assertThat(errorProcessingResult.retryableAnalysisDetailedExitCode())
+        .isEqualTo(retryableExitCode);
   }
 
   private static final class DummySkyFunctionException extends SkyFunctionException {
