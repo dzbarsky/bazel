@@ -5,7 +5,7 @@ load("//tools/distributions:distribution_rules.bzl", "distrib_jar_filegroup", "d
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["graalvm_25_1_3_linux_x64.BUILD"])
+exports_files(["graalvm_25_2_4_linux_x64.BUILD"])
 
 filegroup(
     name = "srcs",
