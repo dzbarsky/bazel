@@ -217,7 +217,7 @@ public final class Resolver extends NodeVisitor {
         int numKeywordOnlyParams,
         List<Binding> locals,
         List<Binding> freevars,
-        List<String> globals) {
+        ImmutableList<String> globals) {
       this.name = name;
       this.location = loc;
       this.params = params;
@@ -235,7 +235,7 @@ public final class Resolver extends NodeVisitor {
       this.isToplevel = name.equals("<toplevel>");
       this.locals = ImmutableList.copyOf(locals);
       this.freevars = ImmutableList.copyOf(freevars);
-      this.globals = ImmutableList.copyOf(globals);
+      this.globals = globals;
 
       // Create an index of the locals that are cells.
       int ncells = 0;
@@ -499,6 +499,11 @@ public final class Resolver extends NodeVisitor {
   private final Module module;
   // List whose order defines the numbering of global variables in this program.
   private final List<String> globals = new ArrayList<>();
+  // Cached ImmutableList representation of globals. Set whenever we create a Function and
+  // invalidated (set to null) whenever we added a new global to globals. Lets us save memory in
+  // the common-case situation where many Functions have the same globals and thus can share the
+  // same ImmutableList object.
+  @Nullable private ImmutableList<String> cachedGlobals = null;
   // A map from global variable names to their doc comments; added to by bind(); null if doc
   // comments for global variables are not being collected.
   @Nullable private final Map<String, DocComments> docCommentsMap;
@@ -958,6 +963,7 @@ public final class Resolver extends NodeVisitor {
         bind = new Binding(scope, globals.size(), /* isSyntactic= */ false, id);
         // Accumulate globals in module.
         globals.add(name);
+        cachedGlobals = null;
         break;
       case PREDECLARED:
       case UNIVERSAL:
@@ -1121,6 +1127,10 @@ public final class Resolver extends NodeVisitor {
     visitAll(body);
     popLocalBlock();
 
+    if (cachedGlobals == null) {
+      cachedGlobals = ImmutableList.copyOf(globals);
+    }
+
     return new Function(
         name,
         loc,
@@ -1131,7 +1141,7 @@ public final class Resolver extends NodeVisitor {
         numKeywordOnlyParams,
         frame,
         freevars,
-        globals);
+        cachedGlobals);
   }
 
   private void bindParam(ImmutableList.Builder<Parameter> params, Parameter param) {
@@ -1174,6 +1184,7 @@ public final class Resolver extends NodeVisitor {
         isNew = true;
         bind = new Binding(Scope.GLOBAL, globals.size(), /* isSyntactic= */ true, id);
         globals.add(name);
+        cachedGlobals = null;
         if (docComments != null && docCommentsMap != null) {
           docCommentsMap.put(name, docComments);
         }
@@ -1353,7 +1364,7 @@ public final class Resolver extends NodeVisitor {
             /* numKeywordOnlyParams= */ 0,
             frame,
             /* freevars= */ ImmutableList.of(),
-            r.globals));
+            ImmutableList.copyOf(r.globals)));
   }
 
   /**
@@ -1391,7 +1402,7 @@ public final class Resolver extends NodeVisitor {
         /* numKeywordOnlyParams= */ 0,
         frame,
         /* freevars= */ ImmutableList.of(),
-        r.globals);
+        ImmutableList.copyOf(r.globals));
   }
 
   private void pushLocalBlock(
