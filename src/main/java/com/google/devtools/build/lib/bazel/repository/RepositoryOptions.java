@@ -192,6 +192,18 @@ public abstract class RepositoryOptions extends OptionsBase {
   public abstract boolean getDisableDownload();
 
   @Option(
+      name = "repository_max_download_size_without_checksum",
+      defaultValue = "64M",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      converter = Converters.ByteSizeConverter.class,
+      help =
+          "The maximum size of a repository download without a checksum. Downloads larger than"
+              + " this value must specify a sha256 or integrity attribute. A value of 0 disables"
+              + " the limit.")
+  public abstract long getMaxDownloadSizeWithoutChecksum();
+
+  @Option(
       name = "experimental_repository_downloader_retries",
       defaultValue = "5",
       documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
