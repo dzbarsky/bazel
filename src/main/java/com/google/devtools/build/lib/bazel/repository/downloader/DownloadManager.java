@@ -69,6 +69,7 @@ public class DownloadManager {
   private final HttpDownloader bzlmodHttpDownloader;
   private final ExtendedEventHandler eventHandler;
   private boolean disableDownload = false;
+  private long maxDownloadSizeWithoutChecksum = 0;
   private int retries = 0;
   @Nullable private Credentials netrcCreds;
   private CredentialFactory credentialFactory = StaticCredentials::new;
@@ -107,6 +108,11 @@ public class DownloadManager {
 
   public void setDisableDownload(boolean disableDownload) {
     this.disableDownload = disableDownload;
+  }
+
+  public void setMaxDownloadSizeWithoutChecksum(long maxDownloadSizeWithoutChecksum) {
+    checkArgument(maxDownloadSizeWithoutChecksum >= 0, "Invalid maximum download size");
+    this.maxDownloadSizeWithoutChecksum = maxDownloadSizeWithoutChecksum;
   }
 
   public void setRetries(int retries) {
@@ -356,6 +362,24 @@ public class DownloadManager {
         if (!shouldRetryDownload(e, attempt)) {
           throw e;
         }
+      }
+    }
+
+    if (checksum.isEmpty() && maxDownloadSizeWithoutChecksum > 0) {
+      long downloadSize = destination.getFileSize();
+      if (downloadSize > maxDownloadSizeWithoutChecksum) {
+        IOException sizeException =
+            new IOException(
+                String.format(
+                    "Downloaded %s from %s without a checksum: %d bytes exceeds the %d-byte limit. "
+                        + "Add a sha256 or integrity attribute to the repository rule.",
+                    context, mainUrl, downloadSize, maxDownloadSizeWithoutChecksum));
+        try {
+          destination.delete();
+        } catch (IOException e) {
+          sizeException.addSuppressed(e);
+        }
+        throw sizeException;
       }
     }
 
