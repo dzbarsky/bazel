@@ -217,6 +217,55 @@ public class HttpDownloaderTest {
   }
 
   @Test
+  public void downloadWithoutChecksum_aboveConfiguredLimitFails() throws Exception {
+    byte[] data = "content".getBytes(UTF_8);
+    Path output = fs.getPath(workingDir.newFile().getAbsolutePath());
+
+    IOException e =
+        assertThrows(
+            IOException.class,
+            () -> downloadContentWithLimit(data, data.length - 1, Optional.empty(), output));
+
+    assertThat(e)
+        .hasMessageThat()
+        .isEqualTo(
+            "Downloaded testRepo from http://localhost/file without a checksum: 7 bytes exceeds"
+                + " the 6-byte limit. Add a sha256 or integrity attribute to the repository"
+                + " rule.");
+    assertThat(output.exists()).isFalse();
+  }
+
+  @Test
+  public void downloadWithoutChecksum_atConfiguredLimitSucceeds() throws Exception {
+    byte[] data = "content".getBytes(UTF_8);
+
+    Path result = downloadContentWithLimit(data, data.length, Optional.empty());
+
+    assertThat(result.getInputStream().readAllBytes()).isEqualTo(data);
+  }
+
+  @Test
+  public void downloadWithChecksum_aboveConfiguredLimitSucceeds() throws Exception {
+    byte[] data = "content".getBytes(UTF_8);
+    Checksum checksum =
+        Checksum.fromString(
+            DownloadCache.KeyType.SHA256, Hashing.sha256().hashBytes(data).toString());
+
+    Path result = downloadContentWithLimit(data, data.length - 1, Optional.of(checksum));
+
+    assertThat(result.getInputStream().readAllBytes()).isEqualTo(data);
+  }
+
+  @Test
+  public void downloadWithoutChecksum_zeroLimitSucceeds() throws Exception {
+    byte[] data = "content".getBytes(UTF_8);
+
+    Path result = downloadContentWithLimit(data, 0, Optional.empty());
+
+    assertThat(result.getInputStream().readAllBytes()).isEqualTo(data);
+  }
+
+  @Test
   public void downloadFromOpaqueFileUrl_withType() throws Exception {
     Downloader downloader = mock(Downloader.class);
     DownloadManager downloadManager =
@@ -1161,5 +1210,50 @@ public class HttpDownloaderTest {
       assertThat(downloadPhaser.getPhase()).isNotEqualTo(0);
       return downloadedPath;
     }
+  }
+
+  private Path downloadContentWithLimit(
+      byte[] data, long maxDownloadSizeWithoutChecksum, Optional<Checksum> checksum)
+      throws Exception {
+    return downloadContentWithLimit(
+        data,
+        maxDownloadSizeWithoutChecksum,
+        checksum,
+        fs.getPath(workingDir.newFile().getAbsolutePath()));
+  }
+
+  private Path downloadContentWithLimit(
+      byte[] data,
+      long maxDownloadSizeWithoutChecksum,
+      Optional<Checksum> checksum,
+      Path output)
+      throws Exception {
+    Downloader downloader = mock(Downloader.class);
+    DownloadManager downloadManager =
+        new DownloadManager(downloadCache, downloader, httpDownloader, eventHandler);
+    downloadManager.setMaxDownloadSizeWithoutChecksum(maxDownloadSizeWithoutChecksum);
+    doAnswer(
+            (Answer<Void>)
+                invocationOnMock -> {
+                  Path output = invocationOnMock.getArgument(5, Path.class);
+                  try (OutputStream outputStream = output.getOutputStream()) {
+                    outputStream.write(data);
+                  }
+                  return null;
+                })
+        .when(downloader)
+        .download(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq("testRepo"));
+
+    return download(
+        downloadManager,
+        ImmutableList.of(URI.create("http://localhost/file")),
+        ImmutableMap.of(),
+        ImmutableMap.of(),
+        checksum,
+        "testCanonicalId",
+        Optional.empty(),
+        output,
+        ImmutableMap.of(),
+        "testRepo");
   }
 }
