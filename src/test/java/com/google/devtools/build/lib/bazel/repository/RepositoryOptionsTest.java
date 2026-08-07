@@ -22,6 +22,7 @@ import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.ModuleOv
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.RepositoryOverride;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.RepositoryOverrideConverter;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingException;
 import org.junit.Rule;
 import org.junit.Test;
@@ -94,4 +95,20 @@ public class RepositoryOptionsTest {
     converter.convert("foo/bar=/baz");
   }
 
+  @Test
+  public void maxDownloadSizeWithoutChecksum_parsesByteSizes() throws Exception {
+    OptionsParser parser =
+        OptionsParser.builder().optionsClasses(RepositoryOptions.class).build();
+
+    assertThat(parser.getOptions(RepositoryOptions.class).maxDownloadSizeWithoutChecksum)
+        .isEqualTo(64L * 1024 * 1024);
+
+    parser.parse("--repository_max_download_size_without_checksum=12M");
+    assertThat(parser.getOptions(RepositoryOptions.class).maxDownloadSizeWithoutChecksum)
+        .isEqualTo(12L * 1024 * 1024);
+
+    parser.parse("--repository_max_download_size_without_checksum=0");
+    assertThat(parser.getOptions(RepositoryOptions.class).maxDownloadSizeWithoutChecksum)
+        .isEqualTo(0);
+  }
 }
