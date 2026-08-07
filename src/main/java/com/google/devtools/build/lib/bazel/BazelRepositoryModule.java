@@ -302,6 +302,8 @@ public class BazelRepositoryModule extends BlazeModule {
     if (repoOptions != null) {
       downloadManager.setDisableDownload(repoOptions.disableDownload);
       requireRepoExtensionMetadataMode = repoOptions.requireRepoExtensionMetadata;
+      downloadManager.setMaxDownloadSizeWithoutChecksum(
+          repoOptions.maxDownloadSizeWithoutChecksum);
       if (repoOptions.repositoryDownloaderRetries >= 0) {
         downloadManager.setRetries(repoOptions.repositoryDownloaderRetries);
       }
