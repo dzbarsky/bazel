@@ -18,6 +18,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
@@ -1001,6 +1002,17 @@ public class StarlarkTransitionTest extends BuildViewTestCase {
     assertThat(t3NonExecConfig.getOptions().getStarlarkOptions())
         .containsExactly(
             Label.parseCanonicalUnchecked("//test:foo_starlark"), "transitioned cmd_value");
+  }
+
+  @Test
+  public void starlarkBuildSettingsDetailsValueKey_isInterned() {
+    Label label1 = Label.parseCanonicalUnchecked("//test:flag");
+    Label label2 = Label.parseCanonicalUnchecked("//test:flag");
+    StarlarkBuildSettingsDetailsValue.Key key1 =
+        StarlarkBuildSettingsDetailsValue.key(ImmutableSet.of(label1));
+    StarlarkBuildSettingsDetailsValue.Key key2 =
+        StarlarkBuildSettingsDetailsValue.key(ImmutableSet.of(label2));
+    assertThat(key1).isSameInstanceAs(key2);
   }
 
   private ImmutableList<ConfiguredTarget> getComputedConfiguredTarget(String label)
