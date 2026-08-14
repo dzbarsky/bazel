@@ -78,6 +78,9 @@ message RunRequest {
   // block_for_lock is true, or abort immediately if block_for_lock is false.
   // If set to 0 (or <= 0), abort immediately when the lock is held.
   optional int64 block_for_lock_timeout_ms = 10;
+
+  // Whether this command should interrupt any command that is already running.
+  bool force_preempt = 11;
 }
 
 // Contains the a startup option with its source file. Uses bytes to preserve
