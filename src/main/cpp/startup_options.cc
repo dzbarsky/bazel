@@ -96,6 +96,7 @@ StartupOptions::StartupOptions(const string& product_name,
       quiet(false),
       client_debug(false),
       preemptible(false),
+      force_preempt(false),
       java_logging_formatter(
           "com.google.devtools.build.lib.util.SingleLineFormatter"),
       digest_function(),
@@ -136,6 +137,7 @@ StartupOptions::StartupOptions(const string& product_name,
   RegisterNullaryStartupFlag("quiet", &quiet);
   RegisterNullaryStartupFlag("client_debug", &client_debug);
   RegisterNullaryStartupFlag("preemptible", &preemptible);
+  RegisterNullaryStartupFlag("force_preempt", &force_preempt);
   RegisterNullaryStartupFlag("fatal_event_bus_exceptions",
                              &fatal_event_bus_exceptions);
   RegisterNullaryStartupFlag("host_jvm_debug", &host_jvm_debug);
