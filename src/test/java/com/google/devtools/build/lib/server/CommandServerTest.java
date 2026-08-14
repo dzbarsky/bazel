@@ -142,6 +142,10 @@ public final class CommandServerTest {
         .build();
   }
 
+  private static RunRequest createForcePreemptRequest(String... args) {
+    return createRequest(args).toBuilder().setForcePreempt(true).build();
+  }
+
   @Test
   public void testSendingSimpleMessage() throws Exception {
     Any commandExtension = Any.pack(EnvironmentVariable.getDefaultInstance()); // Arbitrary message.
@@ -915,6 +919,82 @@ public final class CommandServerTest {
     assertThat(lastFooResponse.get().getFailureDetail().hasInterrupted()).isTrue();
     assertThat(lastFooResponse.get().getFailureDetail().getInterrupted().getCode())
         .isEqualTo(Code.INTERRUPTED);
+  }
+
+  @Test
+  public void testForcePreempt() throws Exception {
+    String firstCommandArg = "Foo";
+    String secondCommandArg = "Bar";
+    CountDownLatch firstCommandStarted = new CountDownLatch(1);
+    AtomicReference<Duration> secondCommandLockTimeout = new AtomicReference<>();
+
+    CommandDispatcher dispatcher =
+        new CommandDispatcher() {
+          @Override
+          public BlazeCommandResult exec(
+              InvocationPolicy invocationPolicy,
+              List<String> args,
+              OutErr outErr,
+              Duration blockForLockTimeout,
+              UiVerbosity uiVerbosity,
+              String clientDescription,
+              long firstContactTimeMillis,
+              Optional<List<Pair<String, String>>> startupOptionsTaggedWithBazelRc,
+              Supplier<ImmutableList<IdleTask.Result>> idleTaskResultsSupplier,
+              List<Any> commandExtensions,
+              CommandExtensionReporter commandExtensionReporter) {
+            if (args.contains(firstCommandArg)) {
+              firstCommandStarted.countDown();
+              try {
+                new CountDownLatch(1).await();
+                throw new IllegalStateException("First command was not interrupted");
+              } catch (InterruptedException expected) {
+                return BlazeCommandResult.failureDetail(
+                    FailureDetail.newBuilder()
+                        .setInterrupted(Interrupted.newBuilder().setCode(Code.INTERRUPTED))
+                        .build());
+              }
+            }
+            secondCommandLockTimeout.set(blockForLockTimeout);
+            return BlazeCommandResult.success();
+          }
+        };
+    createServer(dispatcher);
+
+    List<RunResponse> firstCommandResponses = new ArrayList<>();
+    CountDownLatch firstCommandDone = new CountDownLatch(1);
+    CommandServerStub stub = CommandServerGrpc.newStub(channel);
+    stub.run(
+        createRequest(firstCommandArg),
+        createResponseObserver(firstCommandResponses, firstCommandDone));
+    firstCommandStarted.await();
+
+    List<RunResponse> secondCommandResponses = new ArrayList<>();
+    CountDownLatch secondCommandDone = new CountDownLatch(1);
+    stub.run(
+        createForcePreemptRequest(secondCommandArg),
+        createResponseObserver(secondCommandResponses, secondCommandDone));
+
+    firstCommandDone.await();
+    secondCommandDone.await();
+    server.shutdown();
+    server.awaitTermination();
+
+    RunResponse firstCommandFinalResponse =
+        firstCommandResponses.get(firstCommandResponses.size() - 1);
+    assertThat(firstCommandFinalResponse.getFinished()).isTrue();
+    assertThat(firstCommandFinalResponse.getExitCode()).isEqualTo(8);
+    assertThat(firstCommandFinalResponse.hasFailureDetail()).isTrue();
+    assertThat(firstCommandFinalResponse.getFailureDetail().hasInterrupted()).isTrue();
+    assertThat(firstCommandFinalResponse.getFailureDetail().getInterrupted().getCode())
+        .isEqualTo(Code.INTERRUPTED);
+
+    RunResponse secondCommandFinalResponse =
+        secondCommandResponses.get(secondCommandResponses.size() - 1);
+    assertThat(secondCommandFinalResponse.getFinished()).isTrue();
+    assertThat(secondCommandFinalResponse.getExitCode()).isEqualTo(0);
+    assertThat(secondCommandFinalResponse.hasFailureDetail()).isFalse();
+    assertThat(secondCommandLockTimeout.get()).isEqualTo(Duration.ofMillis(Long.MAX_VALUE));
   }
 
   /**
