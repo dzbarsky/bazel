@@ -398,6 +398,16 @@ public class BlazeServerStartupOptions extends OptionsBase {
   public boolean preemptible;
 
   @Option(
+      name = "force_preempt",
+      defaultValue = "false", // NOTE: only for documentation, value is set and used by the client.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.EAGERNESS_TO_EXIT},
+      help =
+          "If true, interrupts any running command, waits for it to stop, and then runs this "
+              + "command. This option takes precedence over --noblock_for_lock.")
+  public boolean forcePreempt;
+
+  @Option(
       name = "connect_timeout_secs",
       defaultValue = "30", // NOTE: only for documentation, value is set and used by the client.
       documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,

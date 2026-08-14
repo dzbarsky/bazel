@@ -18,6 +18,7 @@ import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.Arrays.asList;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
@@ -429,6 +430,27 @@ public final class BlazeCommandDispatcherTest {
     assertThat(outErr.outAsLatin1()).isEqualTo("Hello, foo.");
     outErr.reset();
     dispatch.exec(asList("bar"), "test", outErr);
+    assertThat(outErr.outAsLatin1()).isEqualTo("Hello, bar.\n");
+  }
+
+  @Test
+  public void interruptedCommandDoesNotAcquireAvailableLock() throws Exception {
+    runtime.overrideCommands(ImmutableList.of(foo, bar));
+    BlazeCommandDispatcher dispatch = new BlazeCommandDispatcher(runtime);
+
+    Thread.currentThread().interrupt();
+    assertThrows(
+        InterruptedException.class,
+        () ->
+            dispatch.exec(
+                ImmutableList.of("foo", "--stdout=unexpected"),
+                "interrupted client",
+                outErr));
+    assertThat(outErr.outAsLatin1()).isEmpty();
+
+    BlazeCommandResult result =
+        dispatch.exec(ImmutableList.of("bar"), "subsequent client", outErr);
+    assertThat(result.getDetailedExitCode().isSuccess()).isTrue();
     assertThat(outErr.outAsLatin1()).isEqualTo("Hello, bar.\n");
   }
 

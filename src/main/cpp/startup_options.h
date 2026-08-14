@@ -259,6 +259,10 @@ class StartupOptions {
   // run.
   bool preemptible;
 
+  // Whether the resulting command will preempt any command that is already
+  // running.
+  bool force_preempt;
+
   // Value of the java.util.logging.FileHandler.formatter Java property.
   std::string java_logging_formatter;
 

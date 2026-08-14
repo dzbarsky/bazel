@@ -241,6 +241,7 @@ TEST_F(BazelStartupOptionsTest, ValidStartupFlags) {
   ExpectValidNullaryOption(options, "block_for_lock");
   ExpectValidNullaryOption(options, "client_debug");
   ExpectValidNullaryOption(options, "fatal_event_bus_exceptions");
+  ExpectValidNullaryOption(options, "force_preempt");
   ExpectValidNullaryOption(options, "home_rc");
   ExpectValidNullaryOption(options, "host_jvm_debug");
   ExpectValidNullaryOption(options, "autodetect_server_javabase");

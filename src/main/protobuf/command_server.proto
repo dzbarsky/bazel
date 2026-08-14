@@ -72,6 +72,9 @@ message RunRequest {
   // arbitrary messages which the server may be programmed to recognize and
   // consume. Unrecognized message types are ignored.
   repeated google.protobuf.Any command_extensions = 8;
+
+  // Whether this command should interrupt any command that is already running.
+  bool force_preempt = 10;
 }
 
 // Contains the a startup option with its source file. Uses bytes to preserve
