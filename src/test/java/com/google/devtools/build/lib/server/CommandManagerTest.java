@@ -54,6 +54,70 @@ public class CommandManagerTest {
   }
 
   @Test
+  public void forcePreemptingRunCommandInterruptsNonPreemptibleRunCommand() throws Exception {
+    CommandManager underTest =
+        new CommandManager(/* doIdleServerTasks= */ false, "slow interrupt message suffix");
+    CountDownLatch firstCommandRegistered = new CountDownLatch(1);
+    AtomicBoolean firstCommandInterrupted = new AtomicBoolean(false);
+
+    TestThread firstCommandThread =
+        new TestThread(
+            () -> {
+              try (RunningCommand firstCommand =
+                  underTest.createRunCommand(
+                      /* preemptible= */ false, /* forcePreempt= */ false)) {
+                firstCommandRegistered.countDown();
+                try {
+                  new CountDownLatch(1).await();
+                } catch (InterruptedException expected) {
+                  firstCommandInterrupted.set(true);
+                }
+              }
+            });
+    firstCommandThread.start();
+    firstCommandRegistered.await();
+
+    try (RunningCommand forcePreemptingCommand =
+        underTest.createRunCommand(/* preemptible= */ false, /* forcePreempt= */ true)) {
+      firstCommandThread.joinAndAssertState(TestUtils.WAIT_TIMEOUT_MILLISECONDS);
+      assertThat(firstCommandInterrupted.get()).isTrue();
+    }
+  }
+
+  @Test
+  public void forcePreemptingRunCommandDoesNotInterruptAdministrativeCommand() throws Exception {
+    CommandManager underTest =
+        new CommandManager(/* doIdleServerTasks= */ false, "slow interrupt message suffix");
+    CountDownLatch administrativeCommandRegistered = new CountDownLatch(1);
+    CountDownLatch releaseAdministrativeCommand = new CountDownLatch(1);
+    AtomicBoolean administrativeCommandInterrupted = new AtomicBoolean(false);
+
+    TestThread administrativeCommandThread =
+        new TestThread(
+            () -> {
+              try (RunningCommand administrativeCommand = underTest.createCommand()) {
+                administrativeCommandRegistered.countDown();
+                try {
+                  releaseAdministrativeCommand.await();
+                } catch (InterruptedException expected) {
+                  administrativeCommandInterrupted.set(true);
+                }
+              }
+            });
+    administrativeCommandThread.start();
+    administrativeCommandRegistered.await();
+
+    try (RunningCommand forcePreemptingCommand =
+        underTest.createRunCommand(/* preemptible= */ false, /* forcePreempt= */ true)) {
+      assertThat(administrativeCommandInterrupted.get()).isFalse();
+    } finally {
+      releaseAdministrativeCommand.countDown();
+    }
+    administrativeCommandThread.joinAndAssertState(TestUtils.WAIT_TIMEOUT_MILLISECONDS);
+    assertThat(administrativeCommandInterrupted.get()).isFalse();
+  }
+
+  @Test
   public void testNotifiesOnBusyAndIdle() throws Exception {
     AtomicInteger notificationCounter = new AtomicInteger(0);
     CommandManager underTest =

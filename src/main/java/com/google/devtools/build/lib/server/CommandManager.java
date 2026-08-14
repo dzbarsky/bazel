@@ -67,24 +67,6 @@ class CommandManager {
     idle(Optional.empty());
   }
 
-  void preemptEligibleCommands() {
-    synchronized (runningCommandsMap) {
-      ImmutableSet.Builder<String> commandsToInterruptBuilder = new ImmutableSet.Builder<>();
-
-      for (RunningCommand command : runningCommandsMap.values()) {
-        if (command.isPreemptible()) {
-          command.thread.interrupt();
-          commandsToInterruptBuilder.add(command.id);
-        }
-      }
-
-      ImmutableSet<String> commandsToInterrupt = commandsToInterruptBuilder.build();
-      if (!commandsToInterrupt.isEmpty()) {
-        startSlowInterruptWatcher(commandsToInterrupt);
-      }
-    }
-  }
-
   void interruptInflightCommands() {
     synchronized (runningCommandsMap) {
       for (RunningCommand command : runningCommandsMap.values()) {
@@ -130,26 +112,51 @@ class CommandManager {
     }
   }
 
-  RunningCommand createPreemptibleCommand() {
-    RunningCommand command = new RunningCommand(true);
+  RunningCommand createCommand() {
+    RunningCommand command = new RunningCommand(/* preemptible= */ false, /* runCommand= */ false);
     registerCommand(command);
     return command;
   }
 
-  RunningCommand createCommand() {
-    RunningCommand command = new RunningCommand(false);
-    registerCommand(command);
+  RunningCommand createRunCommand(boolean preemptible, boolean forcePreempt) {
+    RunningCommand command = new RunningCommand(preemptible, /* runCommand= */ true);
+    ImmutableSet<String> commandsToInterrupt;
+    synchronized (runningCommandsMap) {
+      ImmutableSet.Builder<String> commandsToInterruptBuilder = new ImmutableSet.Builder<>();
+      for (RunningCommand runningCommand : runningCommandsMap.values()) {
+        if (runningCommand.isRunCommand()
+            && (forcePreempt || runningCommand.isPreemptible())) {
+          runningCommand.thread.interrupt();
+          commandsToInterruptBuilder.add(runningCommand.id);
+        }
+      }
+      commandsToInterrupt = commandsToInterruptBuilder.build();
+      registerCommandLocked(command);
+    }
+    if (!commandsToInterrupt.isEmpty()) {
+      startSlowInterruptWatcher(commandsToInterrupt);
+    }
+    logCommandStarted(command);
     return command;
   }
 
   private void registerCommand(RunningCommand command) {
     synchronized (runningCommandsMap) {
-      if (runningCommandsMap.isEmpty()) {
-        busy();
-      }
-      runningCommandsMap.put(command.id, command);
-      runningCommandsMap.notify();
+      registerCommandLocked(command);
     }
+    logCommandStarted(command);
+  }
+
+  @GuardedBy("runningCommandsMap")
+  private void registerCommandLocked(RunningCommand command) {
+    if (runningCommandsMap.isEmpty()) {
+      busy();
+    }
+    runningCommandsMap.put(command.id, command);
+    runningCommandsMap.notify();
+  }
+
+  private static void logCommandStarted(RunningCommand command) {
     logger.atInfo().log("Starting command %s on thread %s", command.id, command.thread.getName());
   }
 
@@ -229,12 +236,14 @@ class CommandManager {
     private final Thread thread;
     private final String id;
     private final boolean preemptible;
+    private final boolean runCommand;
     private Optional<ImmutableList<IdleTask>> idleTasks = Optional.empty();
 
-    private RunningCommand(boolean preemptible) {
+    private RunningCommand(boolean preemptible, boolean runCommand) {
       thread = Thread.currentThread();
       id = UUID.randomUUID().toString();
       this.preemptible = preemptible;
+      this.runCommand = runCommand;
     }
 
     @Override
@@ -256,6 +265,10 @@ class CommandManager {
 
     boolean isPreemptible() {
       return preemptible;
+    }
+
+    boolean isRunCommand() {
+      return runCommand;
     }
 
     /**

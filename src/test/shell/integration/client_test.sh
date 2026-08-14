@@ -560,6 +560,60 @@ function test_noblock_for_lock_with_batch() {
       "Exiting because the output base lock is held and --noblock_for_lock was given"
 }
 
+function test_force_preempt() {
+  local -r ready="$TEST_TMPDIR/force-preempt-ready"
+  local -r first_log="$TEST_TMPDIR/force-preempt-first.log"
+  local -r second_log="$TEST_TMPDIR/force-preempt-second.log"
+  local -r server_pid="$(bazel info server_pid 2>>"$TEST_log")"
+
+  mkdir -p force_preempt
+  cat > force_preempt/BUILD <<EOF
+genrule(
+    name = "sleepy",
+    outs = ["sleepy.out"],
+    local = True,
+    cmd = "touch '$ready'; sleep 9999; touch \$@",
+)
+EOF
+
+  bazel build //force_preempt:sleepy >"$first_log" 2>&1 &
+  local -r first_pid="$!"
+  local wait_attempts=0
+  while [[ ! -e "$ready" && "$wait_attempts" -lt 30 ]]; do
+    if ! kill -0 "$first_pid" 2>/dev/null; then
+      cat "$first_log" >>"$TEST_log"
+      fail "first command exited before its action started"
+    fi
+    wait_attempts=$((wait_attempts + 1))
+    sleep 1
+  done
+
+  if [[ ! -e "$ready" ]]; then
+    kill -INT "$first_pid" 2>/dev/null || true
+    wait "$first_pid" || true
+    cat "$first_log" >>"$TEST_log"
+    fail "first command did not start its action"
+  fi
+
+  local force_preempt_server_pid
+  if ! force_preempt_server_pid="$(
+      bazel --force_preempt --noblock_for_lock info server_pid 2>"$second_log"
+  )"; then
+    kill -INT "$first_pid" 2>/dev/null || true
+    wait "$first_pid" || true
+    cat "$first_log" "$second_log" >>"$TEST_log"
+    fail "force-preempting command failed"
+  fi
+
+  local first_exit_code=0
+  wait "$first_pid" || first_exit_code=$?
+  cat "$first_log" "$second_log" >>"$TEST_log"
+
+  assert_equals 8 "$first_exit_code"
+  assert_equals "$server_pid" "$force_preempt_server_pid"
+  expect_not_log "WARNING.* Running B\\(azel\\|laze\\) server needs to be killed"
+}
+
 function test_no_arguments() {
   bazel >&$TEST_log || fail "Expected zero exit"
   expect_log "Usage: b\\(laze\\|azel\\)"
