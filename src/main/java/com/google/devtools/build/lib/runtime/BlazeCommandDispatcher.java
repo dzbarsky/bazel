@@ -266,6 +266,11 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
         multipleAttempts = true;
       }
       currentClientDescription = clientDescription;
+      if (Thread.interrupted()) {
+        currentClientDescription = null;
+        commandLock.notify();
+        throw new InterruptedException();
+      }
     }
     // If we took the lock on the first try, force the reported wait time to 0 to avoid unnecessary
     // noise in the logs.  In this metric, we are only interested in knowing how long it took for

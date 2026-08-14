@@ -278,6 +278,7 @@ class BlazeServer final {
   const bool block_for_lock_;
   const bool quiet_;
   const bool preemptible_;
+  const bool force_preempt_;
   const bool lock_install_base_;
   const blaze_util::Path install_base_;
   const blaze_util::Path output_base_;
@@ -1001,6 +1002,7 @@ static bool IsVolatileArg(const string &arg) {
   static const std::set<string> volatile_startup_options = {
       "--option_sources=", "--max_idle_secs=", "--connect_timeout_secs=",
       "--local_startup_timeout_secs=", "--client_debug=", "--preemptible=",
+      "--force_preempt=",
       // Internally, -XX:HeapDumpPath is set automatically via the user's TMPDIR
       // environment variable. Since that can change based on the shell, we
       // tolerate changes to it. Note that an explicit setting of
@@ -1718,9 +1720,11 @@ BlazeServer::BlazeServer(const StartupOptions &startup_options,
                     startup_options.server_jvm_out),
       connect_timeout_secs_(startup_options.connect_timeout_secs),
       batch_(startup_options.batch),
-      block_for_lock_(startup_options.block_for_lock),
+      block_for_lock_(startup_options.block_for_lock ||
+                      startup_options.force_preempt),
       quiet_(startup_options.quiet),
       preemptible_(startup_options.preemptible),
+      force_preempt_(startup_options.force_preempt),
       lock_install_base_(startup_options.lock_install_base),
       install_base_(startup_options.install_base),
       output_base_(startup_options.output_base),
@@ -1952,6 +1956,7 @@ void BlazeServer::KillRunningServer() {
   command_server::RunResponse response;
   request.set_cookie(request_cookie_);
   request.set_block_for_lock(block_for_lock_);
+  request.set_force_preempt(force_preempt_);
   request.set_client_description("pid=" + blaze::GetProcessIdAsString() +
                                  " (for shutdown)");
   request.add_arg("shutdown");
@@ -2040,6 +2045,7 @@ unsigned int BlazeServer::Communicate(
   request.set_block_for_lock(block_for_lock_);
   request.set_quiet(quiet_);
   request.set_preemptible(preemptible_);
+  request.set_force_preempt(force_preempt_);
   request.set_client_description("pid=" + blaze::GetProcessIdAsString());
   for (const string &arg : arg_vector) {
     request.add_arg(arg);
