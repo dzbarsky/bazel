@@ -471,12 +471,8 @@ public class CommandServer implements GrpcCommandServer.Callback {
               platformBytesToInternalString(option.getOption())));
     }
 
-    commandManager.preemptEligibleCommands();
-
     try (RunningCommand command =
-        request.getPreemptible()
-            ? commandManager.createPreemptibleCommand()
-            : commandManager.createCommand()) {
+        commandManager.createRunCommand(request.getPreemptible(), request.getForcePreempt())) {
       commandId = command.getId();
 
       try {
@@ -507,9 +503,13 @@ public class CommandServer implements GrpcCommandServer.Callback {
         InvocationPolicy policy = InvocationPolicyParser.parsePolicy(request.getInvocationPolicy());
         logger.atInfo().log("Executing command %s", SafeRequestLogging.getRequestLogString(args));
         Duration blockForLockTimeout =
-            request.hasBlockForLockTimeoutMs()
-                ? Duration.ofMillis(Math.max(0, request.getBlockForLockTimeoutMs()))
-                : (request.getBlockForLock() ? Duration.ofMillis(Long.MAX_VALUE) : Duration.ZERO);
+            request.getForcePreempt()
+                ? Duration.ofMillis(Long.MAX_VALUE)
+                : request.hasBlockForLockTimeoutMs()
+                    ? Duration.ofMillis(Math.max(0, request.getBlockForLockTimeoutMs()))
+                    : (request.getBlockForLock()
+                        ? Duration.ofMillis(Long.MAX_VALUE)
+                        : Duration.ZERO);
         result =
             dispatcher.exec(
                 policy,
