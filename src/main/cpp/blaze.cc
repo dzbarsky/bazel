@@ -346,6 +346,7 @@ class BlazeServer final {
   const absl::Duration block_for_lock_timeout_;
   const bool quiet_;
   const bool preemptible_;
+  const bool force_preempt_;
   const bool lock_install_base_;
   const blaze_util::Path output_base_;
   CommandExtensionAdder* command_extension_adder_;
@@ -1096,6 +1097,7 @@ static bool IsVolatileArg(const string &arg) {
   static const std::set<string> volatile_startup_options = {
       "--option_sources=", "--max_idle_secs=", "--connect_timeout_secs=",
       "--local_startup_timeout_secs=", "--client_debug=", "--preemptible=",
+      "--force_preempt=",
       // Internally, -XX:HeapDumpPath is set automatically via the user's TMPDIR
       // environment variable. Since that can change based on the shell, we
       // tolerate changes to it. Note that an explicit setting of
@@ -1783,9 +1785,13 @@ BlazeServer::BlazeServer(const StartupOptions& startup_options,
       process_info_(startup_options.output_base,
                     startup_options.server_jvm_out),
       connect_timeout_secs_(startup_options.connect_timeout_secs),
-      block_for_lock_timeout_(startup_options.block_for_lock_timeout),
+      block_for_lock_timeout_(
+          startup_options.force_preempt
+              ? absl::InfiniteDuration()
+              : startup_options.block_for_lock_timeout),
       quiet_(startup_options.quiet),
       preemptible_(startup_options.preemptible),
+      force_preempt_(startup_options.force_preempt),
       lock_install_base_(startup_options.lock_install_base),
       output_base_(startup_options.output_base),
       command_extension_adder_(command_extension_adder) {
@@ -2026,6 +2032,7 @@ void BlazeServer::KillRunningServer() {
     request.set_block_for_lock_timeout_ms(
         absl::ToInt64Milliseconds(block_for_lock_timeout_));
   }
+  request.set_force_preempt(force_preempt_);
   request.set_client_description("pid=" + blaze::GetProcessIdAsString() +
                                  " (for shutdown)");
   request.add_arg("shutdown");
@@ -2126,6 +2133,7 @@ unsigned int BlazeServer::Communicate(
   }
   request.set_quiet(quiet_);
   request.set_preemptible(preemptible_);
+  request.set_force_preempt(force_preempt_);
   request.set_client_description("pid=" + blaze::GetProcessIdAsString());
   for (const string &arg : arg_vector) {
     request.add_arg(arg);
