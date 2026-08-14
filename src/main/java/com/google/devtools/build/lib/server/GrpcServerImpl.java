@@ -575,12 +575,8 @@ public class GrpcServerImpl extends CommandServerGrpc.CommandServerImplBase {
               platformBytesToInternalString(option.getOption())));
     }
 
-    commandManager.preemptEligibleCommands();
-
     try (RunningCommand command =
-        request.getPreemptible()
-            ? commandManager.createPreemptibleCommand()
-            : commandManager.createCommand()) {
+        commandManager.createRunCommand(request.getPreemptible(), request.getForcePreempt())) {
       commandId = command.getId();
 
       try {
@@ -611,7 +607,9 @@ public class GrpcServerImpl extends CommandServerGrpc.CommandServerImplBase {
                 policy,
                 args,
                 rpcOutErr,
-                request.getBlockForLock() ? LockingMode.WAIT : LockingMode.ERROR_OUT,
+                request.getForcePreempt() || request.getBlockForLock()
+                    ? LockingMode.WAIT
+                    : LockingMode.ERROR_OUT,
                 request.getQuiet() ? UiVerbosity.QUIET : UiVerbosity.NORMAL,
                 request.getClientDescription(),
                 clock.currentTimeMillis(),
