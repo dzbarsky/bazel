@@ -1,5 +1,6 @@
 """Rules for building Bazel's native-image server."""
 
+load("@apple_support//lib:apple_support.bzl", "apple_support")
 load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "CPP_LINK_EXECUTABLE_ACTION_NAME", "C_COMPILE_ACTION_NAME")
 load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
@@ -7,8 +8,8 @@ load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 _MAIN_CLASS = "com.google.devtools.build.lib.bazel.Bazel"
 
 # Bazel's server image needs generated native-image configs and the
-# libmanagement_ext.so side output, which the public rules_graalvm native_image
-# rule cannot currently declare.
+# libmanagement_ext.so or libmanagement_ext.dylib output, which the public
+# rules_graalvm native_image rule cannot currently declare.
 def _resolve_cc_toolchain(ctx):
     cc_toolchain = find_cpp_toolchain(ctx)
 
@@ -75,6 +76,10 @@ def _bazel_server_native_image_impl(ctx):
     if ctx.attr.pgo_instrument and ctx.files.pgo_profiles:
         fail("pgo_instrument and pgo_profiles cannot both be set")
 
+    is_macos = ctx.target_platform_has_constraint(
+        ctx.attr._macos_constraint[platform_common.ConstraintValueInfo],
+    )
+
     classpath = depset([ctx.file.deploy_jar])
 
     generated_reflection_configs = [
@@ -106,12 +111,14 @@ def _bazel_server_native_image_impl(ctx):
         inputs = [ctx.file.deploy_jar],
         tools = [ctx.executable._config_generator],
         outputs = [dynamic_proxy_config] + generated_reflection_configs,
+        execution_requirements = {"no-remote": ""} if is_macos else {},
         mnemonic = "BazelNativeImageConfig",
         progress_message = "Generating native-image configs %{label}",
     )
 
     binary = ctx.actions.declare_file(ctx.attr.output_path or ctx.attr.executable_name)
-    jdk_library = ctx.actions.declare_file(ctx.attr.jdk_library_path or "libmanagement_ext.so")
+    management_library_name = "libmanagement_ext.dylib" if is_macos else "libmanagement_ext.so"
+    jdk_library = ctx.actions.declare_file(ctx.attr.jdk_library_path or management_library_name)
     build_output_json = ctx.actions.declare_file(ctx.attr.name + "/build-output.json")
     bundle = ctx.actions.declare_file(ctx.attr.name + "/native-image.nib")
 
@@ -152,30 +159,64 @@ def _bazel_server_native_image_impl(ctx):
     args.add(ctx.file.jni_configuration, format = "-H:JNIConfigurationFiles=%s")
     args.add(dynamic_proxy_config, format = "-H:DynamicProxyConfigurationFiles=%s")
     args.add(ctx.attr.include_resources, format = "-H:IncludeResources=%s")
-    args.add("-march=x86-64-v2")
+    if not is_macos:
+        args.add("-march=x86-64-v2")
     args.add(cc_toolchain.c_compiler_path, format = "--native-compiler-path=%s")
     if ctx.attr.parallelism > 0:
         args.add(ctx.attr.parallelism, format = "--parallelism=%s")
     args.add("-o")
     args.add(binary)
     args.add_joined("-cp", classpath, join_with = ctx.configuration.host_path_separator)
-    args.add(
-        "--initialize-at-run-time=com.google.devtools.build.lib.profiler.SystemNetworkStatsServiceImpl,com.google.devtools.build.lib.unix.ProcessUtilsServiceImpl,com.google.devtools.build.lib.util.StringEncoding,io.grpc.netty,io.netty.bootstrap,io.netty.buffer,io.netty.channel,io.netty.handler,io.netty.internal.tcnative,io.netty.util.NetUtil,io.netty.util.ResourceLeakDetector,io.netty.util.concurrent.AbstractScheduledEventExecutor,io.netty.util.internal.MacAddressUtil,sun.nio.fs.Util"
-    )
+    runtime_initialized_classes = [
+        "com.google.devtools.build.lib.jni.JniLoader",
+        "com.google.devtools.build.lib.profiler.SystemNetworkStats",
+        "com.google.devtools.build.lib.unix.NativePosixFiles",
+        "com.google.devtools.build.lib.unix.ProcessUtils",
+        "com.google.devtools.build.lib.util.StringEncoding",
+        "com.google.devtools.build.lib.vfs.bazel.Blake3MessageDigest",
+        "net.starlark.java.eval.CpuProfiler",
+        "io.grpc.netty",
+        "io.netty.bootstrap",
+        "io.netty.buffer",
+        "io.netty.channel",
+        "io.netty.handler",
+        "io.netty.internal.tcnative",
+        "io.netty.util.NetUtil",
+        "io.netty.util.ResourceLeakDetector",
+        "io.netty.util.concurrent.AbstractScheduledEventExecutor",
+        "io.netty.util.internal.MacAddressUtil",
+        "sun.nio.fs.Util",
+    ]
+    if is_macos:
+        runtime_initialized_classes.extend([
+            "com.google.devtools.build.lib.platform.SleepPreventionModule$SleepPrevention",
+            "com.google.devtools.build.lib.platform.SystemMemoryPressureMonitor",
+            "com.google.devtools.build.lib.platform.SystemSuspensionModule",
+            "com.google.devtools.build.lib.skyframe.MacOSXFsEventsDiffAwareness",
+        ])
+    args.add("--initialize-at-run-time=" + ",".join(runtime_initialized_classes))
     args.add(
         "--initialize-at-build-time=" + ",".join([
             "com.google.devtools.build.lib.bazel.repository.decompressor.CompressedTarFunction$MarkedIso88591Charset",
             "io.netty.util.internal.shaded.org.jctools",
-        ])
+        ]),
     )
     args.add(ctx.attr.main_class)
 
+    utf8_locale = "en_US.UTF-8" if is_macos else "C.UTF-8"
     env = dict(cc_toolchain.env)
     env.update({
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "LC_CTYPE": "C.UTF-8",
+        "LANG": utf8_locale,
+        "LC_ALL": utf8_locale,
+        "LC_CTYPE": utf8_locale,
     })
+
+    execution_requirements = {
+        requirement: ""
+        for requirement in cc_toolchain.execution_requirements
+    }
+    if is_macos:
+        execution_requirements["no-remote"] = ""
 
     native_image_inputs = depset(
         direct = direct_inputs,
@@ -194,17 +235,35 @@ def _bazel_server_native_image_impl(ctx):
         ],
     )
 
-    ctx.actions.run(
-        executable = ctx.executable.native_image_tool,
-        arguments = [args],
-        inputs = native_image_inputs,
-        outputs = [bundle],
-        env = env,
-        execution_requirements = {requirement: "" for requirement in cc_toolchain.execution_requirements},
-        mnemonic = "BazelNativeImageBundle",
-        progress_message = "Creating Bazel native-image bundle %{label}",
-        toolchain = "@bazel_tools//tools/cpp:toolchain_type",
-    )
+    bundle_action = {
+        "executable": ctx.executable.native_image_tool,
+        "inputs": native_image_inputs,
+        "outputs": [bundle],
+        "env": env,
+        "execution_requirements": execution_requirements,
+        "mnemonic": "BazelNativeImageBundle",
+        "progress_message": "Creating Bazel native-image bundle %{label}",
+        "toolchain": "@bazel_tools//tools/cpp:toolchain_type",
+    }
+    if is_macos:
+        xcode_args = ctx.actions.args()
+        for variable, value in sorted(env.items()):
+            xcode_args.add("-E{}={}".format(variable, value))
+        xcode_args.add(apple_support.path_placeholders.xcode(), format = "-EDEVELOPER_DIR=%s")
+        xcode_args.add(apple_support.path_placeholders.sdkroot(), format = "-ESDKROOT=%s")
+        apple_support.run(
+            actions = ctx.actions,
+            apple_fragment = ctx.fragments.apple,
+            xcode_config = ctx.attr._xcode_config[apple_common.XcodeVersionConfig],
+            xcode_path_resolve_level = apple_support.xcode_path_resolve_level.args,
+            arguments = [args, xcode_args],
+            **bundle_action
+        )
+    else:
+        ctx.actions.run(
+            arguments = [args],
+            **bundle_action
+        )
 
     apply_args = ctx.actions.args()
     apply_args.add(ctx.executable.native_image_tool)
@@ -213,9 +272,10 @@ def _bazel_server_native_image_impl(ctx):
     apply_args.add(binary)
     apply_args.add(jdk_library)
     apply_args.add(build_output_json)
+    apply_args.add(management_library_name)
+    apply_args.add("1" if is_macos else "0")
 
-    ctx.actions.run_shell(
-        command = """
+    apply_command = """
 set -eu
 
 execroot="$PWD"
@@ -225,13 +285,21 @@ executable_name="$3"
 binary="$4"
 jdk_library="$5"
 build_output_json="$6"
+management_library_name="$7"
+is_macos="$8"
 image_output="$execroot/$(dirname "$build_output_json")/native-image.output"
 
 chmod -R u+w "$image_output" 2>/dev/null || true
 rm -rf "$image_output"
 trap 'rm -rf "$image_output"' EXIT
 
-"$native_image_tool" "--bundle-apply=$bundle" -o "$executable_name"
+if [ "$is_macos" = "1" ]; then
+  "$native_image_tool" "--bundle-apply=$bundle" \
+    "-EDEVELOPER_DIR=$DEVELOPER_DIR" "-ESDKROOT=$SDKROOT" \
+    -o "$executable_name"
+else
+  "$native_image_tool" "--bundle-apply=$bundle" -o "$executable_name"
+fi
 
 image_source="$image_output/default/$executable_name"
 if [ ! -f "$image_source" ]; then
@@ -243,14 +311,14 @@ mv "$image_source" "$binary"
 chmod a+x "$binary"
 
 management_source=""
-for candidate in "$image_output/default/libmanagement_ext.so" "$image_output/other/libmanagement_ext.so"; do
+for candidate in "$image_output/default/$management_library_name" "$image_output/other/$management_library_name"; do
   if [ -f "$candidate" ]; then
     management_source="$candidate"
     break
   fi
 done
 if [ -z "$management_source" ]; then
-  echo "native-image bundle did not produce libmanagement_ext.so" >&2
+  echo "native-image bundle did not produce $management_library_name" >&2
   find "$image_output" -maxdepth 3 -type f >&2 || true
   exit 1
 fi
@@ -269,17 +337,28 @@ if [ -z "$build_output_source" ]; then
   exit 1
 fi
 mv "$build_output_source" "$build_output_json"
-""",
-        arguments = [apply_args],
-        inputs = native_image_apply_inputs,
-        tools = [ctx.executable.native_image_tool],
-        outputs = [binary, jdk_library, build_output_json],
-        env = env,
-        execution_requirements = {requirement: "" for requirement in cc_toolchain.execution_requirements},
-        mnemonic = "BazelNativeImage",
-        progress_message = "Building Bazel native-image server %{label}",
-        toolchain = "@bazel_tools//tools/cpp:toolchain_type",
-    )
+"""
+    apply_action = {
+        "command": apply_command,
+        "arguments": [apply_args],
+        "inputs": native_image_apply_inputs,
+        "tools": [ctx.executable.native_image_tool],
+        "outputs": [binary, jdk_library, build_output_json],
+        "env": env,
+        "execution_requirements": execution_requirements,
+        "mnemonic": "BazelNativeImage",
+        "progress_message": "Building Bazel native-image server %{label}",
+        "toolchain": "@bazel_tools//tools/cpp:toolchain_type",
+    }
+    if is_macos:
+        apple_support.run_shell(
+            actions = ctx.actions,
+            apple_fragment = ctx.fragments.apple,
+            xcode_config = ctx.attr._xcode_config[apple_common.XcodeVersionConfig],
+            **apply_action
+        )
+    else:
+        ctx.actions.run_shell(**apply_action)
 
     return [
         DefaultInfo(
@@ -360,9 +439,19 @@ bazel_server_native_image = rule(
             cfg = "exec",
             executable = True,
         ),
+        "_macos_constraint": attr.label(
+            default = Label("@platforms//os:macos"),
+        ),
+        "_xcode_config": attr.label(
+            default = configuration_field(
+                fragment = "apple",
+                name = "xcode_config_label",
+            ),
+        ),
     },
     executable = True,
     fragments = [
+        "apple",
         "cpp",
         "platform",
     ],

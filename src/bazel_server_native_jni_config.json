@@ -1,48 +1,85 @@
 [
   {
-    "name": "com.google.devtools.build.lib.unix.NativePosixFilesService$Stat",
+    "name": "com.google.devtools.build.lib.unix.UnixFileStatus",
     "allDeclaredConstructors": true
   },
   {
-    "name": "com.google.devtools.build.lib.unix.NativePosixFilesService$Dirent",
+    "name": "com.google.devtools.build.lib.unix.NativePosixFiles$Dirent",
     "allDeclaredConstructors": true
   },
   {
-    "name": "com.google.devtools.build.lib.unix.NativePosixFilesServiceImpl$StatImpl",
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "com.google.devtools.build.lib.unix.NativePosixFilesServiceImpl$DirentImpl",
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "com.google.devtools.build.lib.unix.NativePosixFilesService$Dirent$Type",
+    "name": "com.google.devtools.build.lib.unix.NativePosixFiles$Dirent$Type",
     "allDeclaredConstructors": true,
     "allDeclaredFields": true
   },
   {
-    "name": "com.google.devtools.build.lib.unix.NativePosixFilesException",
+    "name": "com.google.devtools.build.lib.unix.InvalidArgumentIOException",
     "allDeclaredConstructors": true
   },
   {
-    "name": "com.google.devtools.build.lib.unix.NativePosixFilesException$PosixError",
-    "allDeclaredConstructors": true,
-    "allDeclaredFields": true
-  },
-  {
-    "name": "com.google.devtools.build.lib.unix.NativePosixFilesServiceImpl",
+    "name": "com.google.devtools.build.lib.unix.NativePosixFiles",
     "allDeclaredMethods": true
   },
   {
-    "name": "com.google.devtools.build.lib.platform.PlatformNativeDepsServiceImpl",
+    "name": "com.google.devtools.build.lib.unix.ProcessUtils",
     "allDeclaredMethods": true
   },
   {
-    "name": "com.google.devtools.build.lib.skyframe.FsEventsNativeDepsServiceImpl",
+    "name": "com.google.devtools.build.lib.jni.JniLoader$ForceLinkingHelper",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "com.google.devtools.build.lib.platform.SystemMemoryPressureMonitor",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "com.google.devtools.build.lib.platform.SystemSuspensionModule",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "com.google.devtools.build.lib.platform.SleepPreventionModule$SleepPrevention",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "com.google.devtools.build.lib.skyframe.MacOSXFsEventsDiffAwareness",
     "allDeclaredMethods": true,
     "fields": [
       {
         "name": "nativePointer"
+      }
+    ]
+  },
+  {
+    "name": "com.google.devtools.build.lib.profiler.SystemNetworkStats",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "com.google.devtools.build.lib.profiler.SystemNetworkStats$NetIoCounter",
+    "methods": [
+      {
+        "name": "create",
+        "parameterTypes": [
+          "long",
+          "long",
+          "long",
+          "long"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "com.google.devtools.build.lib.vfs.bazel.Blake3MessageDigest",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "java.util.HashMap",
+    "methods": [
+      {
+        "name": "put",
+        "parameterTypes": [
+          "java.lang.Object",
+          "java.lang.Object"
+        ]
       }
     ]
   },
@@ -116,7 +153,7 @@
     "allDeclaredConstructors": true
   },
   {
-    "name": "net.starlark.java.eval.CpuProfilerNativeSupportImpl",
+    "name": "net.starlark.java.eval.CpuProfiler",
     "allDeclaredMethods": true
   },
   {
@@ -173,5 +210,216 @@
     "name": "com.github.luben.zstd.ZstdFrameProgression",
     "allDeclaredFields": true,
     "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.ChannelException"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.DefaultFileRegion",
+    "allDeclaredFields": true
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.kqueue.BsdSocket"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.kqueue.KQueueEventArray"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.kqueue.KQueueStaticallyReferencedJniMethods"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.kqueue.Native"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.unix.Buffer"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.unix.DatagramSocketAddress",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": [
+          "byte[]",
+          "int",
+          "int",
+          "int",
+          "io.netty.channel.unix.DatagramSocketAddress"
+        ]
+      }
+    ]
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.unix.DomainDatagramSocketAddress",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": [
+          "byte[]",
+          "int",
+          "io.netty.channel.unix.DomainDatagramSocketAddress"
+        ]
+      }
+    ]
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.unix.ErrorsStaticallyReferencedJniMethods"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.unix.FileDescriptor"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.unix.LimitsStaticallyReferencedJniMethods"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.unix.PeerCredentials",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": [
+          "int",
+          "int",
+          "int[]"
+        ]
+      }
+    ]
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "io.netty.channel.unix.Socket"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "java.lang.Boolean",
+    "methods": [
+      {
+        "name": "getBoolean",
+        "parameterTypes": [
+          "java.lang.String"
+        ]
+      }
+    ]
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "java.lang.RuntimeException"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "java.net.InetSocketAddress",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": [
+          "java.lang.String",
+          "int"
+        ]
+      }
+    ]
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "java.net.PortUnreachableException"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "java.nio.Buffer",
+    "fields": [
+      {
+        "name": "limit"
+      },
+      {
+        "name": "position"
+      }
+    ],
+    "methods": [
+      {
+        "name": "limit",
+        "parameterTypes": []
+      },
+      {
+        "name": "position",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "java.nio.DirectByteBuffer"
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "java.nio.channels.ClosedChannelException",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "condition": {
+      "typeReachable": "io.netty.channel.kqueue.Native"
+    },
+    "name": "sun.nio.ch.FileChannelImpl",
+    "fields": [
+      {
+        "name": "fd"
+      }
+    ]
   }
 ]

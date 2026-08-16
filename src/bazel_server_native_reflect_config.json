@@ -8,10 +8,6 @@
     "allDeclaredConstructors": true
   },
   {
-    "name": "com.google.devtools.build.lib.starlarkprofiler.CpuProfilerModule",
-    "allDeclaredConstructors": true
-  },
-  {
     "name": "com.google.devtools.build.lib.runtime.NoSpawnCacheModule",
     "allDeclaredConstructors": true
   },
@@ -276,12 +272,40 @@
     "allDeclaredConstructors": true
   },
   {
+    "name": "io.netty.channel.kqueue.KQueueSocketChannel",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "io.netty.channel.kqueue.KQueueDomainSocketChannel",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "io.netty.channel.kqueue.KQueueServerSocketChannel",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "io.netty.channel.kqueue.KQueueServerDomainSocketChannel",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "io.netty.channel.kqueue.KQueueDatagramChannel",
+    "allDeclaredConstructors": true
+  },
+  {
     "name": "io.netty.channel.socket.nio.NioSocketChannel",
     "allDeclaredConstructors": true
   },
   {
     "name": "io.netty.channel.epoll.EpollChannelOption",
     "allPublicFields": true
+  },
+  {
+    "name": "io.netty.channel.kqueue.KQueueChannelOption",
+    "allPublicFields": true
+  },
+  {
+    "name": "io.netty.util.internal.NativeLibraryUtil",
+    "allDeclaredMethods": true
   },
   {
     "name": "com.google.devtools.build.lib.authandtls.credentialhelper.GetCredentialsRequest$GsonTypeAdapter",

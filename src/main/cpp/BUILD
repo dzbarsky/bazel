@@ -159,7 +159,7 @@ cc_binary(
         "//conditions:default": [],
     }),
     copts = select({
-        "//src/conditions:windows_msvc_like": ["/wd4018"],
+        "//src/conditions:windows": ["/wd4018"],
         "//conditions:default": ["-Wno-sign-compare"],
     }) + ["-DBAZEL_NATIVE_IMAGE_SERVER"],
     linkopts = select({
