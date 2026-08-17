@@ -87,6 +87,18 @@ def _bazel_server_native_image_impl(ctx):
     )
     requires_local_execution = is_macos or is_arm64
 
+    native_c_compiler = ctx.var.get("BAZEL_NATIVE_IMAGE_C_COMPILER")
+    if native_c_compiler != None:
+        valid_path_characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._+-"
+        if not native_c_compiler.startswith("/"):
+            fail("BAZEL_NATIVE_IMAGE_C_COMPILER must be a normalized absolute path")
+        for component in native_c_compiler.split("/")[1:]:
+            if component in ["", ".", ".."]:
+                fail("BAZEL_NATIVE_IMAGE_C_COMPILER must be a normalized absolute path")
+        for character in native_c_compiler.elems():
+            if character not in valid_path_characters:
+                fail("BAZEL_NATIVE_IMAGE_C_COMPILER must be a normalized absolute path with safe ASCII characters")
+
     hosted_jvm_max_heap = ctx.var.get("BAZEL_NATIVE_IMAGE_MAX_HEAP")
     if hosted_jvm_max_heap != None:
         heap_size_digits = hosted_jvm_max_heap
@@ -238,7 +250,7 @@ def _bazel_server_native_image_impl(ctx):
     args.add(ctx.attr.include_resources, format = "-H:IncludeResources=%s")
     if is_x86_64:
         args.add("-march=x86-64-v2")
-    args.add(cc_toolchain.c_compiler_path, format = "--native-compiler-path=%s")
+    args.add(native_c_compiler or cc_toolchain.c_compiler_path, format = "--native-compiler-path=%s")
     if parallelism > 0:
         args.add(parallelism, format = "--parallelism=%s")
     args.add("-o")

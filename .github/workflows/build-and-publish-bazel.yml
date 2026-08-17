@@ -142,6 +142,7 @@ jobs:
             build_jobs=100
             build_args+=(
               --local_resources=cpu=1
+              --define=BAZEL_NATIVE_IMAGE_C_COMPILER=/usr/bin/gcc
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=11g
               --define=BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS=1
               --define=BAZEL_NATIVE_IMAGE_PARALLELISM=2
@@ -277,6 +278,7 @@ jobs:
             build_jobs=100
             build_args+=(
               --local_resources=cpu=1
+              --define=BAZEL_NATIVE_IMAGE_C_COMPILER=/usr/bin/gcc
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=11g
               --define=BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS=1
               --define=BAZEL_NATIVE_IMAGE_PARALLELISM=2
