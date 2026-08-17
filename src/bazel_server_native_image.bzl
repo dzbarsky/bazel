@@ -95,6 +95,11 @@ def _bazel_server_native_image_impl(ctx):
         if not heap_size_digits or not heap_size_digits.isdigit() or int(heap_size_digits) < 1:
             fail("BAZEL_NATIVE_IMAGE_MAX_HEAP must be a positive integer optionally followed by k, m, or g")
 
+    compact_object_headers_value = ctx.var.get("BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS", "0")
+    if compact_object_headers_value not in ["0", "1"]:
+        fail("BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS must be 0 or 1")
+    compact_object_headers = compact_object_headers_value == "1"
+
     parallelism = ctx.attr.parallelism
     parallelism_override = ctx.var.get("BAZEL_NATIVE_IMAGE_PARALLELISM")
     if parallelism_override != None:
@@ -176,6 +181,8 @@ def _bazel_server_native_image_impl(ctx):
     args = ctx.actions.args().use_param_file("@%s", use_always = False)
     if hosted_jvm_max_heap != None:
         args.add("-J-Xmx" + hosted_jvm_max_heap)
+    if compact_object_headers:
+        args.add("-J-XX:+UseCompactObjectHeaders")
     args.add("-Dfile.encoding=ISO-8859-1")
     args.add("-Dnative.encoding=UTF-8")
     args.add("--add-opens=java.base/java.lang=ALL-UNNAMED")
@@ -322,8 +329,10 @@ def _bazel_server_native_image_impl(ctx):
     apply_args.add(build_output_json)
     apply_args.add(management_library_name)
     apply_args.add("1" if is_macos else "0")
-    if hosted_jvm_max_heap != None:
-        apply_args.add(hosted_jvm_max_heap)
+    if hosted_jvm_max_heap != None or compact_object_headers:
+        apply_args.add(hosted_jvm_max_heap or "")
+    if compact_object_headers:
+        apply_args.add("1")
 
     apply_command = """
 set -eu
@@ -338,6 +347,7 @@ build_output_json="$6"
 management_library_name="$7"
 is_macos="$8"
 hosted_jvm_max_heap="${9:-}"
+compact_object_headers="${10:-}"
 image_output="$execroot/$(dirname "$build_output_json")/native-image.output"
 
 chmod -R u+w "$image_output" 2>/dev/null || true
@@ -348,6 +358,9 @@ if [ -n "$hosted_jvm_max_heap" ]; then
   set -- "-J-Xmx$hosted_jvm_max_heap"
 else
   set --
+fi
+if [ "$compact_object_headers" = "1" ]; then
+  set -- "$@" "-J-XX:+UseCompactObjectHeaders"
 fi
 
 if [ "$is_macos" = "1" ]; then
