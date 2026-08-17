@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - codex/bazel-9.3-buildbuddy-release
+      - codex/bazel-9.3-jvm-buildbuddy-release
   workflow_dispatch:
     inputs:
       release_tag:
