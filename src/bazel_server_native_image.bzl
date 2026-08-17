@@ -100,6 +100,11 @@ def _bazel_server_native_image_impl(ctx):
         fail("BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS must be 0 or 1")
     compact_object_headers = compact_object_headers_value == "1"
 
+    hosted_jvm_new_ratio = ctx.var.get("BAZEL_NATIVE_IMAGE_NEW_RATIO")
+    if hosted_jvm_new_ratio != None:
+        if not hosted_jvm_new_ratio.isdigit() or int(hosted_jvm_new_ratio) < 1:
+            fail("BAZEL_NATIVE_IMAGE_NEW_RATIO must be a positive integer")
+
     parallelism = ctx.attr.parallelism
     parallelism_override = ctx.var.get("BAZEL_NATIVE_IMAGE_PARALLELISM")
     if parallelism_override != None:
@@ -183,6 +188,8 @@ def _bazel_server_native_image_impl(ctx):
         args.add("-J-Xmx" + hosted_jvm_max_heap)
     if compact_object_headers:
         args.add("-J-XX:+UseCompactObjectHeaders")
+    if hosted_jvm_new_ratio != None:
+        args.add("-J-XX:NewRatio=" + hosted_jvm_new_ratio)
     args.add("-Dfile.encoding=ISO-8859-1")
     args.add("-Dnative.encoding=UTF-8")
     args.add("--add-opens=java.base/java.lang=ALL-UNNAMED")
@@ -329,10 +336,12 @@ def _bazel_server_native_image_impl(ctx):
     apply_args.add(build_output_json)
     apply_args.add(management_library_name)
     apply_args.add("1" if is_macos else "0")
-    if hosted_jvm_max_heap != None or compact_object_headers:
+    if hosted_jvm_max_heap != None or compact_object_headers or hosted_jvm_new_ratio != None:
         apply_args.add(hosted_jvm_max_heap or "")
-    if compact_object_headers:
-        apply_args.add("1")
+    if compact_object_headers or hosted_jvm_new_ratio != None:
+        apply_args.add("1" if compact_object_headers else "")
+    if hosted_jvm_new_ratio != None:
+        apply_args.add(hosted_jvm_new_ratio)
 
     apply_command = """
 set -eu
@@ -348,6 +357,7 @@ management_library_name="$7"
 is_macos="$8"
 hosted_jvm_max_heap="${9:-}"
 compact_object_headers="${10:-}"
+hosted_jvm_new_ratio="${11:-}"
 image_output="$execroot/$(dirname "$build_output_json")/native-image.output"
 
 chmod -R u+w "$image_output" 2>/dev/null || true
@@ -361,6 +371,9 @@ else
 fi
 if [ "$compact_object_headers" = "1" ]; then
   set -- "$@" "-J-XX:+UseCompactObjectHeaders"
+fi
+if [ -n "$hosted_jvm_new_ratio" ]; then
+  set -- "$@" "-J-XX:NewRatio=$hosted_jvm_new_ratio"
 fi
 
 if [ "$is_macos" = "1" ]; then
