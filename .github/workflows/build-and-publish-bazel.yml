@@ -427,6 +427,10 @@ jobs:
               --json targetCommitish \
               --jq .targetCommitish)
             if [[ "${existing_target}" != "${GITHUB_SHA}" ]]; then
+              if [[ "${RELEASE_TAG}" != 9.3.0-dzbarsky13-graal ]]; then
+                echo "Release ${RELEASE_TAG} already targets ${existing_target}, expected ${GITHUB_SHA}." >&2
+                exit 1
+              fi
               gh api \
                 --method PATCH \
                 "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_TAG}" \
