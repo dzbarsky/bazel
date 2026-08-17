@@ -139,11 +139,14 @@ jobs:
             )
           elif [[ "${ARTIFACT_OS}" == linux && "${ARTIFACT_ARCH}" == x86_64 ]]; then
             startup_args+=(--host_jvm_args=-Xmx768m)
-            build_jobs=1
+            build_jobs=100
             build_args+=(
+              --local_resources=cpu=1
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=11g
+              --define=BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS=1
               --define=BAZEL_NATIVE_IMAGE_PARALLELISM=2
               --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_PRIORITY_INLINING=1
               --strategy=BazelNativeImageBundle=local
               --strategy=BazelNativeImage=local
             )
@@ -152,8 +155,10 @@ jobs:
             build_jobs=1
             build_args+=(
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=11g
+              --define=BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS=1
               --define=BAZEL_NATIVE_IMAGE_PARALLELISM=2
               --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_PRIORITY_INLINING=1
             )
           fi
 
@@ -269,11 +274,14 @@ jobs:
             )
           elif [[ "${ARTIFACT_OS}" == linux && "${ARTIFACT_ARCH}" == x86_64 ]]; then
             startup_args+=(--host_jvm_args=-Xmx768m)
-            build_jobs=1
+            build_jobs=100
             build_args+=(
+              --local_resources=cpu=1
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=11g
+              --define=BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS=1
               --define=BAZEL_NATIVE_IMAGE_PARALLELISM=2
               --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_PRIORITY_INLINING=1
               --strategy=BazelNativeImageBundle=local
               --strategy=BazelNativeImage=local
             )
@@ -282,8 +290,10 @@ jobs:
             build_jobs=1
             build_args+=(
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=11g
+              --define=BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS=1
               --define=BAZEL_NATIVE_IMAGE_PARALLELISM=2
               --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_PRIORITY_INLINING=1
             )
           fi
 
