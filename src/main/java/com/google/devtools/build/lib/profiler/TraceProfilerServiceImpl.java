@@ -31,6 +31,7 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.profiler.PredicateBasedStatRecorder.RecorderAndPredicate;
 import com.google.devtools.build.lib.profiler.TaskData.ActionTaskData;
 import com.google.devtools.build.lib.runtime.BlazeService;
+import com.google.devtools.build.lib.skybridge.ScOnly;
 import com.google.devtools.common.options.OptionsProvider;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.sun.management.OperatingSystemMXBean;
@@ -56,12 +57,12 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
-import java.util.zip.GZIPOutputStream;
 import javax.annotation.Nullable;
 
 /** Blaze internal profiler implementation. */
 @ThreadSafe
 @SuppressWarnings("GoodTime") // This code is very performance sensitive.
+@ScOnly
 public final class TraceProfilerServiceImpl implements TraceProfilerService {
   private static final int HISTOGRAM_BUCKETS = 20;
 
@@ -97,7 +98,7 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
       Extrema<SlowTask> extrema = extremaAggregators[(int) (taskData.threadId % SHARDS)];
       synchronized (extrema) {
         extrema.aggregate(
-            new SlowTask(taskData.durationNanos, taskData.description, taskData.type));
+            new SlowTaskImpl(taskData.durationNanos, taskData.description, taskData.type));
       }
     }
 
@@ -254,6 +255,7 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
       Clock clock,
       long execStartTimeNanos,
       boolean slimProfile,
+      long slimProfileSizeLimit,
       boolean includePrimaryOutput,
       boolean includeTargetLabel,
       boolean includeConfiguration,
@@ -281,19 +283,15 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
 
     JsonTraceFileWriter writer = null;
     if (stream != null && format != null) {
+      SlimProfileConfiguration slimProfileConfig =
+          slimProfile
+              ? (slimProfileSizeLimit > 0
+                  ? SlimProfileConfiguration.afterSize(slimProfileSizeLimit)
+                  : SlimProfileConfiguration.always())
+              : SlimProfileConfiguration.disabled();
       writer =
-          switch (format) {
-            case JSON_TRACE_FILE_FORMAT ->
-                new JsonTraceFileWriter(
-                    stream, execStartTimeNanos, slimProfile, outputBase, buildID);
-            case JSON_TRACE_FILE_COMPRESSED_FORMAT ->
-                new JsonTraceFileWriter(
-                    new GZIPOutputStream(stream),
-                    execStartTimeNanos,
-                    slimProfile,
-                    outputBase,
-                    buildID);
-          };
+          new JsonTraceFileWriter(
+              stream, execStartTimeNanos, slimProfileConfig, outputBase, buildID, format);
       writer.start();
     }
     this.writerRef.set(writer);
@@ -328,14 +326,15 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
       double[] actionCountValues = actionCountTimeSeries.toDoubleArray(len);
       actionCountTimeSeriesRef.set(null);
       counterSeriesMap.put(
-          new CounterSeriesTask("action count", "action", /* color= */ null), actionCountValues);
+          new CounterSeriesTaskImpl("action count", "action", /* color= */ null),
+          actionCountValues);
     }
     TimeSeries actionCacheCountTimeSeries = actionCacheCountTimeSeriesRef.get();
     if (actionCacheCountTimeSeries != null) {
       double[] actionCacheCountValues = actionCacheCountTimeSeries.toDoubleArray(len);
       actionCacheCountTimeSeriesRef.set(null);
       counterSeriesMap.put(
-          new CounterSeriesTask("action cache count", "local action cache", /* color= */ null),
+          new CounterSeriesTaskImpl("action cache count", "local action cache", /* color= */ null),
           actionCacheCountValues);
     }
     if (!counterSeriesMap.isEmpty()) {
@@ -348,7 +347,7 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
       double[] localActionCountValues = localActionCountTimeSeries.toDoubleArray(len);
       localActionCountTimeSeriesRef.set(null);
       localCounterSeriesMap.put(
-          new CounterSeriesTask(
+          new CounterSeriesTaskImpl(
               "action count (local)", "local action", CounterSeriesTask.Color.DETAILED_MEMORY_DUMP),
           localActionCountValues);
     }
@@ -364,7 +363,7 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
         var timeSeries = entry.getValue();
         double[] values = timeSeries.toDoubleArray(len);
         inflightRpcCounterSeriesMap.put(
-            new CounterSeriesTask("Inflight RPCs - " + name, name, /* color= */ null), values);
+            new CounterSeriesTaskImpl("Inflight RPCs - " + name, name, /* color= */ null), values);
         logCounters(
             inflightRpcCounterSeriesMap, actionCountStartTime, ACTION_COUNT_BUCKET_DURATION);
       }

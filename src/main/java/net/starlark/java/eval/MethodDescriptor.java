@@ -150,7 +150,7 @@ final class MethodDescriptor {
             allowReturnNones);
   }
 
-  private static StarlarkType buildStarlarkType(
+  private StarlarkType buildStarlarkType(
       Method method,
       StarlarkMethod annotation,
       ParamDescriptor[] parameters,
@@ -215,7 +215,7 @@ final class MethodDescriptor {
       }
     }
 
-    return Types.callable(
+    return Types.generalCallable(
         parameterNames.build(),
         parameterTypes.build(),
         numPositionalOnlyParameters,
@@ -252,7 +252,7 @@ final class MethodDescriptor {
     }
   }
 
-  static StarlarkType starlarkTypeFromAnnotation(ParamType[] paramTypes) {
+  private StarlarkType starlarkTypeFromAnnotation(ParamType[] paramTypes) {
     return Types.union(
         Arrays.stream(paramTypes)
             .map(
@@ -264,12 +264,12 @@ final class MethodDescriptor {
                     return paramType.type();
                   }
                 })
-            .map(MethodDescriptor::starlarkTypeFromJava)
+            .map(this::starlarkTypeFromJava)
             .collect(toImmutableSet()));
   }
 
   /** Returns the Starlark type corresponding to the given Java type. */
-  static StarlarkType starlarkTypeFromJava(Type cls) {
+  private StarlarkType starlarkTypeFromJava(Type cls) {
     if (cls == NoneType.class || cls == void.class) {
       return Types.NONE;
     } else if (cls == String.class) {
@@ -301,10 +301,20 @@ final class MethodDescriptor {
       return Types.collection(starlarkTypeFromJava(ptype.getActualTypeArguments()[0]));
     } else if (cls instanceof ParameterizedType ptype && ptype.getRawType() == Sequence.class) {
       return Types.sequence(starlarkTypeFromJava(ptype.getActualTypeArguments()[0]));
+    } else if (cls == StarlarkCallable.class || cls == StarlarkFunction.class) {
+      return Types.ANY_CALLABLE;
     } else if (cls == Object.class || cls == StarlarkValue.class) {
       return Types.OBJECT;
     } else {
-      // TODO(ilist@): handle more complex types
+      if (cls instanceof Class<?> c) {
+        @Nullable StarlarkType classStarlarkType = CallUtils.getStarlarkBuiltinAutoType(c);
+        if (classStarlarkType != null) {
+          return classStarlarkType;
+        }
+        if (Structure.class.isAssignableFrom(c)) {
+          return Types.ANY_STRUCT;
+        }
+      }
       return Types.ANY;
     }
   }
@@ -449,7 +459,7 @@ final class MethodDescriptor {
         "method invocation returned null: " + getName() + Tuple.of(args));
   }
 
-  /** @see StarlarkMethod#name() */
+  /** See {@link StarlarkMethod#name()}. */
   String getName() {
     return name;
   }
@@ -462,32 +472,38 @@ final class MethodDescriptor {
     return method;
   }
 
-  /** @see StarlarkMethod#structField() */
+  /** See {@link StarlarkMethod#structField()}. */
   boolean isStructField() {
     return structField;
   }
 
-  /** @see StarlarkMethod#useStarlarkThread() */
+  /** See {@link StarlarkMethod#useStarlarkThread()}. */
   boolean isUseStarlarkThread() {
     return useStarlarkThread;
   }
 
-  /** @see StarlarkMethod#useStarlarkSemantics() */
+  /** See {@link StarlarkMethod#useStarlarkSemantics()}. */
   boolean isUseStarlarkSemantics() {
     return useStarlarkSemantics;
   }
 
-  /** @return {@code true} if this method accepts extra arguments ({@code *args}) */
+  /**
+   * If true, this method accepts extra positional arguments ({@code *args}); see {@link
+   * StarlarkMethod#extraPositionals()}.
+   */
   boolean acceptsExtraArgs() {
     return extraPositionals;
   }
 
-  /** @see StarlarkMethod#extraKeywords() */
+  /**
+   * If true, this method accepts extra keyword arguments ({@code **kwargs}); see {@link
+   * StarlarkMethod#extraKeywords()}.
+   */
   boolean acceptsExtraKwargs() {
     return extraKeywords;
   }
 
-  /** @see StarlarkMethod#parameters() */
+  /** See {@link StarlarkMethod#parameters()}. */
   ParamDescriptor[] getParameters() {
     return parameters;
   }
@@ -502,17 +518,17 @@ final class MethodDescriptor {
     return -1;
   }
 
-  /** @see StarlarkMethod#documented() */
+  /** See {@link StarlarkMethod#documented()}. */
   boolean isDocumented() {
     return documented;
   }
 
-  /** @see StarlarkMethod#doc() */
+  /** See {@link StarlarkMethod#doc()}. */
   String getDoc() {
     return doc;
   }
 
-  /** @see StarlarkMethod#selfCall() */
+  /** See {@link StarlarkMethod#selfCall()}. */
   boolean isSelfCall() {
     return selfCall;
   }

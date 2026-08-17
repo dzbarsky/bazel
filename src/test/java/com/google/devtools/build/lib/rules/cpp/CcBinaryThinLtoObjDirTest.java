@@ -441,9 +441,9 @@ public class CcBinaryThinLtoObjDirTest extends BuildViewTestCase {
             "bin _solib_k8/libpkg_Sliblib.ifso",
             "bin pkg/bin-lto-final.params");
 
-    SolibSymlinkAction solibSymlinkAction =
-        (SolibSymlinkAction) getPredecessorByInputName(linkAction, "_solib_k8/libpkg_Sliblib.ifso");
-    assertThat(solibSymlinkAction.getMnemonic()).isEqualTo("SolibSymlink");
+    Action solibSymlinkAction =
+        getPredecessorByInputName(linkAction, "_solib_k8/libpkg_Sliblib.ifso");
+    assertThat(solibSymlinkAction.getMnemonic()).isAnyOf("SolibSymlink", "Symlink");
 
     SpawnAction libLinkAction =
         (SpawnAction) getPredecessorByInputName(solibSymlinkAction, "bin/pkg/liblib.ifso");
@@ -588,9 +588,9 @@ public class CcBinaryThinLtoObjDirTest extends BuildViewTestCase {
     SpawnAction linkAction = (SpawnAction) getGeneratingAction(pkgArtifact);
     String rootExecPath = pkgArtifact.getRoot().getExecPathString();
 
-    SolibSymlinkAction solibSymlinkAction =
-        (SolibSymlinkAction) getPredecessorByInputName(linkAction, "_solib_k8/libpkg_Sliblib.ifso");
-    assertThat(solibSymlinkAction.getMnemonic()).isEqualTo("SolibSymlink");
+    Action solibSymlinkAction =
+        getPredecessorByInputName(linkAction, "_solib_k8/libpkg_Sliblib.ifso");
+    assertThat(solibSymlinkAction.getMnemonic()).isAnyOf("SolibSymlink", "Symlink");
 
     SpawnAction libLinkAction =
         (SpawnAction) getPredecessorByInputName(solibSymlinkAction, "bin/pkg/liblib.ifso");
@@ -864,7 +864,6 @@ public class CcBinaryThinLtoObjDirTest extends BuildViewTestCase {
     setupThinLTOCrosstool(CppRuleClasses.SUPPORTS_PIC);
     useConfiguration(
         "--ltoindexopt=anltoindexopt",
-        "--incompatible_make_thinlto_command_lines_standalone",
         "--features=thin_lto",
         "--features=use_lto_native_object_directory");
 

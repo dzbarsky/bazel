@@ -20,7 +20,6 @@ tasks:
       - "--test_tag_filters=-no_presubmit"
     test_targets:
       - "//src:embedded_tools_size_test"
-      - "//src/main/starlark/tests/builtins_bzl/..."
       - "//src/test/py/bazel:bazel_module_test"
       - "//src/test/py/bazel:mod_command_test"
       - "//src/test/shell/bazel:bazel_example_test"
@@ -120,7 +119,6 @@ tasks:
       - "--test_tag_filters=-no_presubmit"
     test_targets:
       - "//src:embedded_tools_size_test"
-      - "//src/main/starlark/tests/builtins_bzl/..."
       - "//src/test/py/bazel:bazel_module_test"
       - "//src/test/py/bazel:mod_command_test"
       - "//src/test/shell/bazel:bazel_example_test"
@@ -133,6 +131,9 @@ tasks:
       - build
       - test
   macos:
+    environment:
+      ANDROID_HOME: ""
+      ANDROID_NDK_HOME: ""
     shell_commands:
       - rm -rf $HOME/bazeltest
       - mkdir $HOME/bazeltest
@@ -142,6 +143,8 @@ tasks:
     build_targets:
       - "//src:bazel"
       - "//src:bazel_jdk_minimal"
+      - "//src:java_tools_zip"
+      - "//src:java_tools_prebuilt_zip"
     include_json_profile:
       - build
   macos_arm64:
@@ -156,6 +159,8 @@ tasks:
       - "//src:bazel"
       - "//src:bazel_jdk_minimal"
       - "//src:test_repos"
+      - "//src:java_tools_zip"
+      - "//src:java_tools_prebuilt_zip"
     test_flags:
       - "--config=ci-macos"
       - "--test_tag_filters=-no_presubmit,-no_macos"
@@ -165,7 +170,6 @@ tasks:
       - "--test_timeout=72,360,1080,4320"
     test_targets:
       - "//src:embedded_tools_size_test"
-      - "//src/main/starlark/tests/builtins_bzl/..."
       - "//src/test/java/com/google/devtools/build/lib/rules/apple:AppleRulesTests"
       - "//src/test/java/com/google/devtools/build/lib/rules/objc:ObjcRulesTests"
       - "//src/test/java/com/google/devtools/build/lib/skyframe:MacOSXFsEventsDiffAwarenessTest"
@@ -195,13 +199,14 @@ tasks:
       - "//src:bazel_jdk_minimal"
       - "//src:test_repos"
       - "//src/main/java/..."
+      - "//src:java_tools_zip"
+      - "//src:java_tools_prebuilt_zip"
     test_flags:
       - "--config=ci-windows"
       # We need to keep --test_tag_filters here for the bazel-diff integration.
       - "--test_tag_filters=-no_presubmit,-no_windows,-slow"
     test_targets:
       - "//src:embedded_tools_size_test"
-      - "//src/main/starlark/tests/builtins_bzl/..."
       - "//src/test/cpp/..."
       - "//src/test/java/com/google/devtools/build/lib/..."
       - "//src/test/java/com/google/devtools/build/skyframe/..."
@@ -262,7 +267,6 @@ tasks:
     test_targets:
       - "//scripts/..."
       - "//src/java_tools/..."
-      - "//src/main/starlark/tests/builtins_bzl/..."
       - "//src/test/..."
       - "//src/tools/execlog/..."
       - "//src/tools/one_version/..."
@@ -299,8 +303,8 @@ tasks:
     include_json_profile:
       - build
       - test
-  docs_ubuntu2004:
-    platform: ubuntu2004
+  docs_ubuntu2404:
+    platform: ubuntu2404
     name: "Docs"
     build_flags:
       - "--config=docs"

@@ -130,6 +130,7 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.Label.LabelInterner;
 import com.google.devtools.build.lib.cmdline.Label.PackageContext;
 import com.google.devtools.build.lib.cmdline.Label.RepoContext;
+import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
@@ -239,7 +240,6 @@ import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnaly
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCacheManager;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCacheReaderDepsProvider;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingDependenciesProvider;
-import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingOptions.RemoteAnalysisCacheMode;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingServerState;
 import com.google.devtools.build.lib.skyframe.toolchains.RegisteredExecutionPlatformsCycleReporter;
 import com.google.devtools.build.lib.skyframe.toolchains.RegisteredExecutionPlatformsFunction;
@@ -335,6 +335,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.LongFunction;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -410,6 +411,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
   private final AtomicReference<EventBus> eventBus = new AtomicReference<>();
   final AtomicReference<TimestampGranularityMonitor> tsgm = new AtomicReference<>();
   private final AtomicReference<Map<String, String>> clientEnv = new AtomicReference<>();
+  private final AtomicReference<Map<String, String>> repoEnv = new AtomicReference<>();
 
   private final ArtifactFactory artifactFactory;
   private final ActionKeyContext actionKeyContext;
@@ -510,6 +512,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
   private final boolean allowExternalRepositories;
   @Nullable private final WorkspaceInfoFromDiffReceiver workspaceInfoFromDiffReceiver;
   private Set<String> previousClientEnvironment = ImmutableSet.of();
+  private Set<String> previousRepositoryEnvironment = ImmutableSet.of();
 
   // Contain the paths in the .bazelignore file.
   private IgnoredSubdirectories ignoredPaths = IgnoredSubdirectories.EMPTY;
@@ -568,7 +571,6 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     return remoteAnalysisCachingDependenciesProvider;
   }
 
-  @VisibleForTesting // productionVisibility = Visibility.PRIVATE
   public RemoteAnalysisCacheReaderDepsProvider getRemoteAnalysisCacheReaderDepsProvider() {
     return remoteAnalysisCacheReaderDepsProvider;
   }
@@ -676,7 +678,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
 
   @VisibleForTesting
   public boolean isRemoteAnalysisCachingEnabled() {
-    return remoteAnalysisCachingDependenciesProvider.mode() == RemoteAnalysisCacheMode.DOWNLOAD;
+    return remoteAnalysisCachingDependenciesProvider.mode().isRetrievalEnabled();
   }
 
   final class PathResolverFactoryImpl implements PathResolverFactory {
@@ -797,7 +799,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     map.put(SkyFunctions.PRECOMPUTED, new PrecomputedFunction());
     map.put(SkyFunctions.CLIENT_ENVIRONMENT_VARIABLE, new ClientEnvironmentFunction(clientEnv));
     map.put(SkyFunctions.ACTION_ENVIRONMENT_VARIABLE, new ActionEnvironmentFunction());
-    map.put(SkyFunctions.REPOSITORY_ENVIRONMENT_VARIABLE, new RepoEnvironmentFunction());
+    map.put(SkyFunctions.REPOSITORY_ENVIRONMENT_VARIABLE, new RepoEnvironmentFunction(repoEnv));
     map.put(FileStateKey.FILE_STATE, newFileStateFunction());
     map.put(SkyFunctions.DIRECTORY_LISTING_STATE, newDirectoryListingStateFunction());
     map.put(FileSymlinkCycleUniquenessFunction.NAME, new FileSymlinkCycleUniquenessFunction());
@@ -959,7 +961,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     map.put(SkyFunctions.ACTION_EXECUTION, newActionExecutionFunction());
     map.put(
         SkyFunctions.RECURSIVE_FILESYSTEM_TRAVERSAL,
-        new RecursiveFilesystemTraversalFunction(syscallCache));
+        new RecursiveFilesystemTraversalFunction(
+            syscallCache,
+            directories.getOutputBase().getRelative(LabelConstants.EXTERNAL_REPOSITORY_LOCATION)));
     map.put(
         SkyFunctions.ACTION_TEMPLATE_EXPANSION,
         new ActionTemplateExpansionFunction(actionKeyContext));
@@ -1076,6 +1080,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
   public void noteCommandStart() {
     // Prevent stale Skycache configuration from persisting between builds.
     remoteAnalysisCachingDependenciesProvider = RemoteAnalysisCacheManager.createDisabled();
+    remoteAnalysisCacheReaderDepsProvider = RemoteAnalysisCacheDeps.createDisabled();
   }
 
   /**
@@ -1375,6 +1380,11 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     InMemoryGraph graph = memoizingEvaluator.getInMemoryGraph();
     boolean trackIncrementalState = tracksStateForIncrementality();
 
+    // If remote analysis cache retrieval is enabled, we can only perform a partial discard. See
+    // b/466388360.
+    boolean remoteAnalysisCachingEnabled =
+        remoteAnalysisCacheReaderDepsProvider.mode().isRetrievalEnabled();
+
     try (SilentCloseable p = trackDiscardAnalysisCache(discardType)) {
       graph.parallelForEach(
           e -> {
@@ -1388,7 +1398,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
                     topLevelPackages,
                     topLevelTargets,
                     topLevelAspects,
-                    trackIncrementalState);
+                    trackIncrementalState,
+                    remoteAnalysisCachingEnabled);
             if (removeNode) {
               graph.remove(e.getKey());
             }
@@ -1422,7 +1433,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       ImmutableSet<PackageIdentifier> topLevelPackages,
       Collection<ConfiguredTarget> topLevelTargets,
       ImmutableSet<AspectKey> topLevelAspects,
-      boolean trackIncrementalState) {
+      boolean trackIncrementalState,
+      boolean remoteAnalysisCachingEnabled) {
     SkyKey key = entry.getKey();
     SkyFunctionName functionName = key.functionName();
     if (discardType.discardsLoading()) {
@@ -1445,7 +1457,10 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
           return false; // It was already cleared.
         }
         boolean topLevel = topLevelTargets.contains(configuredTarget);
-        if (!topLevel && !trackIncrementalState && !hasActions(ctValue)) {
+        if (!topLevel
+            && !trackIncrementalState
+            && !remoteAnalysisCachingEnabled
+            && !hasActions(ctValue)) {
           // If not tracking incremental state, removing these nodes doesn't hurt. Morally we should
           // always be able to remove these, since they're not used for execution, but it leaves the
           // graph inconsistent, and the --discard_analysis_cache with --track_incremental_state
@@ -1457,7 +1472,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
           // empty configuration key and will never change.
           return false;
         }
-        ctValue.clear(!topLevelTargets.contains(configuredTarget));
+        ctValue.clear(!topLevel && !remoteAnalysisCachingEnabled);
       } else if (functionName.equals(SkyFunctions.ASPECT)) {
         AspectKey aspectKey = (AspectKey) key;
         AspectValue aspectValue = (AspectValue) entry.getValue();
@@ -1465,7 +1480,10 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
           return false; // Not successfully analyzed.
         }
         boolean topLevel = topLevelAspects.contains(key);
-        if (!topLevel && !trackIncrementalState && !hasActions(aspectValue)) {
+        if (!topLevel
+            && !trackIncrementalState
+            && !remoteAnalysisCachingEnabled
+            && !hasActions(aspectValue)) {
           return true;
         }
         if (isEmptyOptionsKey(aspectKey.getConfigurationKey())) {
@@ -1473,7 +1491,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
           // empty configuration key and will never change.
           return false;
         }
-        aspectValue.clear(!topLevel);
+        aspectValue.clear(!topLevel && !remoteAnalysisCachingEnabled);
       }
     }
     return false;
@@ -1752,6 +1770,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       BuildLanguageOptions buildLanguageOptions,
       UUID commandId,
       Map<String, String> clientEnv,
+      Map<String, String> repoEnv,
       QuiescingExecutors executors,
       TimestampGranularityMonitor tsgm) {
     checkNotNull(pkgLocator);
@@ -1761,6 +1780,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     this.tsgm.set(tsgm);
     setCommandId(commandId);
     this.clientEnv.set(clientEnv);
+    this.repoEnv.set(repoEnv);
 
     setShowLoadingProgress(packageOptions.getShowLoadingProgress());
     setDefaultVisibility(packageOptions.getDefaultVisibility());
@@ -2245,7 +2265,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
                   Throwables.throwIfInstanceOf(e, BzlLoadFailedException.class);
                   // Otherwise, wrap it.
                   throw new StarlarkExecTransitionLoadingException(e);
-                } else if (e == null && !error.getCycleInfo().isEmpty()) {
+                } else if (!error.getCycleInfo().isEmpty()) {
                   cyclesReporter.reportCycles(
                       error.getCycleInfo(), firstError.getKey(), eventHandler);
                   throw new StarlarkExecTransitionLoadingException(
@@ -2275,8 +2295,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
 
       if (e != null) {
         // Wrap exceptions related to loading
-        if (e instanceof NoSuchThingException noSuchThingException) {
-          throw new InvalidConfigurationException(noSuchThingException.getDetailedExitCode(), e);
+        if (e instanceof DetailedException detailedException) {
+          throw new InvalidConfigurationException(detailedException.getDetailedExitCode(), e);
         }
         Throwables.throwIfInstanceOf(e, InvalidConfigurationException.class);
         // If we get here, e is non-null but not an InvalidConfigurationException, so wrap it and
@@ -2795,6 +2815,15 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     return packageManager;
   }
 
+  /**
+   * Returns the path of the repo contents cache directory, or {@code null} if the repo contents
+   * cache is disabled.
+   */
+  @Nullable
+  public Path getRepoContentsCachePath() {
+    return externalFilesHelper.getRepoContentsCachePath();
+  }
+
   public QueryTransitivePackagePreloader getQueryTransitivePackagePreloader() {
     return queryTransitivePackagePreloader;
   }
@@ -3020,6 +3049,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       PathPackageLocator pathPackageLocator,
       UUID commandId,
       Map<String, String> clientEnv,
+      Map<String, String> repoEnv,
       TimestampGranularityMonitor tsgm,
       QuiescingExecutors executors,
       OptionsProvider options,
@@ -3036,6 +3066,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         pathPackageLocator,
         commandId,
         clientEnv,
+        repoEnv,
         tsgm,
         executors,
         options,
@@ -3070,6 +3101,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       PathPackageLocator pathPackageLocator,
       UUID commandId,
       Map<String, String> clientEnv,
+      Map<String, String> repoEnv,
       TimestampGranularityMonitor tsgm,
       QuiescingExecutors executors,
       OptionsProvider options,
@@ -3085,6 +3117,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
           options.getOptions(BuildLanguageOptions.class),
           commandId,
           clientEnv,
+          repoEnv,
           executors,
           tsgm);
     }
@@ -3576,12 +3609,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         Lock writeLock = labelInterner.getLockForLabelTransferToPool(pkg.getPackageIdentifier());
         writeLock.lock();
         try {
-          pkg.getTargets()
-              .forEach(
-                  (name, target) -> {
-                    Label label = target.getLabel();
-                    labelInterner.removeWeak(label);
-                  });
+          pkg.getTargets().forEach(target -> labelInterner.removeWeak(target.getLabel()));
         } finally {
           writeLock.unlock();
         }
@@ -3837,29 +3865,54 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       }
     }
     handleClientEnvironmentChanges();
+    handleRepositoryEnvironmentChanges();
     isCleanBuild = false;
     return workspaceInfo;
   }
 
   /** Invalidates entries in the client environment. */
   private void handleClientEnvironmentChanges() {
-    // Remove deleted client environmental variables.
+    previousClientEnvironment =
+        injectEnvironmentValues(
+            ClientEnvironmentFunction::key, clientEnv.get(), previousClientEnvironment);
+  }
+
+  /**
+   * Invalidates entries in the repository environment (the environment seen by repository rules and
+   * module extensions).
+   */
+  private void handleRepositoryEnvironmentChanges() {
+    previousRepositoryEnvironment =
+        injectEnvironmentValues(
+            RepoEnvironmentFunction::key, repoEnv.get(), previousRepositoryEnvironment);
+  }
+
+  /**
+   * Injects the current value of each environment variable as a separate Skyframe node and
+   * invalidates the nodes for any variables that disappeared since the previous call. Returns the
+   * new set of variable names to remember as the previous environment.
+   */
+  private ImmutableSet<String> injectEnvironmentValues(
+      Function<String, SkyKey> keyFn,
+      Map<String, String> environment,
+      Set<String> previousEnvironment) {
+    // Remove deleted environment variables.
     ImmutableList<SkyKey> deletedKeys =
-        Sets.difference(previousClientEnvironment, clientEnv.get().keySet()).stream()
-            .map(ClientEnvironmentFunction::key)
+        Sets.difference(previousEnvironment, environment.keySet()).stream()
+            .map(keyFn)
             .collect(toImmutableList());
     recordingDiffer.invalidate(deletedKeys);
-    previousClientEnvironment = clientEnv.get().keySet();
-    // Inject current client environmental values. We can inject unconditionally without fearing
+    // Inject current environmental values. We can inject unconditionally without fearing
     // over-invalidation; skyframe will not invalidate an injected key if the key's new value is the
     // same as the old value.
     ImmutableMap.Builder<SkyKey, Delta> newValuesBuilder = ImmutableMap.builder();
-    for (Map.Entry<String, String> entry : clientEnv.get().entrySet()) {
+    for (Map.Entry<String, String> entry : environment.entrySet()) {
       newValuesBuilder.put(
-          ClientEnvironmentFunction.key(entry.getKey()),
+          keyFn.apply(entry.getKey()),
           Delta.justNew(new EnvironmentVariableValue(entry.getValue())));
     }
     recordingDiffer.inject(newValuesBuilder.buildOrThrow());
+    return ImmutableSet.copyOf(environment.keySet());
   }
 
   /**

@@ -517,6 +517,7 @@ public class TestRunnerAction extends AbstractAction
     // The 'requiredClientEnvVariables' are handled by Skyframe and don't need to be added here.
     fp.addString(testProperties.getSize().toString());
     fp.addString(testProperties.getTimeout().toString());
+    fp.addString(getTimeout().toString());
     fp.addStrings(testProperties.getTags());
     fp.addBoolean(testProperties.isRemotable());
     fp.addInt(shardNum);
@@ -705,6 +706,11 @@ public class TestRunnerAction extends AbstractAction
   @Override
   protected Iterable<PathFragment> getDirectoryOutputsToDelete() {
     return directoriesToDeleteBeforeExecution;
+  }
+
+  @Override
+  public boolean allowsStrategyRegexpMatching() {
+    return false;
   }
 
   void createEmptyOutputs(ActionExecutionContext context) throws IOException {
@@ -1085,7 +1091,7 @@ public class TestRunnerAction extends AbstractAction
   }
 
   @Nullable
-  PathFragment getShExecutableMaybe() {
+  public PathFragment getShExecutableMaybe() {
     return shExecutable;
   }
 

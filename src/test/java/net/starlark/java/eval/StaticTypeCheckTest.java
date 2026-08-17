@@ -23,7 +23,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import javax.annotation.Nullable;
+import net.starlark.java.annot.Param;
 import net.starlark.java.annot.StarlarkBuiltin;
+import net.starlark.java.annot.StarlarkLibrary;
 import net.starlark.java.annot.StarlarkMethod;
 import net.starlark.java.syntax.Expression;
 import net.starlark.java.syntax.FileOptions;
@@ -34,6 +36,7 @@ import net.starlark.java.syntax.StarlarkType;
 import net.starlark.java.syntax.SyntaxError;
 import net.starlark.java.syntax.TypeChecker;
 import net.starlark.java.syntax.TypeConstructor;
+import net.starlark.java.syntax.TypeContext;
 import net.starlark.java.syntax.TypeTable;
 import net.starlark.java.syntax.TypeTagger;
 import net.starlark.java.syntax.Types;
@@ -62,6 +65,12 @@ public final class StaticTypeCheckTest {
           .allowToplevelRebinding(true);
 
   @SuppressWarnings("FieldCanBeFinal")
+  private StarlarkSemantics semantics =
+      StarlarkSemantics.builder()
+          .setBool(StarlarkSemantics.EXPERIMENTAL_STARLARK_STATIC_TYPE_CHECKING, true)
+          .build();
+
+  @SuppressWarnings("FieldCanBeFinal")
   private Module module = Module.create();
 
   @SuppressWarnings("FieldCanBeFinal")
@@ -71,16 +80,21 @@ public final class StaticTypeCheckTest {
   private Program compile(String... lines) throws SyntaxError.Exception {
     Preconditions.checkArgument(lines.length > 0);
     ParserInput input = ParserInput.fromLines(lines);
-    StarlarkFile file = StarlarkFile.parse(input, options.build());
+    FileOptions builtOptions = options.build();
+    StarlarkFile file = StarlarkFile.parse(input, builtOptions);
     Program prog = Program.compileFile(file, module);
-    TypeTable typeTable = TypeTagger.tagProgram(prog, module, loader);
-    if (typeTable.ok()) {
-      TypeChecker.checkProgram(prog, typeTable, module);
+    if (builtOptions.resolveTypeSyntax()) {
+      TypeTable typeTable = TypeTagger.tagProgram(prog, module, loader);
+      if (typeTable.ok()) {
+        TypeChecker.checkProgram(prog, typeTable, module);
+      }
+      if (!typeTable.ok()) {
+        throw new SyntaxError.Exception(typeTable.errors());
+      }
+      return prog.withTypeTable(typeTable);
+    } else {
+      return prog;
     }
-    if (!typeTable.ok()) {
-      throw new SyntaxError.Exception(typeTable.errors());
-    }
-    return prog.withTypeTable(typeTable);
   }
 
   private void assertValid(String... lines) {
@@ -149,6 +163,32 @@ public final class StaticTypeCheckTest {
   }
 
   @Test
+  public void universalTypeConstructors() {
+    assertValid(
+        """
+        # Type constructors from UNIVERSE_EXTRA_TYPE_CONSTRUCTORS can be used as types ...
+        def f(x: Mapping[str, Any] | Sequence[object]) -> Collection:
+            return x
+
+        f([1, 2, 3])
+        f({"a": 1, "b": "foobar"})
+
+        # ... and also as values (e.g. for isinstance checks)
+        print([Any, object, Collection, Mapping, Sequence])
+        """);
+  }
+
+  @Test
+  public void universalTypeConstructors_disabledAsValues_ifTypeSyntaxResolutionDisabled() {
+    options.resolveTypeSyntax(false);
+
+    for (String name : ImmutableList.of("Any", "object", "Collection", "Mapping", "Sequence")) {
+      assertInvalid(
+          String.format("name '%s' is not defined", name), String.format("print(%s)", name));
+    }
+  }
+
+  @Test
   public void starlarkBuiltinAsType() {
     assertValid("x: list[int] = [123]");
 
@@ -178,8 +218,15 @@ public final class StaticTypeCheckTest {
   @StarlarkBuiltin(name = "MissingStaticMethodTypeBuiltin")
   public static final class MissingStaticMethodTypeBuiltin implements StarlarkValue {
     // no getAssociatedTypeConstructor()
+
+    // Override ensures that we don't generate a StarlarkBuiltinAutoType for this class.
+    @Override
+    public StarlarkType getStarlarkType(StarlarkSemantics semantics) {
+      throw new UnsupportedOperationException("fail");
+    }
   }
 
+  @StarlarkLibrary
   public static final class DummyLibrary {
     @StarlarkMethod(name = "BadSignature", documented = false, isTypeConstructor = true)
     public BadSignatureTypeBuiltin badSignature() {
@@ -227,7 +274,7 @@ public final class StaticTypeCheckTest {
     assertValid(
         """
         x: list[int]
-        x.pop(0)
+        y: int = x.pop(0)
         """);
 
     assertInvalid(
@@ -250,7 +297,7 @@ public final class StaticTypeCheckTest {
     assertValid(
         """
         d: dict[str, int]
-        v = d.get("a", 0)
+        v: int = d.get("a", 0)
         d.setdefault("b", 2)
         """);
   }
@@ -323,21 +370,37 @@ public final class StaticTypeCheckTest {
     assertInvalid("cannot assign type 'str' to 'x' of type 'int'", "x: int = PREDECLARED_STR");
   }
 
+  @Test
+  public void callbackTypes() throws Exception {
+    assertValid(
+        """
+        def negate(x: int) -> int:
+            return -x
+
+        min([1, 2, 3], key = negate)
+        max([1, 2, 3], key = lambda x: -x)
+        min([-1, -2, -3], key = abs)
+        """);
+    assertInvalid(
+        "parameter 'key' got value of type 'str', want 'Callable|None'",
+        "x: int = min([1, 2, 3], key = 'abc')");
+  }
+
   // No StarlarkBuiltin annotation.
-  public static final class MyUnannotatedType implements StarlarkValue {
+  public static final class MyUnannotatedType implements StarlarkValue {}
+
+  @StarlarkBuiltin(name = "MyType")
+  public static sealed class MyType implements StarlarkValue
+      permits MyTypeSubclass, MyUnannotatedSubclass {
     @StarlarkMethod(name = "foo", doc = "...")
     public int foo() {
       return 123;
     }
   }
 
-  @StarlarkBuiltin(name = "MyType")
-  public static final class MyType implements StarlarkValue {
-    @StarlarkMethod(name = "foo", doc = "...")
-    public int foo() {
-      return 123;
-    }
-  }
+  public static final class MyUnannotatedSubclass extends MyType {}
+
+  public static final class MyTypeSubclass extends MyType {}
 
   @StarlarkBuiltin(name = "MySelfCallType")
   public static final class MySelfCallType implements StarlarkValue {
@@ -357,7 +420,7 @@ public final class StaticTypeCheckTest {
     @Override
     // Override causes no 'MyExplicitlyTypedType' type to be auto-generated.
     public StarlarkType getStarlarkType(StarlarkSemantics semantics) {
-      return Types.STRUCT_OF_ANY;
+      return Types.ANY_STRUCT;
     }
   }
 
@@ -378,10 +441,10 @@ public final class StaticTypeCheckTest {
         }
 
         @Override
-        public ImmutableList<StarlarkType> getSupertypes() {
+        public ImmutableList<StarlarkType> getSupertypes(TypeContext context) {
           return ImmutableList.of(
               // Nullary callable returning int.
-              Types.callable(
+              Types.generalCallable(
                   ImmutableList.of(),
                   ImmutableList.of(),
                   0,
@@ -401,29 +464,33 @@ public final class StaticTypeCheckTest {
         Module.withPredeclared(
             StarlarkSemantics.DEFAULT,
             ImmutableMap.of(
-                "my_unannotated_type_value",
-                new MyUnannotatedType(),
+                "my_unannotated_subclass_value",
+                new MyUnannotatedSubclass(),
                 "my_type_value",
                 new MyType(),
+                "my_type_subclass_value",
+                new MyTypeSubclass(),
                 "my_self_call_value",
                 new MySelfCallType(),
                 "my_explicitly_typed_value",
                 new MyExplicitlyTypedType(),
                 "my_explicitly_typed_self_call_value",
                 new MyExplicitlyTypedSelfCallType()));
+
     assertValid(
         """
-        a: int = my_unannotated_type_value.foo()
+        a: int = my_unannotated_subclass_value.foo()
         b: int = my_type_value.foo()
-        c: int = my_self_call_value()
-        d: int = my_self_call_value.bar()
-        e: int = my_explicitly_typed_value.some_field  # typed as struct-of-Any
-        f: int = my_explicitly_typed_self_call_value()
+        c: int = my_type_subclass_value.foo()
+        d: int = my_self_call_value()
+        e: int = my_self_call_value.bar()
+        f: int = my_explicitly_typed_value.some_field  # typed as struct-of-Any
+        g: int = my_explicitly_typed_self_call_value()
         """);
 
     assertInvalid(
-        "cannot assign type 'MyUnannotatedType' to 'x' of type 'str'",
-        "x: str = my_unannotated_type_value");
+        "cannot assign type 'MyType' to 'x' of type 'str'",
+        "x: str = my_unannotated_subclass_value");
     assertInvalid("cannot assign type 'MyType' to 'x' of type 'str'", "x: str = my_type_value");
     assertInvalid(
         "cannot assign type 'MySelfCallType' to 'x' of type 'str'", "x: str = my_self_call_value");
@@ -441,5 +508,191 @@ public final class StaticTypeCheckTest {
         "'my_type_value' of type 'MyType' does not have field 'bar'",
         "_: str = my_type_value.bar()");
     assertInvalid("'my_type_value' is not callable; got type 'MyType'", "_: str = my_type_value()");
+  }
+
+  @Test
+  public void unannotatedStarlarkValues_notAutoTyped() throws Exception {
+    module =
+        Module.withPredeclared(
+            StarlarkSemantics.DEFAULT,
+            ImmutableMap.of("unannotated_value", new MyUnannotatedType()));
+    // MyUnannotatedType has no @StarlarkBuiltin-annotated ancestor, so there's no
+    // StarlarkBuiltinAutoType generated for it; therefore, unannotated_value is typed as Object.
+    assertInvalid("cannot assign type 'object' to 'x' of type 'str'", "x: str = unannotated_value");
+  }
+
+  @Test
+  public void subclassesShareSameAutoType() throws Exception {
+    module =
+        Module.withPredeclared(
+            StarlarkSemantics.DEFAULT,
+            ImmutableMap.of(
+                "my_type_value", new MyType(), "my_type_subclass_value", new MyTypeSubclass()));
+    assertValid(
+        """
+        _: None  # ensure file uses type syntax
+        list_a = [my_type_value]  # inferred as list[MyType]
+        list_a[0] = my_type_subclass_value
+        list_b = [my_type_subclass_value]  # also inferred as list[MyType]
+        list_b[0] = my_type_value
+        """);
+
+    assertInvalid(
+        "cannot assign type 'MyType' to 'x' of type 'str'", "x: str = my_type_subclass_value");
+  }
+
+  @StarlarkBuiltin(name = "SelfReferentialType")
+  public static final class SelfReferentialType implements StarlarkValue {
+    @StarlarkMethod(
+        name = "self",
+        doc = "...",
+        parameters = {@Param(name = "x", doc = "...")})
+    public SelfReferentialType self(SelfReferentialType x) {
+      return x;
+    }
+  }
+
+  @StarlarkBuiltin(name = "MutuallyReferentialTypeA")
+  public static final class MutuallyReferentialTypeA implements StarlarkValue {
+    @StarlarkMethod(
+        name = "b",
+        doc = "...",
+        parameters = {@Param(name = "x", doc = "...")})
+    public MutuallyReferentialTypeB b(MutuallyReferentialTypeB x) {
+      return x;
+    }
+  }
+
+  @StarlarkBuiltin(name = "MutuallyReferentialTypeB")
+  public static final class MutuallyReferentialTypeB implements StarlarkValue {
+    @StarlarkMethod(
+        name = "a",
+        doc = "...",
+        parameters = {@Param(name = "x", doc = "...")})
+    public MutuallyReferentialTypeA a(MutuallyReferentialTypeA x) {
+      return x;
+    }
+  }
+
+  @Test
+  public void selfReferentialTypes() throws Exception {
+    // Test types of @StalarkBuiltin-annotated classes whose methods depend on the type itself
+    // (whether directly or transitively).
+    module =
+        Module.withPredeclared(
+            StarlarkSemantics.DEFAULT,
+            ImmutableMap.of(
+                "self_ref", new SelfReferentialType(),
+                "mutually_ref_a", new MutuallyReferentialTypeA(),
+                "mutually_ref_b", new MutuallyReferentialTypeB()));
+    assertValid(
+        """
+        x = self_ref.self(self_ref)
+        y = mutually_ref_a.b(mutually_ref_b).a(mutually_ref_a)
+        _unused: bool = True  # ensure file uses type syntax
+        """);
+
+    assertInvalid(
+        "in call to 'self_ref.self()', parameter 'x' got value of type 'int', want"
+            + " 'SelfReferentialType'",
+        """
+        self_ref.self(123)
+        _unused: bool = True
+        """);
+
+    assertInvalid(
+        "cannot assign type 'SelfReferentialType' to 'x' of type 'int'",
+        """
+        x: int = self_ref.self(self_ref)
+        """);
+
+    assertInvalid(
+        "in call to 'mutually_ref_a.b()', parameter 'x' got value of type 'int', want"
+            + " 'MutuallyReferentialTypeB'",
+        """
+        mutually_ref_a.b(123)
+        _unused: bool = True
+        """);
+
+    assertInvalid(
+        "cannot assign type 'MutuallyReferentialTypeB' to 'x' of type 'int'",
+        """
+        x: int = mutually_ref_a.b(mutually_ref_b)
+        """);
+
+    assertInvalid(
+        "in call to 'mutually_ref_b.a()', parameter 'x' got value of type 'int', want"
+            + " 'MutuallyReferentialTypeA'",
+        """
+        mutually_ref_b.a(123)
+        _unused: bool = True
+        """);
+
+    assertInvalid(
+        "cannot assign type 'MutuallyReferentialTypeA' to 'x' of type 'int'",
+        """
+        x: int = mutually_ref_b.a(mutually_ref_a)
+        """);
+  }
+
+  @Test
+  public void typeAlias_canBeExportedAndLoaded() throws Exception {
+    Module depModule = Module.create();
+    try (Mutability depMutability = Mutability.create("dep")) {
+      StarlarkThread depThread = StarlarkThread.createTransient(depMutability, semantics);
+      var unused =
+          Starlark.execFile(
+              ParserInput.fromLines(
+                  """
+                  type int_or_str = int | str
+                  type optional_list_of[T] = list[T] | None
+                  """),
+              options.build(),
+              depModule,
+              depThread);
+    }
+
+    loader = name -> name.equals("dep.bzl") ? depModule : null;
+
+    assertValid(
+        """
+        load("dep.bzl", "int_or_str", "optional_list_of")
+        x: int_or_str = 123
+        y: optional_list_of[int] = [123]
+        """);
+
+    assertInvalid(
+        "cannot assign type 'bool' to 'x' of type 'int|str'",
+        """
+        load("dep.bzl", "int_or_str")
+        x: int_or_str = False
+        """);
+
+    assertInvalid(
+        "cannot assign type 'list[str]' to 'x' of type 'list[int]|None'",
+        """
+        load("dep.bzl", "optional_list_of")
+        x: optional_list_of[int] = ["abc"]
+        """);
+  }
+
+  @Test
+  public void nonTypeConstructorLoadedValues_cannotBeUsedAsTypeConstructors() throws Exception {
+    Module depModule = Module.create();
+    try (Mutability depMutability = Mutability.create("dep")) {
+      StarlarkThread depThread = StarlarkThread.createTransient(depMutability, semantics);
+      var unused =
+          Starlark.execFile(
+              ParserInput.fromLines("not_a_type = 123"), options.build(), depModule, depThread);
+    }
+
+    loader = name -> name.equals("dep.bzl") ? depModule : null;
+
+    assertInvalid(
+        "local symbol 'not_a_type' cannot be used as a type",
+        """
+        load("dep.bzl", "not_a_type")
+        x: not_a_type = 123
+        """);
   }
 }

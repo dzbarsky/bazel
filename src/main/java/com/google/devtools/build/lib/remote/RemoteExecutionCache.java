@@ -46,6 +46,7 @@ import com.google.devtools.build.lib.remote.common.RemotePathResolver;
 import com.google.devtools.build.lib.remote.disk.DiskCacheClient;
 import com.google.devtools.build.lib.remote.merkletree.MerkleTree;
 import com.google.devtools.build.lib.remote.merkletree.MerkleTreeUploader;
+import com.google.devtools.build.lib.remote.options.RemoteOptions.ChunkingFunctionValue;
 import com.google.devtools.build.lib.remote.util.AsyncTaskCache;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.RxUtils.TransferResult;
@@ -130,13 +131,13 @@ public class RemoteExecutionCache extends CombinedCache implements MerkleTreeUpl
       @Nullable DiskCacheClient diskCacheClient,
       @Nullable String symlinkTemplate,
       DigestUtil digestUtil,
-      boolean chunkingEnabled) {
+      @Nullable ChunkingFunctionValue chunkingFunction) {
     super(
         checkNotNull(remoteCacheClient),
         diskCacheClient,
         symlinkTemplate,
         digestUtil,
-        chunkingEnabled);
+        chunkingFunction);
   }
 
   @VisibleForTesting
@@ -234,9 +235,12 @@ public class RemoteExecutionCache extends CombinedCache implements MerkleTreeUpl
 
   @Override
   public ListenableFuture<Void> uploadVirtualActionInput(
-      RemoteActionExecutionContext context, Digest digest, VirtualActionInput virtualActionInput) {
+      RemoteActionExecutionContext context,
+      Digest digest,
+      VirtualActionInput virtualActionInput,
+      boolean force) {
     return remoteCacheClient.uploadBlob(
-        context, digest, new VirtualActionInputBlob(virtualActionInput), /* force= */ false);
+        context, digest, new VirtualActionInputBlob(virtualActionInput), force);
   }
 
   private record VirtualActionInputBlob(VirtualActionInput virtualActionInput) implements Blob {
@@ -278,9 +282,9 @@ public class RemoteExecutionCache extends CombinedCache implements MerkleTreeUpl
 
   @Override
   public ListenableFuture<Void> uploadBlob(
-      RemoteActionExecutionContext context, Digest digest, byte[] data) {
+      RemoteActionExecutionContext context, Digest digest, byte[] data, boolean force) {
     return remoteCacheClient.uploadBlob(
-        context, digest, () -> new ByteArrayInputStream(data), /* force= */ false);
+        context, digest, () -> new ByteArrayInputStream(data), force);
   }
 
   private ListenableFuture<Void> uploadBlob(

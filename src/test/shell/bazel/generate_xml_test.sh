@@ -80,4 +80,17 @@ function test_invalid_two_byte_seq() {
   assert_equals '??' "$(encode '\xc0\xc0')"
 }
 
+function test_generated_testcase_has_classname() {
+  TEST_BINARY="../some/smoke_test" "$GENERATE_XML" \
+      "$TEST_TMPDIR/missing-test.log" "$TEST_TMPDIR/test.xml" 1 0
+
+  assert_contains '<testcase[^>]* classname=""' \
+      "$TEST_TMPDIR/test.xml"
+}
+
+function test_without_sed_on_path() {
+  assert_equals 'Simple ascii' \
+    "$(echo 'Simple ascii' | PATH=/does-not-exist "$BASH" "$GENERATE_XML" - - - -)"
+}
+
 run_suite "generate-xml.sh tests"

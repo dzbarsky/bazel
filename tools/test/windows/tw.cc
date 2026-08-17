@@ -1301,9 +1301,16 @@ bool StartSubprocess(const Path& path, const std::wstring& args,
     return false;
   }
 
+  // CreateProcessW's implicit cwd inheritance fails when cwd exceeds MAX_PATH:
+  // populate it so that `process->Create` may shorten it.
+  Path cwd;
+  if (!GetCwd(&cwd)) {
+    return false;
+  }
+
   std::wstring werror;
-  if (!process->Create(path.Get(), args, nullptr, L"", devnull_read, pipe_write,
-                       pipe_write_dup, start_time, &werror)) {
+  if (!process->Create(path.Get(), args, nullptr, cwd.Get(), devnull_read,
+                       pipe_write, pipe_write_dup, start_time, &werror)) {
     LogError(__LINE__, werror);
     return false;
   }
@@ -1736,8 +1743,9 @@ bool CreateXmlLog(const Path& output, const Path& test_outerr,
        << acp_test_name << "\" tests=\"1\" failures=\"0\" errors=\"" << errors
        << "\">\n"
           "<testcase name=\""
-       << acp_test_name << "\" status=\"run\" duration=\"" << duration.seconds
-       << "\" time=\"" << duration.seconds << "\">" << error_msg
+       << acp_test_name << "\" classname=\"\" status=\"run\" duration=\""
+       << duration.seconds << "\" time=\"" << duration.seconds << "\">"
+       << error_msg
        << "</testcase>\n"
           "<system-out><![CDATA[";
   if (!ostm.good()) {

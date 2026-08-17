@@ -28,6 +28,7 @@
 #include "src/main/cpp/blaze_util.h"
 #include "src/main/cpp/server_process_info.h"
 #include "src/main/cpp/util/port.h"
+#include "absl/strings/string_view.h"
 
 namespace blaze {
 
@@ -88,10 +89,15 @@ class SignalHandler {
   const std::string& GetProductName() const { return product_name_; }
   const blaze_util::Path& GetOutputBase() const { return output_base_; }
   void CancelServer() { cancel_server_(); }
+  void TerminalSizeChanged() {
+    if (terminal_size_changed_ != nullptr) {
+      terminal_size_changed_();
+    }
+  }
   void Install(const std::string& product_name,
                const blaze_util::Path& output_base,
                const ServerProcessInfo* server_process_info,
-               Callback cancel_server);
+               Callback cancel_server, Callback terminal_size_changed);
   ATTRIBUTE_NORETURN void PropagateSignalOrExit(int exit_code);
 
  private:
@@ -101,8 +107,12 @@ class SignalHandler {
   blaze_util::Path output_base_;
   const ServerProcessInfo* server_process_info_;
   Callback cancel_server_;
+  Callback terminal_size_changed_;
 
-  SignalHandler() : server_process_info_(nullptr), cancel_server_(nullptr) {}
+  SignalHandler()
+      : server_process_info_(nullptr),
+        cancel_server_(nullptr),
+        terminal_size_changed_(nullptr) {}
 };
 
 // A signal-safe version of fprintf(stderr, ...).
@@ -226,6 +236,11 @@ void ReleaseLock(LockHandle lock_handle);
 
 // Verifies whether the server process still exists. Returns true if it does.
 bool VerifyServerProcess(int pid, const blaze_util::Path& output_base);
+
+// Parses the content of /proc/[pid]/stat (passed as statline) to extract the
+// start time (field 22). Returns true on success and writes the start time to
+// 'start_time'. Returns false on failure.
+bool ParseProcStat(absl::string_view statline, std::string* start_time);
 
 // Kills a server process based on its PID.
 // Returns true if the server process was found and killed.

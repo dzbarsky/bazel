@@ -13,12 +13,25 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe.serialization.analysis;
 
-import com.google.devtools.build.lib.skyframe.serialization.analysis.proto.MissReason;
-import com.google.protobuf.ByteString;
+import com.google.devtools.build.lib.skybridge.SkybridgeInterface;
+import javax.annotation.Nullable;
 
 /** The result of a remote analysis cache lookup. */
-public record LookupResult(ByteString value, MissReason missReason) {
-  public LookupResult(ByteString value) {
-    this(value, MissReason.MISS_REASON_UNSPECIFIED);
-  }
+@SuppressWarnings("ArrayRecordComponent") // To keep the SkybridgeInterface simple.
+@SkybridgeInterface
+public interface LookupResult {
+  /** The serialized SkyValue, or empty if the lookup missed. */
+  byte[] value();
+
+  /** The invalidation fingerprint of the node, or null if missing. */
+  @Nullable
+  byte[] invalidationFingerprint();
+
+  /**
+   * Corresponds to com.google.devtools.build.lib.skyframe.serialization.analysis.proto.MissReason.
+   * We use an int instead of the proto to keep the SkybridgeInterface simple. Since older LCs may
+   * not know about the new enum values, consumers must check for possible version skews and map the
+   * value to MISS_REASON_UNSPECIFIED.
+   */
+  int missReason();
 }

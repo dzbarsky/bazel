@@ -72,6 +72,7 @@ public abstract class AuthAndTLSOptions extends OptionsBase {
       defaultValue = "null",
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.UNKNOWN},
+      metadataTags = {OptionMetadataTag.FULLY_REDACTED_IN_LOGS},
       help =
           "Specifies the file to get authentication credentials from. See "
               + "https://cloud.google.com/docs/authentication for details.")
@@ -107,6 +108,7 @@ public abstract class AuthAndTLSOptions extends OptionsBase {
       converter = EmptyToNullStringConverter.class,
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.UNKNOWN},
+      metadataTags = {OptionMetadataTag.FULLY_REDACTED_IN_LOGS},
       help =
           "Specify the TLS client key to use; you also need to provide a client certificate to "
               + "enable client authentication. An empty value resets the flag to its default.")
@@ -132,8 +134,8 @@ public abstract class AuthAndTLSOptions extends OptionsBase {
       help =
           """
           Configures keep-alive pings for outgoing gRPC connections. If this is set, then Bazel
-          sends pings after this much time of no read operations on the connection, but
-          only if there is at least one pending gRPC call. The value 0 disables the keep-alives.
+          sends pings after this much time of no read operations on the connection, even if
+          there are no pending gRPC calls. The value 0 disables the keep-alives.
           """)
   public abstract Duration getGrpcKeepaliveTime();
 
@@ -152,6 +154,61 @@ public abstract class AuthAndTLSOptions extends OptionsBase {
           pings are disabled, then this setting is ignored.
           """)
   public abstract Duration getGrpcKeepaliveTimeout();
+
+  @Option(
+      name = "grpc_tcp_keepalive",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help =
+          """
+          Whether to enable TCP keep-alive (the SO_KEEPALIVE socket option) for outgoing gRPC
+          connections. This operates at the transport layer and is independent of the
+          application-level keep-alive pings configured with `--grpc_keepalive_time`. When enabled,
+          the keep-alive behavior is controlled by `--grpc_tcp_keepalive_time`,
+          `--grpc_tcp_keepalive_interval` and `--grpc_tcp_keepalive_count`.
+          """)
+  public abstract boolean getGrpcTcpKeepalive();
+
+  @Option(
+      name = "grpc_tcp_keepalive_time",
+      defaultValue = "60s",
+      converter = DurationConverter.class,
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help =
+          """
+          When `--grpc_tcp_keepalive` is enabled, the amount of idle time on a gRPC connection
+          before the first TCP keep-alive probe is sent (TCP_KEEPIDLE). Has no effect if TCP
+          keep-alive is disabled.
+          """)
+  public abstract Duration getGrpcTcpKeepaliveTime();
+
+  @Option(
+      name = "grpc_tcp_keepalive_interval",
+      defaultValue = "10s",
+      converter = DurationConverter.class,
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help =
+          """
+          When `--grpc_tcp_keepalive` is enabled, the amount of time between successive TCP
+          keep-alive probes (TCP_KEEPINTVL). Has no effect if TCP keep-alive is disabled.
+          """)
+  public abstract Duration getGrpcTcpKeepaliveInterval();
+
+  @Option(
+      name = "grpc_tcp_keepalive_count",
+      defaultValue = "3",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help =
+          """
+          When `--grpc_tcp_keepalive` is enabled, the number of unacknowledged TCP keep-alive probes
+          to send before considering the connection dead (TCP_KEEPCNT). Has no effect if TCP
+          keep-alive is disabled.
+          """)
+  public abstract int getGrpcTcpKeepaliveCount();
 
   @Option(
       name = "credential_helper",

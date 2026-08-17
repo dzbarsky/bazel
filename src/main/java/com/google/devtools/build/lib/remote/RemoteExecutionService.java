@@ -65,13 +65,14 @@ import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.devtools.build.lib.actions.ActionExecutionMetadata;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.CommandLines;
 import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
+import com.google.devtools.build.lib.actions.ParamFileActionInput;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.Spawns;
@@ -531,11 +532,11 @@ public class RemoteExecutionService {
       if (toolSignature != null) {
         additionalPropertiesBuilder.put(
             PlatformProperties.PERSISTENT_WORKER_KEY, toolSignature.key);
-      }
-      if (spawn.getExecutionInfo().containsKey(ExecutionRequirements.REQUIRES_WORKER_PROTOCOL)) {
-        additionalPropertiesBuilder.put(
-            PlatformProperties.PERSISTENT_WORKER_PROTOCOL,
-            spawn.getExecutionInfo().get(ExecutionRequirements.REQUIRES_WORKER_PROTOCOL));
+        if (spawn.getExecutionInfo().containsKey(ExecutionRequirements.REQUIRES_WORKER_PROTOCOL)) {
+          additionalPropertiesBuilder.put(
+              PlatformProperties.PERSISTENT_WORKER_PROTOCOL,
+              spawn.getExecutionInfo().get(ExecutionRequirements.REQUIRES_WORKER_PROTOCOL));
+        }
       }
       platform =
           PlatformUtils.getPlatformProto(spawn, remoteOptions, additionalPropertiesBuilder.build());
@@ -563,9 +564,17 @@ public class RemoteExecutionService {
 
       ActionKey actionKey = digestUtil.computeActionKey(action);
 
+      ActionExecutionMetadata actionMetadata = spawn.getResourceOwner();
       RequestMetadata metadata =
           TracingMetadataUtils.buildMetadata(
-              buildRequestId, commandId, actionKey.digest().getHash(), spawn.getResourceOwner());
+              buildRequestId,
+              commandId,
+              actionKey.digest().getHash(),
+              actionMetadata != null ? actionMetadata.getMnemonic() : null,
+              actionMetadata != null && actionMetadata.getOwner().getLabel() != null
+                  ? actionMetadata.getOwner().getLabel().getCanonicalForm()
+                  : null,
+              actionMetadata != null ? actionMetadata.getOwner().getConfigurationChecksum() : null);
       RemoteActionExecutionContext remoteActionExecutionContext =
           RemoteActionExecutionContext.create(
               spawn, context, metadata, getWriteCachePolicy(spawn), getReadCachePolicy(spawn));
@@ -940,6 +949,18 @@ public class RemoteExecutionService {
 
   private void createSymlinks(Iterable<SymlinkMetadata> symlinks) throws IOException {
     for (SymlinkMetadata symlink : symlinks) {
+      // Ensure the symlink is materialized inside the exec root. The local path is derived from an
+      // ActionResult output symlink path via execRoot.getRelative(...), which returns an absolute
+      // path verbatim, so without this check an absolute (or otherwise escaping) symlink path would
+      // be created outside the output tree. Output files already enforce containment via
+      // file.path.relativeTo(execRoot) in downloadOutputs(); apply the same guarantee to output
+      // symlinks (including tree-nested symlinks, which also flow through here).
+      if (!symlink.path().startsWith(execRoot)) {
+        throw new IOException(
+            String.format(
+                "Failed to create symlink %s: the output path escapes the output tree %s",
+                symlink.path(), execRoot));
+      }
       Preconditions.checkNotNull(
               symlink.path().getParentDirectory(),
               "Failed creating directory and parents for %s",
@@ -1068,13 +1089,21 @@ public class RemoteExecutionService {
     }
   }
 
+  private static void validatePathComponent(String name) throws IOException {
+    if (name.isEmpty() || name.contains("/") || name.equals(".") || name.equals("..")) {
+      throw new IOException("Malformed path component: " + name);
+    }
+  }
+
   private static DirectoryMetadata parseDirectory(
-      Path parent, Directory dir, Map<Digest, Directory> childDirectoriesMap) {
+      Path parent, Directory dir, Map<Digest, Directory> childDirectoriesMap) throws IOException {
     ImmutableList.Builder<FileMetadata> filesBuilder = ImmutableList.builder();
     for (FileNode file : dir.getFilesList()) {
+      String name = unicodeToInternal(file.getName());
+      validatePathComponent(name);
       filesBuilder.add(
           new FileMetadata(
-              parent.getRelative(unicodeToInternal(file.getName())),
+              parent.getRelative(name),
               file.getDigest(),
               file.getIsExecutable(),
               ByteString.EMPTY));
@@ -1082,14 +1111,18 @@ public class RemoteExecutionService {
 
     ImmutableList.Builder<SymlinkMetadata> symlinksBuilder = ImmutableList.builder();
     for (SymlinkNode symlink : dir.getSymlinksList()) {
+      String name = unicodeToInternal(symlink.getName());
+      validatePathComponent(name);
       symlinksBuilder.add(
           new SymlinkMetadata(
-              parent.getRelative(unicodeToInternal(symlink.getName())),
+              parent.getRelative(name),
               PathFragment.create(unicodeToInternal(symlink.getTarget()))));
     }
 
     for (DirectoryNode directoryNode : dir.getDirectoriesList()) {
-      Path childPath = parent.getRelative(unicodeToInternal(directoryNode.getName()));
+      String name = unicodeToInternal(directoryNode.getName());
+      validatePathComponent(name);
+      Path childPath = parent.getRelative(name);
       Directory childDir =
           Preconditions.checkNotNull(childDirectoriesMap.get(directoryNode.getDigest()));
       DirectoryMetadata childMetadata = parseDirectory(childPath, childDir, childDirectoriesMap);
@@ -1135,7 +1168,7 @@ public class RemoteExecutionService {
         dirMetadataDownloads.put(
             localPath,
             Futures.transformAsync(
-                combinedCache.downloadBlob(
+                combinedCache.downloadBlobAsByteString(
                     context,
                     outputPath,
                     remotePathResolver.localPathToExecPath(localPath.asFragment()),
@@ -1290,7 +1323,8 @@ public class RemoteExecutionService {
                   file.path().asFragment(),
                   DigestUtil.toBinaryDigest(file.digest()),
                   file.digest().getSizeBytes(),
-                  expirationTime);
+                  expirationTime,
+                  isInMemoryOutputFile);
         }
 
         if (isInMemoryOutputFile) {
@@ -1304,13 +1338,13 @@ public class RemoteExecutionService {
             } else {
               downloadsBuilder.add(
                   transform(
-                      combinedCache.downloadBlob(
+                      combinedCache.downloadBlobAsByteString(
                           context,
                           inMemoryOutputPath.getPathString(),
                           inMemoryOutputPath,
                           file.digest()),
                       data -> {
-                        inMemoryOutputData.set(ByteString.copyFrom(data));
+                        inMemoryOutputData.set(data);
                         return null;
                       },
                       directExecutor()));
@@ -1344,7 +1378,8 @@ public class RemoteExecutionService {
                   file.path().asFragment(),
                   DigestUtil.toBinaryDigest(file.digest()),
                   file.digest().getSizeBytes(),
-                  expirationTime);
+                  expirationTime,
+                  /* inMemoryOutput= */ false);
         }
       }
     }
@@ -1985,7 +2020,15 @@ public class RemoteExecutionService {
         && (actionResult.getExitCode() != 0 || resp.getStatus().getCode() != Code.OK.value())) {
       for (Map.Entry<String, LogFile> e : resp.getServerLogsMap().entrySet()) {
         if (e.getValue().getHumanReadable()) {
-          serverLogs.lastLogPath = serverLogs.directory.getRelative(e.getKey());
+          Path lastLogPath = serverLogs.directory.getRelative(e.getKey());
+          if (!lastLogPath.startsWith(serverLogs.directory)) {
+            throw new IOException(
+                String.format(
+                    "Path traversal detected in server log key: %s (resolved: %s, expected"
+                        + " descendant of %s)",
+                    e.getKey(), lastLogPath, serverLogs.directory));
+          }
+          serverLogs.lastLogPath = lastLogPath;
           serverLogs.logCount++;
           getFromFuture(
               combinedCache.downloadFile(
@@ -2055,7 +2098,7 @@ public class RemoteExecutionService {
       return;
     }
     for (ActionInput actionInput : spawn.getInputFiles().flatten()) {
-      if (actionInput instanceof CommandLines.ParamFileActionInput paramFileActionInput) {
+      if (actionInput instanceof ParamFileActionInput paramFileActionInput) {
         paramFileActionInput.atomicallyWriteRelativeTo(execRoot);
       }
     }

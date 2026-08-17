@@ -21,6 +21,7 @@ java_library(
     deps = [
         "//src/main/protobuf:worker_protocol_java_proto",
         "//third_party:gson",
+        "//third_party:jsr305",
         "@com_google_protobuf//:protobuf_java_util",
     ],
 )
@@ -106,12 +107,10 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/events",
         "//src/main/java/com/google/devtools/build/lib/exec:abstract_spawn_strategy",
         "//src/main/java/com/google/devtools/build/lib/exec:execution_options",
-        "//src/main/java/com/google/devtools/build/lib/exec:runfiles_tree_updater",
         "//src/main/java/com/google/devtools/build/lib/exec:spawn_strategy_registry",
         "//src/main/java/com/google/devtools/build/lib/exec/local",
         "//src/main/java/com/google/devtools/build/lib/runtime:blaze_command_cluster",
         "//src/main/java/com/google/devtools/build/lib/runtime/commands/events",
-        "//src/main/java/com/google/devtools/build/lib/sandbox:cgroups_info",
         "//src/main/java/com/google/devtools/build/lib/sandbox:linux_sandbox_util",
         "//src/main/java/com/google/devtools/build/lib/sandbox:sandbox_options",
         "//src/main/java/com/google/devtools/build/lib/sandbox:tree_deleter",

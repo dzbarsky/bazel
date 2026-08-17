@@ -22,11 +22,20 @@ java_library(
 )
 
 java_library(
+    name = "terminal_size_monitor",
+    srcs = ["TerminalSizeMonitor.java"],
+    deps = [
+        "//third_party:guava",
+    ],
+)
+
+java_library(
     name = "command_manager",
     srcs = ["CommandManager.java"],
     deps = [
         ":idle_task",
         ":idle_task_manager",
+        ":terminal_size_monitor",
         "//src/main/java/com/google/devtools/build/lib/util",
         "//src/main/protobuf:command_server_java_proto",
         "//third_party:flogger",
@@ -65,6 +74,7 @@ java_library(
     srcs = ["GrpcCommandServerImpl.java"],
     deps = [
         ":grpc_command_server",
+        "//src/main/java/com/google/devtools/build/lib/skybridge:sc_only",
         "//src/main/java/com/google/devtools/build/lib/util:os",
         "//src/main/protobuf:command_server_java_grpc",
         "//src/main/protobuf:command_server_java_proto",
@@ -99,6 +109,7 @@ java_library(
         ":grpc_command_server",
         ":grpc_command_server_impl",
         ":grpc_command_server_service",
+        "//src/main/java/com/google/devtools/build/lib/skybridge:sc_only",
     ],
 )
 

@@ -13,20 +13,16 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe.serialization.analysis;
 
-import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.util.concurrent.Futures.whenAllSucceed;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.google.devtools.build.lib.concurrent.safeexecutor.SafeExecutor.safeDirectExecutor;
 import static com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.EmptyFileOpNode.EMPTY_FILE_OP_NODE;
-import static com.google.devtools.build.lib.skyframe.serialization.analysis.InvalidationDataInfoOrFuture.ConstantFileData.CONSTANT_FILE;
-import static com.google.devtools.build.lib.skyframe.serialization.analysis.InvalidationDataInfoOrFuture.ConstantListingData.CONSTANT_LISTING;
-import static com.google.devtools.build.lib.skyframe.serialization.analysis.InvalidationDataInfoOrFuture.ConstantNodeData.CONSTANT_NODE;
 import static com.google.devtools.build.lib.skyframe.serialization.proto.DataType.DATA_TYPE_ANALYSIS_NODE;
-import static com.google.devtools.build.lib.skyframe.serialization.proto.DataType.DATA_TYPE_EMPTY;
 import static com.google.devtools.build.lib.skyframe.serialization.proto.DataType.DATA_TYPE_EXECUTION_NODE;
-import static com.google.devtools.build.lib.skyframe.serialization.proto.DataType.DATA_TYPE_FILE;
-import static com.google.devtools.build.lib.skyframe.serialization.proto.DataType.DATA_TYPE_LISTING;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import com.google.common.eventbus.EventBus;
@@ -35,16 +31,24 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
+import com.google.devtools.build.lib.actions.ActionLookupSummaryKey;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
+import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.concurrent.QuiescingFuture;
+import com.google.devtools.build.lib.concurrent.safeexecutor.RejectionHandlingRunnable;
 import com.google.devtools.build.lib.profiler.CounterSeriesCollector;
 import com.google.devtools.build.lib.profiler.CounterSeriesTask;
 import com.google.devtools.build.lib.profiler.CounterSeriesTask.Color;
+import com.google.devtools.build.lib.profiler.CounterSeriesTaskImpl;
 import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
+import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNode;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNodeOrEmpty;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FutureFileOpNode;
 import com.google.devtools.build.lib.skyframe.serialization.AsyncSerializationTask;
+import com.google.devtools.build.lib.skyframe.serialization.DeserializedSkyValue;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueService;
 import com.google.devtools.build.lib.skyframe.serialization.FrontierNodeVersion;
 import com.google.devtools.build.lib.skyframe.serialization.KeyValueWriter;
@@ -53,31 +57,32 @@ import com.google.devtools.build.lib.skyframe.serialization.PackedFingerprint;
 import com.google.devtools.build.lib.skyframe.serialization.ProfileCollector;
 import com.google.devtools.build.lib.skyframe.serialization.SerializationResult;
 import com.google.devtools.build.lib.skyframe.serialization.SharedValueSerializationContext;
-import com.google.devtools.build.lib.skyframe.serialization.WriteStatuses.WriteStatus;
-import com.google.devtools.build.lib.skyframe.serialization.analysis.InvalidationDataInfoOrFuture.FileInvalidationDataInfo;
+import com.google.devtools.build.lib.skyframe.serialization.WriteStatus;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.InvalidationDataInfoOrFuture.FutureFileDataInfo;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.InvalidationDataInfoOrFuture.FutureListingDataInfo;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.InvalidationDataInfoOrFuture.FutureNodeDataInfo;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.InvalidationDataInfoOrFuture.InvalidationDataInfo;
-import com.google.devtools.build.lib.skyframe.serialization.analysis.InvalidationDataInfoOrFuture.ListingInvalidationDataInfo;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.InvalidationDataInfoOrFuture.NodeInvalidationDataInfo;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingEventListener.SerializedNodeEvent;
 import com.google.devtools.build.lib.versioning.LongVersionGetter;
 import com.google.devtools.build.skyframe.InMemoryGraph;
 import com.google.devtools.build.skyframe.InMemoryNodeEntry;
 import com.google.devtools.build.skyframe.SkyKey;
+import com.google.devtools.build.skyframe.SkyValue;
+import com.google.errorprone.annotations.DoNotCall;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.CodedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
-import java.util.function.Consumer;
 import javax.annotation.Nullable;
 
 /**
@@ -98,9 +103,9 @@ import javax.annotation.Nullable;
  * have relatively small immediate representations. When there is a large amount of data, it will be
  * expressed via references (e.g., keys to a other {@link FingerprintValueService} entries).
  */
-final class SelectedEntrySerializer implements Consumer<SkyKey> {
+final class SelectedEntrySerializer {
   // Chosen completely arbitrarily and the first attempt worked out quite well
-  private static final int MAX_PENDING_SKYVALUES = 10_000;
+  private static final int MAX_PENDING_SKYVALUES = 20_000;
 
   /**
    * Counters for the progress of serialization.
@@ -120,38 +125,40 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
     private final AtomicLong valueBytesUploaded = new AtomicLong();
 
     private static final CounterSeriesTask ENTRIES_WAITING_FOR_KEY_BYTES =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: SkyValues: Waiting for key bytes", "SkyValues", Color.RAIL_LOAD);
 
     private static final CounterSeriesTask ENTRIES_WAITING_FOR_VALUE_BYTES =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: SkyValues: Waiting for value bytes", "SkyValues", Color.RAIL_LOAD);
 
     private static final CounterSeriesTask ENTRIES_WAITING_FOR_INVALIDATION_INFO =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: SkyValues: Waiting for invalidation info", "SkyValues", Color.RAIL_LOAD);
 
     private static final CounterSeriesTask ENTRIES_WAITING_FOR_INVALIDATION_BYTES =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: SkyValues: Waiting for invalidation bytes", "SkyValues", Color.RAIL_LOAD);
 
     private static final CounterSeriesTask ENTRIES_WAITING_FOR_UPLOAD =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: SkyValues: Waiting for upload", "SkyValues", Color.RAIL_LOAD);
     private static final CounterSeriesTask ENTRIES_UPLOADED =
-        new CounterSeriesTask("Skycache: SkyValues: Uploaded", "SkyValues", Color.RAIL_RESPONSE);
+        new CounterSeriesTaskImpl(
+            "Skycache: SkyValues: Uploaded", "SkyValues", Color.RAIL_RESPONSE);
 
     private static final CounterSeriesTask KEY_BYTES_WAITING_FOR_UPLOAD =
-        new CounterSeriesTask("Skycache: SkyValue bytes: Pending", "Key", Color.RAIL_LOAD);
+        new CounterSeriesTaskImpl("Skycache: SkyValue bytes: Pending", "Key", Color.RAIL_LOAD);
 
     private static final CounterSeriesTask VALUE_BYTES_WAITING_FOR_UPLOAD =
-        new CounterSeriesTask("Skycache: SkyValue bytes: Pending", "Value", Color.RAIL_LOAD);
+        new CounterSeriesTaskImpl("Skycache: SkyValue bytes: Pending", "Value", Color.RAIL_LOAD);
 
     private static final CounterSeriesTask KEY_BYTES_UPLOADED =
-        new CounterSeriesTask("Skycache: SkyValue bytes: Uploaded", "Key", Color.RAIL_RESPONSE);
+        new CounterSeriesTaskImpl("Skycache: SkyValue bytes: Uploaded", "Key", Color.RAIL_RESPONSE);
 
     private static final CounterSeriesTask VALUE_BYTES_UPLOADED =
-        new CounterSeriesTask("Skycache: SkyValue bytes: Uploaded", "Value", Color.RAIL_RESPONSE);
+        new CounterSeriesTaskImpl(
+            "Skycache: SkyValue bytes: Uploaded", "Value", Color.RAIL_RESPONSE);
 
     @Override
     public void collect(double deltaNanos, BiConsumer<CounterSeriesTask, Double> consumer) {
@@ -205,9 +212,22 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
 
   private final SerializationStatus writeStatuses;
 
+  private final boolean shouldDiscardMemory;
+
   private final EventBus eventBus;
   private final ProfileCollector profileCollector;
   private final SerializationStats serializationStats;
+  private final boolean emitUploadedEvents;
+
+  /**
+   * Tracks the number of selected configured target keys remaining to be uploaded per package.
+   *
+   * <p>Used to perform early memory reclamation of {@link PackageValue} nodes from the Skyframe
+   * graph as soon as all of their selected configured targets have finished uploading.
+   *
+   * <p>Null if {@link #shouldDiscardMemory} is false.
+   */
+  @Nullable private final ImmutableMap<PackageIdentifier, AtomicInteger> packageRefcounts;
 
   /** Uploads the entries of {@code selection} to {@code fingerprintValueService}. */
   static QuiescingFuture<ImmutableList<Throwable>> uploadSelection(
@@ -218,11 +238,31 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
       ImmutableSet<SkyKey> selection,
       FingerprintValueService fingerprintValueService,
       KeyValueWriter fileInvalidationWriter,
+      boolean shouldDiscardMemory,
       EventBus eventBus,
       ProfileCollector profileCollector,
-      SerializationStats serializationStats)
+      SerializationStats serializationStats,
+      boolean emitUploadedEvents,
+      FileOpNodeMemoizingLookup fileOpNodes)
       throws InterruptedException {
-    var fileOpNodes = new FileOpNodeMemoizingLookup(fingerprintValueService.getExecutor(), graph);
+    ImmutableMap<PackageIdentifier, AtomicInteger> packageRefcounts = null;
+    if (shouldDiscardMemory) {
+      var tempRefcounts = new ConcurrentHashMap<PackageIdentifier, AtomicInteger>();
+      selection.parallelStream()
+          .forEach(
+              key -> {
+                if (!(key instanceof ConfiguredTargetKey ctKey)) {
+                  return;
+                }
+                tempRefcounts
+                    .computeIfAbsent(
+                        getActualPackageIdentifier(graph, ctKey), unused -> new AtomicInteger(0))
+                    .incrementAndGet();
+              });
+      packageRefcounts = ImmutableMap.copyOf(tempRefcounts);
+    }
+    fileOpNodes.setMemoryReclamationParameters(
+        selection, shouldDiscardMemory, shouldDiscardMemory ? packageRefcounts.keySet() : null);
     var fileDependencySerializer =
         new FileDependencySerializer(
             versionGetter,
@@ -240,9 +280,12 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
             fileOpNodes,
             fileDependencySerializer,
             writeStatuses,
+            shouldDiscardMemory,
+            packageRefcounts,
             eventBus,
             profileCollector,
-            serializationStats);
+            serializationStats,
+            emitUploadedEvents);
 
     // A topological sort prevents the antipattern where one serializes a high level node, walks
     // its whole transitive closure, then serializes lower level nodes, thus revisiting the
@@ -254,28 +297,14 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
     ImmutableList<SkyKey> sortedSelection = sortTopologically(selection, graph);
 
     for (SkyKey selectedKey : sortedSelection) {
-      // We acquire the semaphore here and not in the Runnable so as not to starve the thread pool.
-      writeStatuses.semaphore.acquire();
-      writeStatuses.selectedEntryStarting();
-      fingerprintValueService
-          .getExecutor()
-          .execute(
-              () -> {
-                try {
-                  serializer.accept(selectedKey);
-                } catch (Throwable t) {
-                  writeStatuses.notifyWriteFailure(t); // Propagates uncaught exceptions.
-                } finally {
-                  writeStatuses.semaphore.release();
-                }
-              });
+      serializer.upload(selectedKey);
     }
 
-    writeStatuses.notifyAllStarted();
+    writeStatuses.finishRegistration();
     return writeStatuses;
   }
 
-  private SelectedEntrySerializer(
+  SelectedEntrySerializer(
       InMemoryGraph graph,
       ObjectCodecs codecs,
       FrontierNodeVersion frontierVersion,
@@ -283,9 +312,12 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
       FileOpNodeMemoizingLookup fileOpNodes,
       FileDependencySerializer fileDependencySerializer,
       SerializationStatus writeStatuses,
+      boolean shouldDiscardMemory,
+      @Nullable ImmutableMap<PackageIdentifier, AtomicInteger> packageRefcounts,
       EventBus eventBus,
       ProfileCollector profileCollector,
-      SerializationStats serializationStats) {
+      SerializationStats serializationStats,
+      boolean emitUploadedEvents) {
     this.graph = graph;
     this.codecs = codecs;
     this.frontierVersion = frontierVersion;
@@ -293,111 +325,219 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
     this.fileOpNodes = fileOpNodes;
     this.fileDependencySerializer = fileDependencySerializer;
     this.writeStatuses = writeStatuses;
+    this.shouldDiscardMemory = shouldDiscardMemory;
+    this.packageRefcounts = packageRefcounts;
     this.eventBus = eventBus;
     this.profileCollector = profileCollector;
     this.serializationStats = serializationStats;
+    this.emitUploadedEvents = emitUploadedEvents;
   }
 
-  @Override
-  public void accept(SkyKey key) {
+  public void upload(SkyKey key) throws InterruptedException {
+    InMemoryNodeEntry entry = graph.getIfPresent(key);
+    if (entry != null && entry.getValue() instanceof DeserializedSkyValue) {
+      return;
+    }
     // TODO: b/371508153 - only upload nodes that were freshly computed by this invocation and
     // unaffected by local, un-submitted changes.
+    writeStatuses.selectedEntryStartingCapped();
     try {
       switch (key) {
-        case ActionLookupKey actionLookupKey:
+        case ActionLookupKey actionLookupKey -> {
+          if (entry == null) {
+            throw new MissingSkyframeEntryException(actionLookupKey);
+          }
           serializationStats.registerAnalysisNode();
-          uploadEntry(actionLookupKey, actionLookupKey);
-          break;
-        case ActionLookupData lookupData:
+          uploadAnalysisEntry(actionLookupKey, entry.getValue(), entry.getDirectDeps());
+        }
+        case ActionLookupData lookupData -> {
           serializationStats.registerExecutionNode();
-          uploadEntry(lookupData, checkNotNull(lookupData.getActionLookupKey(), lookupData));
-          break;
-        case DerivedArtifact artifact:
+          uploadExecutionEntry(lookupData, null);
+        }
+        case DerivedArtifact artifact -> {
           // This case handles the subclasses of DerivedArtifact. DerivedArtifact itself will show
           // up here as ActionLookupData.
           serializationStats.registerExecutionNode();
-          uploadEntry(artifact, checkNotNull(artifact.getArtifactOwner(), artifact));
-          break;
-        default:
-          throw new AssertionError("Unexpected selected type: " + key.getCanonicalName());
+          uploadExecutionEntry(artifact, null);
+        }
+        case ActionLookupSummaryKey summaryKey -> {
+          serializationStats.registerExecutionNode();
+          uploadExecutionEntry(summaryKey, null);
+        }
+        default -> throw new AssertionError("Unexpected selected type: " + key.getCanonicalName());
       }
       eventBus.post(new SerializedNodeEvent(key));
     } catch (MissingSkyframeEntryException e) {
-      writeStatuses.notifyWriteFailure(e);
+      writeStatuses.selectedEntryFailed(e);
+    } catch (Throwable t) {
+      writeStatuses.selectedEntryFailed(t);
     }
+  }
+
+  /**
+   * Uploads an analysis phase entry to Skycache.
+   *
+   * <p>Direct deps must always be given.
+   */
+  public void uploadAnalysisEntry(
+      ActionLookupKey key, SkyValue value, Iterable<SkyKey> directDeps) {
+    // For analysis phase entries, we register their own dependencies in the invalidation data
+    uploadEntry(key, value, key, directDeps);
+  }
+
+  /**
+   * Uploads an execution phase entry to Skycache.
+   *
+   * <p>If {@code value} is not given, it is read from Skyframe.
+   */
+  public void uploadExecutionEntry(SkyKey key, @Nullable SkyValue value)
+      throws MissingSkyframeEntryException {
+    // For execution phase entries, we register the dependencies of their owner in the invalidation
+    // data. This way, every action owned by the same action has the same invalidation data, which
+    // reduces storage use a little bit and keeps things compatible with a Google-specific
+    // optimization.
+    Preconditions.checkArgument(!(key instanceof ActionLookupKey));
+
+    if (value == null) {
+      InMemoryNodeEntry entry = graph.getIfPresent(key);
+      if (entry == null) {
+        throw new MissingSkyframeEntryException(key);
+      }
+      value = entry.getValue();
+    }
+    ActionLookupKey dependencyKey = getDependencyKey(key);
+
+    // We don't pass directDeps in because the code must be tolerant to those not being available:
+    // if we delete nodes as we upload them, the NodeEntry to dependencyKey might not be available
+    // anymore. In this case, FileOpNodeMemoizingLookup will definitely contain an entry for it,
+    // since creating one is a side effect of uploading. If we are not deleting them, it will do
+    // a graph lookup anyway.
+    uploadEntry(key, value, dependencyKey, null);
+  }
+
+  private static ActionLookupKey getDependencyKey(SkyKey key) {
+    return switch (key) {
+      case ActionLookupData ald -> ald.getActionLookupKey();
+      case DerivedArtifact artifact -> artifact.getArtifactOwner();
+      case ActionLookupSummaryKey alsk -> alsk.argument();
+      default -> throw new IllegalStateException("unexpected key: " + key.getCanonicalName());
+    };
   }
 
   /**
    * Uploads the entry associated with {@code key} persisting alongside it, the file dependencies
    * associated with {@code dependencyKey}.
+   *
+   * @param key the {@link SkyKey} of the entry being uploaded
+   * @param value the value of the Skyframe node
+   * @param dependencyKey the {@link SkyKey} whose file system dependencies are to be used
+   * @param dependencyDeps the dependencies to traverse. These should be the direct deps of {@code
+   *     dependencyDeps}. If null, Skyframe will be asked for the deps of {@code key}
    */
-  private void uploadEntry(SkyKey key, ActionLookupKey dependencyKey)
-      throws MissingSkyframeEntryException {
-    if (writeStatuses.hasError()) {
-      writeStatuses.selectedEntryDone();
-      return;
-    }
-
-    InMemoryNodeEntry nodeEntry = graph.getIfPresent(key);
-    if (nodeEntry == null) {
-      // TODO: b/400460727 - add some coverage for this code path
-      throw new MissingSkyframeEntryException(key);
-    }
-
-    writeStatuses.counters.entriesWaitingForKeyBytes.incrementAndGet();
-    writeStatuses.counters.entriesWaitingForValueBytes.incrementAndGet();
-    writeStatuses.counters.entriesWaitingForInvalidationInfo.incrementAndGet();
-
-    // Keys are always stored as fingerprints so their detailed profiles are omitted.
-    AsyncSerializationTask keyResultTask =
-        codecs.serializeMemoizedAsync(fingerprintValueService, key, /* profileCollector= */ null);
-    fingerprintValueService.getExecutor().execute(keyResultTask);
-    AsyncSerializationTask valueResultTask =
-        codecs.serializeMemoizedAsync(
-            fingerprintValueService, nodeEntry.getValue(), profileCollector);
-    fingerprintValueService.getExecutor().execute(valueResultTask);
-
-    keyResultTask.addListener(
-        () -> writeStatuses.counters.entriesWaitingForKeyBytes.decrementAndGet(), directExecutor());
-    valueResultTask.addListener(
-        () -> writeStatuses.counters.entriesWaitingForValueBytes.decrementAndGet(),
-        directExecutor());
-
-    new FileOpNodeProcessor(keyResultTask, valueResultTask, isExecutionValue(key), dependencyKey)
-        .run();
+  private void uploadEntry(
+      SkyKey key,
+      SkyValue value,
+      ActionLookupKey dependencyKey,
+      @Nullable Iterable<SkyKey> dependencyDeps) {
+    new UploadTask(key, value, dependencyKey, dependencyDeps).submit();
   }
 
-  private final class FileOpNodeProcessor implements FutureCallback<FileOpNodeOrEmpty>, Runnable {
-    private final AsyncSerializationTask keyResultTask;
-    private final AsyncSerializationTask valueResultTask;
-    private final boolean isExecutionValue;
+  private final class UploadTask
+      implements RejectionHandlingRunnable, FutureCallback<FileOpNodeOrEmpty> {
+    private final SkyKey key;
+    private final SkyValue value;
     private final ActionLookupKey dependencyKey;
+    @Nullable private final Iterable<SkyKey> dependencyDeps;
+    private final boolean isExecutionValue;
 
-    private FileOpNodeProcessor(
-        AsyncSerializationTask keyResultTask,
-        AsyncSerializationTask valueResultTask,
-        boolean isExecutionValue,
-        ActionLookupKey dependencyKey) {
-      this.keyResultTask = keyResultTask;
-      this.valueResultTask = valueResultTask;
-      this.isExecutionValue = isExecutionValue;
+    // Keys are always stored as fingerprints so their detailed profiles are omitted.
+    private AsyncSerializationTask keyResultTask;
+    private AsyncSerializationTask valueResultTask;
+
+    private UploadTask(
+        SkyKey key,
+        SkyValue value,
+        ActionLookupKey dependencyKey,
+        @Nullable Iterable<SkyKey> dependencyDeps) {
+      this.key = key;
+      this.value = value;
       this.dependencyKey = dependencyKey;
+      this.dependencyDeps = dependencyDeps;
+      this.isExecutionValue = isExecutionValue(key);
+    }
+
+    void submit() {
+      fingerprintValueService.getExecutor().execute(this);
     }
 
     @Override
     public void run() {
-      switch (fileOpNodes.computeNode(dependencyKey)) {
-        case FileOpNodeOrEmpty nodeOrEmpty:
-          onSuccess(nodeOrEmpty);
-          break;
-        case FutureFileOpNode future:
-          Futures.addCallback(future, this, fingerprintValueService.getExecutor());
-          break;
+      try {
+        if (writeStatuses.hasError()) {
+          writeStatuses.selectedEntryDone();
+          eventBus.post(new SerializedNodeEvent(key));
+          return;
+        }
+
+        writeStatuses.counters.entriesWaitingForKeyBytes.incrementAndGet();
+        writeStatuses.counters.entriesWaitingForValueBytes.incrementAndGet();
+        writeStatuses.counters.entriesWaitingForInvalidationInfo.incrementAndGet();
+
+        this.keyResultTask =
+            codecs.serializeMemoizedAsync(
+                fingerprintValueService, key, /* profileCollector= */ null);
+        fingerprintValueService.getExecutor().execute(keyResultTask);
+        this.valueResultTask =
+            codecs.serializeMemoizedAsync(fingerprintValueService, value, profileCollector);
+        fingerprintValueService.getExecutor().execute(valueResultTask);
+
+        keyResultTask.addListener(
+            () -> writeStatuses.counters.entriesWaitingForKeyBytes.decrementAndGet(),
+            directExecutor());
+        valueResultTask.addListener(
+            () -> writeStatuses.counters.entriesWaitingForValueBytes.decrementAndGet(),
+            directExecutor());
+
+        // We pass a null value for execution entries to maintain the invariant that value is
+        // non-null only for analysis entries.
+        FileOpNodeOrFuture fileOpNodeOrFuture =
+            fileOpNodes.computeNode(dependencyKey, isExecutionValue ? null : value, dependencyDeps);
+        switch (fileOpNodeOrFuture) {
+          case FileOpNodeOrEmpty nodeOrEmpty -> onSuccess(nodeOrEmpty);
+          case FutureFileOpNode future ->
+              fingerprintValueService.getExecutor().addCallback(future, this);
+        }
+        eventBus.post(new SerializedNodeEvent(key));
+
+      } catch (Throwable t) {
+        writeStatuses.selectedEntryFailed(t);
       }
     }
 
     @Override
-    public final void onSuccess(FileOpNodeOrEmpty nodeOrEmpty) {
+    public void handleRejection(Throwable t) {
+      writeStatuses.selectedEntryFailed(t);
+    }
+
+    /**
+     * Saves the entry for to the {@link FingerprintValueService}.
+     *
+     * <p>The entry includes both value and the associated invalidation data. More precisely, it
+     * consists of the following components.
+     *
+     * <ol>
+     *   <li>If {@code dataInfo} is null, the invalidation data is the {@code DATA_TYPE_EMPTY} value
+     *       only.
+     *   <li>Otherwise when {@code dataInfo} is non-null, the invalidation data starts with a type
+     *       value, {@code DATA_TYPE_FILE}, {@code DATA_TYPE_LISTING}, {@code
+     *       DATA_TYPE_ANALYSIS_NODE} or {@code DATA_TYPE_EXECUTION_NODE}, depending on {@code
+     *       dataInfo}'s and {@link UploadTask#value}'s type. The invalidation data cache key
+     *       follows the type value.
+     *   <li>The {@link #value}'s value bytes.
+     * </ol>
+     */
+    @Override
+    public void onSuccess(FileOpNodeOrEmpty nodeOrEmpty) {
       try {
         writeStatuses.counters.entriesWaitingForInvalidationInfo.decrementAndGet();
         writeStatuses.counters.entriesWaitingForInvalidationBytes.incrementAndGet();
@@ -422,19 +562,19 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
               case EMPTY_FILE_OP_NODE ->
                   whenAllSucceed(keyResultTask, valueResultTask).call(() -> null, directExecutor());
             };
-        Futures.addCallback(
-            futureDataInfo,
-            new InvalidationDataInfoHandler(),
-            fingerprintValueService.getExecutor());
+        fingerprintValueService
+            .getExecutor()
+            .addCallback(futureDataInfo, new InvalidationDataInfoHandler());
       } catch (Throwable t) {
-        onFailure(t);
+        writeStatuses.counters.entriesWaitingForInvalidationBytes.decrementAndGet();
+        writeStatuses.selectedEntryFailed(t);
       }
     }
 
     @Override
-    public final void onFailure(Throwable t) {
+    public void onFailure(Throwable t) {
       writeStatuses.counters.entriesWaitingForInvalidationInfo.decrementAndGet();
-      writeStatuses.notifyWriteFailure(t);
+      writeStatuses.selectedEntryFailed(t);
     }
 
     private final class InvalidationDataInfoHandler
@@ -452,13 +592,27 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
        *   <li>Otherwise when {@code dataInfo} is non-null, the invalidation data starts with a type
        *       value, {@link DATA_TYPE_FILE}, {@link DATA_TYPE_LISTING}, {@link
        *       DATA_TYPE_ANALYSIS_NODE} or {@link DATA_TYPE_EXECUTION_NODE}, depending on {@code
-       *       dataInfo}'s and {@link FileOpNodeProcessor#entry}'s type. The invalidation data cache
-       *       key follows the type value.
-       *   <li>The {@link #entry}'s value bytes.
+       *       dataInfo}'s and {@link UploadTask#key}'s type. The invalidation data cache key
+       *       follows the type value.
+       *   <li>The {@link UploadTask#value}'s value bytes.
        * </ol>
        */
       @Override
       public void onSuccess(@Nullable InvalidationDataInfo dataInfo) {
+        if (shouldDiscardMemory) {
+          // Reclaim memory early: once a selected entry is successfully serialized and uploaded,
+          // its value is no longer needed in the evaluator. If it's a ConfiguredTargetKey, we
+          // also decrement the refcount of its package. Once all selected configured targets in
+          // the package are uploaded, the PackageValue is also discarded, releasing substantial
+          // memory early.
+          if (key instanceof ConfiguredTargetKey ctKey) {
+            PackageIdentifier pkgId = getActualPackageIdentifier(graph, ctKey);
+            if (packageRefcounts.get(pkgId).decrementAndGet() <= 0) {
+              graph.removeIfDone(pkgId);
+            }
+          }
+          graph.removeIfDone(key);
+        }
         try {
           ByteArrayOutputStream bytesOut = new ByteArrayOutputStream();
           CodedOutputStream codedOut = CodedOutputStream.newInstance(bytesOut);
@@ -475,32 +629,19 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
           writeStatuses.addWriteStatus(valueResult.getFutureToBlockWritesOn());
           writeStatuses.addWriteStatus(keyResult.getFutureToBlockWritesOn());
 
-          switch (dataInfo) {
-            case CONSTANT_FILE:
-            case CONSTANT_LISTING:
-            case CONSTANT_NODE:
-            // fall through
-            case null:
-              codedOut.writeEnumNoTag(DATA_TYPE_EMPTY.getNumber());
-              break;
-            case FileInvalidationDataInfo file:
-              codedOut.writeEnumNoTag(DATA_TYPE_FILE.getNumber());
-              codedOut.writeStringNoTag(file.cacheKey());
-              writeStatuses.addWriteStatus(file.writeStatus());
-              break;
-            case ListingInvalidationDataInfo listing:
-              codedOut.writeEnumNoTag(DATA_TYPE_LISTING.getNumber());
-              codedOut.writeStringNoTag(listing.cacheKey());
-              writeStatuses.addWriteStatus(listing.writeStatus());
-              break;
-            case NodeInvalidationDataInfo node:
-              codedOut.writeEnumNoTag(
-                  (isExecutionValue ? DATA_TYPE_EXECUTION_NODE : DATA_TYPE_ANALYSIS_NODE)
-                      .getNumber());
-              node.cacheKey().writeTo(codedOut);
-              writeStatuses.addWriteStatus(node.writeStatus());
-              break;
+          // Entries representing SkyValues should always have a node as their invalidation info
+          // so that that node can be reported as the invalidation fingerprint to Blaze.
+          if (!(dataInfo instanceof NodeInvalidationDataInfo node)) {
+            throw new IllegalStateException(
+                String.format(
+                    "Expected NodeInvalidationDataInfo for %s, but got %s",
+                    key, dataInfo == null ? "null" : dataInfo.getClass().getSimpleName()));
           }
+
+          codedOut.writeEnumNoTag(
+              (isExecutionValue ? DATA_TYPE_EXECUTION_NODE : DATA_TYPE_ANALYSIS_NODE).getNumber());
+          node.cacheKey().writeTo(codedOut);
+          writeStatuses.addWriteStatus(node.writeStatus());
           codedOut.writeRawBytes(valueResult.getObject());
           codedOut.flush();
 
@@ -518,84 +659,128 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
           writeStatuses.counters.keyBytesWaitingForUpload.addAndGet(keyByteCount);
           writeStatuses.counters.valueBytesWaitingForUpload.addAndGet(valueByteCount);
 
-          WriteStatus putStatus = fingerprintValueService.put(versionedKey, entryBytes);
-          valueResultTask.registerWriteStatus(putStatus);
+          // We wait for the invalidation data and the value to be uploaded before we upload the
+          // entry. Otherwise readers would get a cache miss on this entry if they happened to
+          // try to read the entry before the upload finishes, but potentially not before doing a
+          // lot of useless work. We don't wait for the key data to be uploaded because it is
+          // never deserialized and it's a wart that we upload anything as part of serializing the
+          // key anyway because we only need its fingerprint.
+          ArrayList<ListenableFuture<?>> futuresToBlockOn = new ArrayList<>(2);
+          if (valueResult.getFutureToBlockWritesOn() != null) {
+            futuresToBlockOn.add(valueResult.getFutureToBlockWritesOn());
+          }
+          futuresToBlockOn.add(node.writeStatus());
+          ListenableFuture<Void> blockedOn =
+              whenAllSucceed(futuresToBlockOn).call(() -> null, directExecutor());
+          fingerprintValueService
+              .getExecutor()
+              .addCallback(
+                  blockedOn,
+                  new FutureCallback<Void>() {
+                    @Override
+                    public void onSuccess(Void unused) {
+                      uploadEntryBytes(versionedKey, entryBytes, keyByteCount, valueByteCount);
+                    }
 
-          putStatus.addListener(
-              () -> {
-                writeStatuses.counters.entriesWaitingForUpload.decrementAndGet();
-                writeStatuses.counters.keyBytesWaitingForUpload.addAndGet(-keyByteCount);
-                writeStatuses.counters.valueBytesWaitingForUpload.addAndGet(-valueByteCount);
-                boolean shouldUpdateCounts;
-                try {
-                  // Avoids updating counts if the writes are marked as duplicates. Note that
-                  // duplicate detection is not ordinarily enabled.
-                  shouldUpdateCounts = Futures.getDone(putStatus);
-                } catch (ExecutionException e) {
-                  // This error is propagated to the main control flow via `writeStatuses`.
-                  shouldUpdateCounts = false;
-                }
-                if (shouldUpdateCounts) {
-                  writeStatuses.counters.entriesUploaded.incrementAndGet();
-                  writeStatuses.counters.keyBytesUploaded.addAndGet(keyByteCount);
-                  writeStatuses.counters.valueBytesUploaded.addAndGet(valueByteCount);
-                }
-              },
-              directExecutor());
-
-          writeStatuses.addWriteStatus(putStatus);
-
-          // IMPORTANT: when this completes, no more write statuses can be added.
-          writeStatuses.selectedEntryDone();
+                    @Override
+                    public void onFailure(Throwable t) {
+                      onUploadFailure(t, keyByteCount, valueByteCount);
+                    }
+                  });
         } catch (Throwable t) {
           onFailure(t);
         }
       }
 
       @Override
-      public final void onFailure(Throwable t) {
+      public void onFailure(Throwable t) {
         writeStatuses.counters.entriesWaitingForInvalidationBytes.decrementAndGet();
-        writeStatuses.notifyWriteFailure(t);
+        writeStatuses.selectedEntryFailed(t);
       }
+    }
+
+    private void uploadEntryBytes(
+        PackedFingerprint versionedKey, byte[] entryBytes, long keyByteCount, long valueByteCount) {
+      try {
+        WriteStatus putStatus = fingerprintValueService.put(versionedKey, entryBytes);
+        valueResultTask.registerWriteStatus(putStatus);
+
+        putStatus.addListener(
+            () -> {
+              writeStatuses.counters.entriesWaitingForUpload.decrementAndGet();
+              writeStatuses.counters.keyBytesWaitingForUpload.addAndGet(-keyByteCount);
+              writeStatuses.counters.valueBytesWaitingForUpload.addAndGet(-valueByteCount);
+              boolean shouldUpdateCounts;
+              try {
+                // Avoids updating counts if the writes are marked as duplicates. Note that
+                // duplicate detection is not ordinarily enabled.
+                shouldUpdateCounts = Futures.getDone(putStatus);
+              } catch (ExecutionException e) {
+                // This error is propagated to the main control flow via `writeStatuses`.
+                shouldUpdateCounts = false;
+              }
+              if (shouldUpdateCounts) {
+                writeStatuses.counters.entriesUploaded.incrementAndGet();
+                writeStatuses.counters.keyBytesUploaded.addAndGet(keyByteCount);
+                writeStatuses.counters.valueBytesUploaded.addAndGet(valueByteCount);
+                if (emitUploadedEvents) {
+                  eventBus.post(new SkyValueUploadedEvent(key, frontierVersion, versionedKey));
+                }
+              }
+            },
+            directExecutor());
+
+        writeStatuses.addWriteStatus(putStatus);
+        writeStatuses.selectedEntryDone();
+      } catch (Throwable t) {
+        onUploadFailure(t, keyByteCount, valueByteCount);
+      }
+    }
+
+    private void onUploadFailure(Throwable t, long keyByteCount, long valueByteCount) {
+      writeStatuses.counters.entriesWaitingForUpload.decrementAndGet();
+      writeStatuses.counters.keyBytesWaitingForUpload.addAndGet(-keyByteCount);
+      writeStatuses.counters.valueBytesWaitingForUpload.addAndGet(-valueByteCount);
+      writeStatuses.selectedEntryFailed(t);
     }
   }
 
+  /** Serialization status. */
   public static class SerializationStatus extends QuiescingFuture<ImmutableList<Throwable>>
       implements FutureCallback<Object>, CounterSeriesCollector {
-    private final Semaphore semaphore = new Semaphore(MAX_PENDING_SKYVALUES);
+    private final Semaphore inflightSkyframeEntrySemaphore = new Semaphore(MAX_PENDING_SKYVALUES);
     private final ConcurrentLinkedQueue<Throwable> errors = new ConcurrentLinkedQueue<>();
     private final FileDependencySerializer.Counters fileDependencySerializerCounters;
     private final Counters counters = new Counters();
 
     private static final CounterSeriesTask BYTES_WAITING_FOR_FUTURE_PUTS =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: Serialization: Bytes: Pending", "Waiting for future puts", Color.RAIL_LOAD);
     private static final CounterSeriesTask BYTES_WAITING_FOR_UPLOAD =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: Serialization: Bytes: Pending", "Waiting for upload", Color.RAIL_LOAD);
     private static final CounterSeriesTask BYTES_UPLOADED =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: Serialization: Bytes: Uploaded", "Written", Color.RAIL_RESPONSE);
     private static final CounterSeriesTask OBJECTS_WAITING_FOR_SERIALIZATION =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: Serialization: Objects: Pending",
             "Waiting for serialization",
             Color.RAIL_LOAD);
     private static final CounterSeriesTask OBJECTS_WAITING_FOR_FUTURE_PUTS =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: Serialization: Objects: Pending",
             "Waiting for future puts",
             Color.RAIL_LOAD);
     private static final CounterSeriesTask OBJECTS_WAITING_FOR_UPLOAD =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: Serialization: Objects: Pending", "Waiting for upload", Color.RAIL_LOAD);
     private static final CounterSeriesTask OBJECTS_UPLOADED =
-        new CounterSeriesTask(
+        new CounterSeriesTaskImpl(
             "Skycache: Serialization: Objects: Uploaded", "done", Color.RAIL_RESPONSE);
 
-    private SerializationStatus(
-        FileDependencySerializer.Counters fileDependencySerializerCounters) {
-      super(directExecutor());
+    SerializationStatus(FileDependencySerializer.Counters fileDependencySerializerCounters) {
+      super(safeDirectExecutor());
 
       this.fileDependencySerializerCounters = fileDependencySerializerCounters;
 
@@ -604,16 +789,19 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
       Profiler.instance().registerCounterSeriesCollector(fileDependencySerializerCounters);
     }
 
-    private void selectedEntryStarting() {
+    void selectedEntryStartingCapped() throws InterruptedException {
+      inflightSkyframeEntrySemaphore.acquire();
       increment();
     }
 
-    private void selectedEntryDone() {
+    void selectedEntryDone() {
       decrement();
+      inflightSkyframeEntrySemaphore.release();
     }
 
-    private void notifyAllStarted() {
-      decrement();
+    void selectedEntryFailed(Throwable t) {
+      notifyWriteFailure(t);
+      inflightSkyframeEntrySemaphore.release();
     }
 
     private void notifyWriteFailure(Throwable t) {
@@ -627,10 +815,20 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
 
     @Override
     protected ImmutableList<Throwable> getValue() {
+      unregisterCountersCollectors();
+      return ImmutableList.copyOf(errors);
+    }
+
+    @Override
+    protected void doneWithError(
+        @Nullable Throwable primaryCause, ImmutableList<Throwable> secondaryCauses) {
+      unregisterCountersCollectors();
+    }
+
+    private void unregisterCountersCollectors() {
       Profiler.instance().unregisterCounterSeriesCollector(this);
       Profiler.instance().unregisterCounterSeriesCollector(counters);
       Profiler.instance().unregisterCounterSeriesCollector(fileDependencySerializerCounters);
-      return ImmutableList.copyOf(errors);
     }
 
     private void addWriteStatus(@Nullable ListenableFuture<?> writeStatus) {
@@ -638,28 +836,25 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
         return;
       }
       increment();
-      Futures.addCallback(writeStatus, (FutureCallback<Object>) this, directExecutor());
+      try {
+        Futures.addCallback(writeStatus, (FutureCallback<Object>) this, directExecutor());
+      } catch (Throwable t) {
+        recordException(t);
+        decrement();
+      }
     }
 
-    /**
-     * Implementation of {@link FutureCallback<Object>}.
-     *
-     * @deprecated only for use via {@link #addWriteStatus}
-     */
+    /** Implementation of {@link FutureCallback<Object>}. */
     @Override
-    @Deprecated // only called via addWriteStatus
-    public void onSuccess(Object unused) {
+    @DoNotCall("Only called via addWriteStatus")
+    public final void onSuccess(Object unused) {
       decrement();
     }
 
-    /**
-     * Implementation of {@link FutureCallback<void>}.
-     *
-     * @deprecated only for use via {@link #addWriteStatus}
-     */
+    /** Implementation of {@link FutureCallback<void>}. */
     @Override
-    @Deprecated // only called via addWriteStatus
-    public void onFailure(Throwable t) {
+    @DoNotCall("Only called via addWriteStatus")
+    public final void onFailure(Throwable t) {
       notifyWriteFailure(t);
     }
 
@@ -667,8 +862,7 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
     public void collect(double deltaNanos, BiConsumer<CounterSeriesTask, Double> consumer) {
       // This should really be a method on StatsCollector but that means that serialization must
       // depend on profiler, and profiler transitively depends on serialization because it depends
-      // on
-      // common/options, which has EnvVar, which is marked as @AutoCodec.
+      // on common/options, which has EnvVar, which is marked as @AutoCodec.
 
       consumer.accept(
           BYTES_WAITING_FOR_FUTURE_PUTS,
@@ -730,5 +924,18 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
     }
 
     result.add(key);
+  }
+
+  /**
+   * Returns the real package associated with a configured target.
+   *
+   * <p>The configured target may be an alias where the referent package contains its target data.
+   */
+  private static PackageIdentifier getActualPackageIdentifier(
+      InMemoryGraph graph, ConfiguredTargetKey key) {
+    return ((ConfiguredTargetValue) graph.getIfPresent(key).getValue())
+        .getConfiguredTarget()
+        .getLabel()
+        .getPackageIdentifier();
   }
 }

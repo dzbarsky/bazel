@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.bazel.rules;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.config.CoreOptionConverters.LabelConverter;
+import com.google.devtools.build.lib.analysis.config.CoreOptionConverters.LabelListConverter;
 import com.google.devtools.build.lib.buildtool.BuildRequest;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.exec.ModuleActionContextRegistry;
@@ -50,6 +51,50 @@ public final class BazelRulesModule extends BlazeModule {
 
     @Deprecated
     @Option(
+        name = "use_target_platform_for_tests",
+        defaultValue = "false",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.DEPRECATED},
+        deprecationWarning =
+            "This flag is a no-op. Tests select an execution platform matching all constraints of"
+                + " the target platform by default. Make sure that all test target platforms are"
+                + " registered as execution platforms.",
+        help = "Deprecated. No-op.")
+    public abstract boolean getUseTargetPlatformForTests();
+
+    @Deprecated
+    @Option(
+        name = "incompatible_modify_execution_info_additive",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getIncompatibleModifyExecutionInfoAdditive();
+
+    @Deprecated
+    @Option(
+        name = "incompatible_use_new_cgroup_implementation",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getUseNewCgroupImplementation();
+
+    @Deprecated
+    @Option(
+        name = "experimental_execution_graph_include_change_pruned_actions",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getIncludeChangePrunedActions();
+
+    @Deprecated
+    @Option(
         name = "incompatible_enable_apple_toolchain_resolution",
         defaultValue = "false",
         documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
@@ -57,6 +102,27 @@ public final class BazelRulesModule extends BlazeModule {
         metadataTags = {OptionMetadataTag.DEPRECATED},
         help = "Deprecated. No-op.")
     public abstract boolean getIncompatibleUseToolchainResolution();
+
+    @Deprecated
+    @Option(
+        name = "apple_platforms",
+        converter = LabelListConverter.class,
+        defaultValue = "",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.DEPRECATED},
+        help = "Deprecated. No-op.")
+    public abstract List<Label> getApplePlatforms();
+
+    @Deprecated
+    @Option(
+        name = "use_platforms_in_apple_crosstool_transition",
+        defaultValue = "false",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.DEPRECATED},
+        help = "Deprecated. No-op.")
+    public abstract boolean getUsePlatformsInAppleCrosstoolTransition();
 
     @Deprecated
     @Option(
@@ -542,11 +608,71 @@ public final class BazelRulesModule extends BlazeModule {
         metadataTags = {OptionMetadataTag.DEPRECATED},
         help = "Deprecated. No-op.")
     public abstract String getJsonLog();
+
+    @Deprecated
+    @Option(
+        name = "incompatible_multi_release_deploy_jars",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getMultiReleaseDeployJars();
   }
 
   /** This is where deprecated Bazel-specific options only used by the build command go to die. */
   @OptionsClass
   public abstract static class BazelBuildGraveyardOptions extends BuildGraveyardOptions {
+    @Deprecated
+    @Option(
+        name = "host_compiler",
+        defaultValue = "null",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract String getHostCompiler();
+
+    @Deprecated
+    @Option(
+        name = "incompatible_disable_native_apple_binary_rule",
+        defaultValue = "false",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getDisableNativeAppleBinaryRule();
+
+    @Deprecated
+    @Option(
+        name = "incompatible_disable_legacy_cc_provider",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getDisableLegacyCcProvider();
+
+    @Deprecated
+    @Option(
+        name = "incompatible_use_specific_tool_files",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getUseSpecificToolFiles();
+
+    @Deprecated
+    @Option(
+        name = "experimental_java_test_auto_create_deploy_jar",
+        defaultValue = "false",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.EXPERIMENTAL, OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getJavaTestAutoCreateDeployJar();
+
     @Option(
         name = "python_path",
         defaultValue = "",
@@ -580,6 +706,16 @@ public final class BazelRulesModule extends BlazeModule {
         metadataTags = {OptionMetadataTag.DEPRECATED},
         help = "Deprecated. No-op.")
     public abstract String getPythonTop();
+
+    @Deprecated
+    @Option(
+        name = "incompatible_make_thinlto_command_lines_standalone",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getUseStandaloneLtoIndexingCommandLines();
 
     @Deprecated
     @Option(
@@ -622,6 +758,16 @@ public final class BazelRulesModule extends BlazeModule {
 
     @Deprecated
     @Option(
+        name = "incompatible_require_ctx_in_configure_features",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getRequireCtxInConfigureFeatures();
+
+    @Deprecated
+    @Option(
         name = "force_ignore_dash_static",
         defaultValue = "false",
         documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
@@ -649,6 +795,16 @@ public final class BazelRulesModule extends BlazeModule {
         metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
         help = "No-op.")
     public abstract boolean getRemoveBinaryProfile();
+
+    @Deprecated
+    @Option(
+        name = "incompatible_validate_top_level_header_inclusions",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getValidateTopLevelHeaderInclusions();
 
     @Deprecated
     @Option(
@@ -740,6 +896,21 @@ public final class BazelRulesModule extends BlazeModule {
         metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
         help = "No-op")
     public abstract boolean getIncompatibleEnableGoToolchainResolution();
+
+    /**
+     * Option to ease migration away from leaking deps into the compile classpath of tests.
+     *
+     * @deprecated flag is a no-op, will be deleted in a future Bazel release
+     */
+    @Deprecated
+    @Option(
+        name = "experimental_add_test_support_to_compile_time_deps",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.EXPERIMENTAL, OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getAddTestSupportToCompileTimeDeps();
   }
 
   /**
@@ -748,6 +919,19 @@ public final class BazelRulesModule extends BlazeModule {
    */
   @OptionsClass
   public abstract static class AllCommandGraveyardOptions extends OptionsBase {
+
+    /**
+     * @deprecated flag is a no-op, will be deleted in a future Bazel release
+     */
+    @Deprecated
+    @Option(
+        name = "incompatible_enable_cc_toolchain_resolution",
+        defaultValue = "true",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
+        help = "Deprecated no-op.")
+    public abstract boolean getEnableCcToolchainResolution();
 
     @Deprecated
     @Option(

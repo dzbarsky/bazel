@@ -16,6 +16,8 @@ package com.google.devtools.build.lib.skyframe.serialization.analysis;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.util.concurrent.Futures.immediateFailedFuture;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
+import static com.google.devtools.build.lib.concurrent.safeexecutor.SafeExecutor.safeDirectExecutor;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -38,7 +40,6 @@ import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.skyframe.IntVersion;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
-import com.google.protobuf.ByteString;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import java.util.Optional;
@@ -75,7 +76,8 @@ public final class AnalysisCacheInvalidatorTest {
             /* currentVersion= */ frontierNodeVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     assertThat(
             invalidator.lookupKeysToInvalidate(
@@ -93,11 +95,11 @@ public final class AnalysisCacheInvalidatorTest {
             fingerprintService, objectCodecs, key, frontierNodeVersion);
 
     // Simulate a cache hit by returning a non-empty response.
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(fingerprint.toBytes())))
+    when(mockAnalysisCacheClient.lookup(fingerprint.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(
-                    ByteString.copyFromUtf8("some_value"), MissReason.MISS_REASON_UNSPECIFIED)));
+                new LookupResultImpl(
+                    "some_value".getBytes(UTF_8), MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
 
     AnalysisCacheInvalidator invalidator =
         new AnalysisCacheInvalidator(
@@ -107,7 +109,8 @@ public final class AnalysisCacheInvalidatorTest {
             /* currentVersion= */ frontierNodeVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     assertThat(
             invalidator.lookupKeysToInvalidate(
@@ -125,10 +128,10 @@ public final class AnalysisCacheInvalidatorTest {
             fingerprintService, objectCodecs, key, frontierNodeVersion);
 
     // Simulate a cache miss by returning an empty response.
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(fingerprint.toBytes())))
+    when(mockAnalysisCacheClient.lookup(fingerprint.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(ByteString.EMPTY, MissReason.MISS_REASON_UNSPECIFIED)));
+                new LookupResultImpl(new byte[0], MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
 
     AnalysisCacheInvalidator invalidator =
         new AnalysisCacheInvalidator(
@@ -138,7 +141,8 @@ public final class AnalysisCacheInvalidatorTest {
             /* currentVersion= */ frontierNodeVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     assertThat(
             invalidator.lookupKeysToInvalidate(
@@ -161,15 +165,15 @@ public final class AnalysisCacheInvalidatorTest {
             fingerprintService, objectCodecs, missKey, frontierNodeVersion);
 
     // Simulate a cache hit _and_ miss for looking up multiple keys.
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(hitFingerprint.toBytes())))
+    when(mockAnalysisCacheClient.lookup(hitFingerprint.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(
-                    ByteString.copyFromUtf8("some_value"), MissReason.MISS_REASON_UNSPECIFIED)));
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(missFingerprint.toBytes())))
+                new LookupResultImpl(
+                    "some_value".getBytes(UTF_8), MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
+    when(mockAnalysisCacheClient.lookup(missFingerprint.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(ByteString.EMPTY, MissReason.MISS_REASON_UNSPECIFIED)));
+                new LookupResultImpl(new byte[0], MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
 
     AnalysisCacheInvalidator invalidator =
         new AnalysisCacheInvalidator(
@@ -179,7 +183,8 @@ public final class AnalysisCacheInvalidatorTest {
             /* currentVersion= */ frontierNodeVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     assertThat(
             invalidator.lookupKeysToInvalidate(
@@ -220,7 +225,8 @@ public final class AnalysisCacheInvalidatorTest {
             currentVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     assertThat(
             invalidator.lookupKeysToInvalidate(
@@ -264,7 +270,8 @@ public final class AnalysisCacheInvalidatorTest {
             currentVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     assertThat(
             invalidator.lookupKeysToInvalidate(
@@ -322,10 +329,10 @@ public final class AnalysisCacheInvalidatorTest {
     PackedFingerprint packedFingerprint =
         FingerprintValueService.computeFingerprint(
             fingerprintService, objectCodecs, key, frontierNodeVersion);
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(packedFingerprint.toBytes())))
+    when(mockAnalysisCacheClient.lookup(packedFingerprint.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(ByteString.EMPTY, MissReason.MISS_REASON_UNSPECIFIED)));
+                new LookupResultImpl(new byte[0], MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
 
     AnalysisCacheInvalidator invalidator =
         new AnalysisCacheInvalidator(
@@ -335,7 +342,8 @@ public final class AnalysisCacheInvalidatorTest {
             /* currentVersion= */ frontierNodeVersion,
             testCase.currentClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     ImmutableSet<SkyKey> keysToInvalidate =
         invalidator.lookupKeysToInvalidate(
@@ -357,8 +365,7 @@ public final class AnalysisCacheInvalidatorTest {
             fingerprintService, objectCodecs, key, frontierNodeVersion);
 
     SettableFuture<LookupResult> neverCompletes = SettableFuture.create();
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(fingerprint.toBytes())))
-        .thenReturn(neverCompletes);
+    when(mockAnalysisCacheClient.lookup(fingerprint.toBytes())).thenReturn(neverCompletes);
 
     AnalysisCacheInvalidator invalidator =
         new AnalysisCacheInvalidator(
@@ -368,7 +375,8 @@ public final class AnalysisCacheInvalidatorTest {
             /* currentVersion= */ frontierNodeVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     assertThat(
             invalidator.lookupKeysToInvalidate(
@@ -397,16 +405,16 @@ public final class AnalysisCacheInvalidatorTest {
         FingerprintValueService.computeFingerprint(
             fingerprintService, objectCodecs, key2, frontierNodeVersion);
 
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(fp1.toBytes())))
+    when(mockAnalysisCacheClient.lookup(fp1.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(
-                    ByteString.copyFromUtf8("val1"), MissReason.MISS_REASON_UNSPECIFIED)));
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(fp2.toBytes())))
+                new LookupResultImpl(
+                    "val1".getBytes(UTF_8), MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
+    when(mockAnalysisCacheClient.lookup(fp2.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(
-                    ByteString.copyFromUtf8("val2"), MissReason.MISS_REASON_UNSPECIFIED)));
+                new LookupResultImpl(
+                    "val2".getBytes(UTF_8), MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
 
     AnalysisCacheInvalidator invalidator =
         new AnalysisCacheInvalidator(
@@ -416,7 +424,8 @@ public final class AnalysisCacheInvalidatorTest {
             frontierNodeVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     var unused =
         invalidator.lookupKeysToInvalidate(
@@ -444,15 +453,15 @@ public final class AnalysisCacheInvalidatorTest {
         FingerprintValueService.computeFingerprint(
             fingerprintService, objectCodecs, missKey, frontierNodeVersion);
 
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(hitFp.toBytes())))
+    when(mockAnalysisCacheClient.lookup(hitFp.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(
-                    ByteString.copyFromUtf8("val"), MissReason.MISS_REASON_UNSPECIFIED)));
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(missFp.toBytes())))
+                new LookupResultImpl(
+                    "val".getBytes(UTF_8), MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
+    when(mockAnalysisCacheClient.lookup(missFp.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(ByteString.EMPTY, MissReason.MISS_REASON_UNSPECIFIED)));
+                new LookupResultImpl(new byte[0], MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
 
     AnalysisCacheInvalidator invalidator =
         new AnalysisCacheInvalidator(
@@ -462,7 +471,8 @@ public final class AnalysisCacheInvalidatorTest {
             frontierNodeVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     var unused =
         invalidator.lookupKeysToInvalidate(
@@ -490,14 +500,14 @@ public final class AnalysisCacheInvalidatorTest {
         FingerprintValueService.computeFingerprint(
             fingerprintService, objectCodecs, key2, frontierNodeVersion);
 
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(fp1.toBytes())))
+    when(mockAnalysisCacheClient.lookup(fp1.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(ByteString.EMPTY, MissReason.MISS_REASON_UNSPECIFIED)));
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(fp2.toBytes())))
+                new LookupResultImpl(new byte[0], MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
+    when(mockAnalysisCacheClient.lookup(fp2.toBytes()))
         .thenReturn(
             immediateFuture(
-                new LookupResult(ByteString.EMPTY, MissReason.MISS_REASON_UNSPECIFIED)));
+                new LookupResultImpl(new byte[0], MissReason.MISS_REASON_UNSPECIFIED.getNumber())));
 
     AnalysisCacheInvalidator invalidator =
         new AnalysisCacheInvalidator(
@@ -507,7 +517,8 @@ public final class AnalysisCacheInvalidatorTest {
             frontierNodeVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     var unused =
         invalidator.lookupKeysToInvalidate(
@@ -532,7 +543,7 @@ public final class AnalysisCacheInvalidatorTest {
         FingerprintValueService.computeFingerprint(
             fingerprintService, objectCodecs, key, frontierNodeVersion);
 
-    when(mockAnalysisCacheClient.lookup(ByteString.copyFrom(fingerprint.toBytes())))
+    when(mockAnalysisCacheClient.lookup(fingerprint.toBytes()))
         .thenReturn(immediateFailedFuture(new RuntimeException("injected failure")));
 
     AnalysisCacheInvalidator invalidator =
@@ -543,7 +554,8 @@ public final class AnalysisCacheInvalidatorTest {
             /* currentVersion= */ frontierNodeVersion,
             baseClientId,
             mockEventHandler,
-            mockEventListener);
+            mockEventListener,
+            safeDirectExecutor());
 
     assertThat(
             invalidator.lookupKeysToInvalidate(

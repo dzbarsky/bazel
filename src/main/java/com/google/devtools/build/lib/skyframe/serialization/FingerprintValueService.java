@@ -21,8 +21,8 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueStore.InMemoryFingerprintValueStore;
-import com.google.devtools.build.lib.skyframe.serialization.WriteStatuses.WriteStatus;
+import com.google.devtools.build.lib.concurrent.safeexecutor.SafeExecutor;
+import com.google.devtools.build.lib.concurrent.safeexecutor.SafeExecutorOwner;
 import com.google.devtools.build.lib.util.DecimalBucketer;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.protobuf.ByteString;
@@ -44,7 +44,7 @@ public final class FingerprintValueService implements KeyValueWriter {
   public static final Fingerprinter NONPROD_FINGERPRINTER =
       input -> PackedFingerprint.fromBytes(murmur3_128().hashBytes(input).asBytes());
 
-  private final Executor executor;
+  private final SafeExecutor executor;
   private final FingerprintValueStore store;
   private final FingerprintValueCache cache;
 
@@ -61,12 +61,6 @@ public final class FingerprintValueService implements KeyValueWriter {
   private final DecimalBucketer getLatencyMicros = new DecimalBucketer();
   private final DecimalBucketer setLatencyMicros = new DecimalBucketer();
 
-  @VisibleForTesting
-  public static FingerprintValueService createForTesting() {
-    return createForTesting(
-        FingerprintValueStore.inMemoryStore(), FingerprintValueCache.SyncMode.NOT_LINKED);
-  }
-
   /**
    * Returns an instance that uses a {@link FingerprintValueStore} that indicates a missing entry by
    * returning null, which is what analysis caching expects.
@@ -77,23 +71,32 @@ public final class FingerprintValueService implements KeyValueWriter {
   }
 
   @VisibleForTesting
+  public static FingerprintValueService createForTesting() {
+    return createForTesting(
+        new InMemoryFingerprintValueStore(), FingerprintValueCache.SyncMode.NOT_LINKED);
+  }
+
+  @VisibleForTesting
   public static FingerprintValueService createForTesting(FingerprintValueStore store) {
     return createForTesting(store, FingerprintValueCache.SyncMode.NOT_LINKED);
   }
 
   @VisibleForTesting
   public static FingerprintValueService createForTesting(FingerprintValueCache.SyncMode mode) {
-    return createForTesting(FingerprintValueStore.inMemoryStore(), mode);
+    return createForTesting(new InMemoryFingerprintValueStore(), mode);
   }
 
   private static FingerprintValueService createForTesting(
       FingerprintValueStore store, FingerprintValueCache.SyncMode mode) {
     return new FingerprintValueService(
-        newSingleThreadExecutor(), store, new FingerprintValueCache(mode), NONPROD_FINGERPRINTER);
+        new SafeExecutorOwner(newSingleThreadExecutor()),
+        store,
+        new FingerprintValueCache(mode),
+        NONPROD_FINGERPRINTER);
   }
 
   public FingerprintValueService(
-      Executor executor,
+      SafeExecutor executor,
       FingerprintValueStore store,
       FingerprintValueCache cache,
       Fingerprinter fingerprinter) {
@@ -141,22 +144,26 @@ public final class FingerprintValueService implements KeyValueWriter {
     store.shutdown();
   }
 
+  public Fingerprinter getFingerprinter() {
+    return fingerprinter;
+  }
+
   /** Delegates to {@link FingerprintValueStore#put}. */
   @Override
   public WriteStatus put(KeyBytesProvider fingerprint, byte[] serializedBytes) {
     Instant before = Instant.now();
-    WriteStatus putStatus = store.put(fingerprint, serializedBytes);
-    putStatus.addListener(
+    WriteStatus status = store.put(fingerprint, serializedBytes);
+    status.addListener(
         () ->
             setLatencyMicros.add(
                 TimeUnit.NANOSECONDS.toMicros(Duration.between(before, Instant.now()).toNanos())),
         directExecutor());
-    return putStatus;
+    return status;
   }
 
   public FingerprintValueStore.Stats getStats() {
     FingerprintValueStore.Stats storeStats = store.getStats();
-    return new FingerprintValueStore.Stats(
+    return new StatsImpl(
         storeStats.valueBytesReceived(),
         storeStats.valueBytesSent(),
         storeStats.keyBytesSent(),
@@ -233,7 +240,7 @@ public final class FingerprintValueService implements KeyValueWriter {
    * <p>Technically, this should be plumbed separately but for the time being, {@link
    * FingerprintValueService} is a convenient container for the {@link Executor}.
    */
-  public Executor getExecutor() {
+  public SafeExecutor getExecutor() {
     return executor;
   }
 

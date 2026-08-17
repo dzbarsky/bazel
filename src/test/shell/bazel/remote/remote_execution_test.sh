@@ -669,6 +669,44 @@ EOF
       || fail "Remote execution generated different result"
 }
 
+# Tests an action with so many output files that the serialized ActionResult
+# proto exceeds the default gRPC maximum message size of 4 MiB.
+# Regression test for https://github.com/bazelbuild/bazel/issues/29821.
+function test_action_result_exceeding_grpc_max_message_size() {
+  mkdir -p a
+  # 15000 outputs with ~290 character paths serialize to an ActionResult of
+  # more than 5 MB.
+  cat > a/BUILD <<'EOF'
+DIR = "x" * 250
+
+N = 15000
+
+genrule(
+    name = "many_outputs",
+    outs = ["%s/%s.txt" % (DIR, i) for i in range(N)],
+    cmd = ("mkdir -p $(RULEDIR)/{dir} && cd $(RULEDIR)/{dir} && " +
+           "seq 0 {max} | sed 's/$$/.txt/' | xargs touch").format(
+        dir = DIR,
+        max = N - 1,
+    ),
+)
+EOF
+
+  bazel build \
+      --remote_executor=grpc://localhost:${worker_port} \
+      //a:many_outputs >& $TEST_log \
+      || fail "Failed to build //a:many_outputs with remote execution"
+
+  # Also exercise the remote cache hit path, which fetches the same
+  # ActionResult via GetActionResult.
+  bazel clean >& $TEST_log
+  bazel build \
+      --remote_executor=grpc://localhost:${worker_port} \
+      //a:many_outputs >& $TEST_log \
+      || fail "Failed to build //a:many_outputs from the remote cache"
+  expect_log "1 remote cache hit"
+}
+
 function test_py_test() {
   add_rules_python "MODULE.bazel"
   mkdir -p a
@@ -2079,15 +2117,6 @@ function test_exclusive_test_wont_remote_exec() {
 # TODO(alpha): Add a test that fails remote execution when remote worker
 # supports sandbox.
 
-# This test uses the flag experimental_split_coverage_postprocessing. Without
-# the flag coverage won't work remotely. Without the flag, tests and coverage
-# post-processing happen in the same spawn, but only the runfiles tree of the
-# tests is made available to the spawn. The solution was not to merge the
-# runfiles tree which could cause its own problems but to split both into
-# different spawns. The reason why this only failed remotely and not locally was
-# because the coverage post-processing tool escaped the sandbox to find its own
-# runfiles. The error we would see here without the flag would be "Cannot find
-# runfiles". See #4685.
 function test_java_rbe_coverage_produces_report() {
   add_rules_java "MODULE.bazel"
   mkdir -p java/factorial
@@ -2146,8 +2175,6 @@ EOF
 
   bazel coverage \
     --test_output=all \
-    --experimental_fetch_all_coverage_outputs \
-    --experimental_split_coverage_postprocessing \
     --spawn_strategy=remote \
     --remote_executor=grpc://localhost:${worker_port} \
     --instrumentation_filter=//java/factorial \
@@ -2464,8 +2491,6 @@ EOF
 
   bazel coverage \
       --test_output=all \
-      --experimental_fetch_all_coverage_outputs \
-      --experimental_split_coverage_postprocessing \
       --spawn_strategy=remote \
       --remote_executor=grpc://localhost:${worker_port} \
       //"$test_dir":hello-test >& $TEST_log \
@@ -2605,9 +2630,7 @@ EOF
   BAZEL_USE_LLVM_NATIVE_COVERAGE=1 BAZEL_LLVM_PROFDATA=llvm-profdata BAZEL_LLVM_COV=llvm-cov CC=clang \
     bazel coverage \
       --test_output=all \
-      --experimental_fetch_all_coverage_outputs \
       --experimental_generate_llvm_lcov \
-      --experimental_split_coverage_postprocessing \
       --spawn_strategy=remote \
       --remote_executor=grpc://localhost:${worker_port} \
       //"$test_dir":hello-test >& $TEST_log \
@@ -3139,7 +3162,7 @@ function setup_cc_binary_tool_with_dynamic_deps() {
   local repo=$1
 
   cat >> MODULE.bazel <<'EOF'
-bazel_dep(name = "apple_support", version = "1.21.0")
+bazel_dep(name = "apple_support", version = "2.5.2")
 local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
 local_repository(
   name = "other_repo",

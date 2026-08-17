@@ -127,6 +127,7 @@ java_library(
     deps = [
         ":server_log_path_service",
         ":util",
+        "//src/main/java/com/google/devtools/build/lib/skybridge:sc_only",
     ],
 )
 
@@ -198,7 +199,7 @@ java_library(
         "ResourceConverter.java",
     ],
     deps = [
-        "//src/main/java/com/google/devtools/build/lib/actions:localhost_capacity",
+        "//src/main/java/com/google/devtools/build/lib/actions:localhost_compute_resources",
         "//src/main/java/com/google/devtools/common/options",
         "//third_party:error_prone_annotations",
         "//third_party:guava",

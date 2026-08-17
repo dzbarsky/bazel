@@ -85,6 +85,7 @@ import com.google.devtools.build.lib.packages.ImplicitOutputsFunction.StarlarkIm
 import com.google.devtools.build.lib.packages.ImplicitOutputsFunction.StarlarkImplicitOutputsFunctionWithMap;
 import com.google.devtools.build.lib.packages.LabelConverter;
 import com.google.devtools.build.lib.packages.MacroClass;
+import com.google.devtools.build.lib.packages.MacroClass.TooManyAttributesException;
 import com.google.devtools.build.lib.packages.MacroInstance;
 import com.google.devtools.build.lib.packages.PredicateWithMessage;
 import com.google.devtools.build.lib.packages.Rule;
@@ -108,12 +109,14 @@ import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.packages.Type.LabelClass;
 import com.google.devtools.build.lib.packages.Types;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
+import com.google.devtools.build.lib.skyframe.BzlLoadThreadOwner;
 import com.google.devtools.build.lib.skyframe.BzlLoadValue;
 import com.google.devtools.build.lib.skyframe.serialization.AbstractExportedStarlarkSymbolCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import com.google.devtools.build.lib.starlarkbuildapi.MacroFunctionApi;
 import com.google.devtools.build.lib.starlarkbuildapi.StarlarkRuleFunctionsApi;
 import com.google.devtools.build.lib.starlarkbuildapi.StarlarkSubruleApi;
+import com.google.devtools.build.lib.starlarkbuildapi.config.ComposedConfigurationTransition;
 import com.google.devtools.build.lib.starlarkbuildapi.config.ConfigurationTransitionApi;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import com.google.devtools.build.lib.util.Pair;
@@ -198,7 +201,7 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
               "$dependency_resolution_base_rule", RuleClassType.ABSTRACT, true, baseRule)
           .setDependencyResolutionRule()
           .removeAttribute(":action_listener")
-          .removeAttribute("aspect_hints")
+          .removeAttribute(RuleClass.ASPECT_HINTS_ATTR)
           .removeAttribute("toolchains")
           .removeAttribute(RuleClass.EXEC_COMPATIBLE_WITH_ATTR)
           .removeAttribute(RuleClass.EXEC_GROUP_COMPATIBLE_WITH_ATTR)
@@ -214,7 +217,7 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
       new RuleClass.Builder("$materializer_base_rule", RuleClassType.ABSTRACT, true, baseRule)
           .setIsMaterializerRule(true)
           .removeAttribute(":action_listener")
-          .removeAttribute("aspect_hints")
+          .removeAttribute(RuleClass.ASPECT_HINTS_ATTR)
           .removeAttribute("toolchains")
           .removeAttribute(RuleClass.EXEC_COMPATIBLE_WITH_ATTR)
           .removeAttribute(RuleClass.EXEC_GROUP_COMPATIBLE_WITH_ATTR)
@@ -530,15 +533,16 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
     }
   }
 
-  private static Symbol<BzlLoadValue.Key> getBzlKeyToken(StarlarkThread thread, String onBehalfOf) {
+  private static Symbol<BzlLoadThreadOwner> getBzlKeyToken(
+      StarlarkThread thread, String onBehalfOf) {
     Symbol<?> untypedToken = thread.getNextIdentityToken();
     checkState(
-        untypedToken.getOwner() instanceof BzlLoadValue.Key,
+        untypedToken.getOwner() instanceof BzlLoadThreadOwner,
         "%s may only be owned by .bzl files (owner=%s)",
         onBehalfOf,
         untypedToken);
     @SuppressWarnings("unchecked")
-    var typedToken = (Symbol<BzlLoadValue.Key>) untypedToken;
+    var typedToken = (Symbol<BzlLoadThreadOwner>) untypedToken;
     return typedToken;
   }
 
@@ -1098,7 +1102,7 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
         });
     if (parent != null) {
       transitionFactory =
-          ComposingTransitionFactory.of(transitionFactory, parent.getTransitionFactory());
+          ComposingTransitionFactory.ofUnchecked(transitionFactory, parent.getTransitionFactory());
     }
     // Check if the transition has any Starlark code.
     StarlarkTransitionCheckingVisitor visitor = new StarlarkTransitionCheckingVisitor();
@@ -1250,6 +1254,13 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
       // defined in Starlark via, cfg = transition
       return new StarlarkRuleTransitionProvider(starlarkDefinedConfigTransition);
     }
+    if (cfg instanceof ComposedConfigurationTransition composition) {
+      return ComposedTransitionMaterializer.fold(
+          composition,
+          StarlarkRuleClassFunctions::convertConfig,
+          "it contains a native transition that can only be used as an attribute transition, such"
+              + " as the exec transition");
+    }
     if (cfg instanceof ConfigurationTransitionApi cta) {
       // Every ConfigurationTransitionApi must be a TransitionFactory instance to be usable.
       if (cta instanceof TransitionFactory<?> tf) {
@@ -1318,6 +1329,7 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
       Dict<?, ?> attrs,
       Sequence<?> requiredProvidersArg,
       Sequence<?> requiredAspectProvidersArg,
+      Sequence<?> requiredAspectHintsProvidersArg,
       Sequence<?> providesArg,
       Sequence<?> requiredAspects,
       Object rawPropagationPredicate,
@@ -1493,6 +1505,8 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
         StarlarkAttrModule.buildProviderPredicate(requiredProvidersArg, "required_providers"),
         StarlarkAttrModule.buildProviderPredicate(
             requiredAspectProvidersArg, "required_aspect_providers"),
+        StarlarkAttrModule.buildProviderPredicate(
+            requiredAspectHintsProvidersArg, "required_aspect_hints_providers"),
         StarlarkAttrModule.getStarlarkProviderIdentifiers(providesArg, "provides"),
         requiredParams.build(),
         ImmutableSet.copyOf(Sequence.cast(requiredAspects, StarlarkAspect.class, "requires")),
@@ -1542,14 +1556,14 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
     @Nullable private Location exportedLocation = null;
 
     /** A token used for equality that may be mutated by {@link #export}. */
-    private Symbol<BzlLoadValue.Key> identityToken;
+    private Symbol<BzlLoadThreadOwner> identityToken;
 
     @Nullable private final String documentation;
 
     public MacroFunction(
         MacroClass.Builder builder,
         Optional<String> documentation,
-        Symbol<BzlLoadValue.Key> identityToken) {
+        Symbol<BzlLoadThreadOwner> identityToken) {
       this.builder = builder;
       this.documentation = documentation.orElse(null);
       this.identityToken = identityToken;
@@ -1580,7 +1594,7 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
     @Nullable
     public Label getExtensionLabel() {
       if (identityToken.isGlobal()) {
-        return identityToken.getOwner().getLabel();
+        return identityToken.getOwner().key().getLabel();
       }
       return null;
     }
@@ -1605,7 +1619,8 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
       }
 
       if (!args.isEmpty()) {
-        throw Starlark.errorf("unexpected positional arguments");
+        throw Starlark.errorf(
+            "%s() does not accept positional arguments, but got %d", getName(), args.size());
       }
 
       MacroInstance macroInstance =
@@ -1644,10 +1659,14 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
       checkState(builder != null && macroClass == null);
       builder.setName(exportedName);
       builder.setDefiningBzlLabel(starlarkLabel);
-      this.macroClass = builder.build();
+      try {
+        this.macroClass = builder.build();
+      } catch (TooManyAttributesException ex) {
+        handler.handle(Event.error(exportedLocation, ex.getMessage()));
+      }
       this.builder = null;
       checkArgument(
-          identityToken.getOwner().getLabel().equals(starlarkLabel),
+          identityToken.getOwner().key().getLabel().equals(starlarkLabel),
           "created by %s, exporting as %s:%s",
           identityToken.getOwner(),
           starlarkLabel,
@@ -1758,7 +1777,8 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
     public Object call(StarlarkThread thread, Tuple args, Dict<String, Object> kwargs)
         throws EvalException, InterruptedException {
       if (!args.isEmpty()) {
-        throw new EvalException("Unexpected positional arguments");
+        throw Starlark.errorf(
+            "%s() does not accept positional arguments, but got %d", getName(), args.size());
       }
       if (ruleClass == null) {
         throw new EvalException("Invalid rule class hasn't been exported by a bzl file");
@@ -1908,13 +1928,13 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
       var symbolToken = (Symbol<?>) identityToken; // always a Symbol before export
       this.identityToken =
           switch (symbolToken.getOwner()) {
-            case BzlLoadValue.Key bzlKey -> {
+            case BzlLoadThreadOwner owner -> {
               checkArgument(
-                  bzlKey.getLabel().equals(starlarkLabel),
+                  owner.key().getLabel().equals(starlarkLabel),
                   "Exporting rule as (%s, %s) but doesn't match owner %s",
                   starlarkLabel,
                   ruleClassName,
-                  bzlKey);
+                  owner);
               yield symbolToken.exportAs(ruleClassName);
             }
             default -> AnalysisTestKey.create(starlarkLabel, ruleClassName);
@@ -2274,7 +2294,7 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
       // TODO: b/326588519 - this does not support AnalysisTestKey but that type does not seem to
       // appear in action lookup values. Make this more robust if necessary.
       var symbol = (GlobalSymbol<?>) obj.identityToken;
-      return (BzlLoadValue.Key) symbol.getOwner();
+      return ((BzlLoadThreadOwner) symbol.getOwner()).key();
     }
 
     @Override
