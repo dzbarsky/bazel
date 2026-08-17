@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag (for example, 9.3.0-dzbarsky13-graal)
+        description: Release tag (for example, 9.3.0-graal-dzbarsky13)
         required: false
         type: string
 
@@ -35,8 +35,8 @@ jobs:
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          release_tag="${INPUT_RELEASE_TAG:-9.3.0-dzbarsky13-graal}"
-          if [[ ! "${release_tag}" =~ ^9\.3\.0-[A-Za-z0-9]+(-[A-Za-z0-9]+)*$ ]]; then
+          release_tag="${INPUT_RELEASE_TAG:-9.3.0-graal-dzbarsky${GITHUB_RUN_NUMBER}}"
+          if [[ ! "${release_tag}" =~ ^9\.3\.0-graal-dzbarsky[0-9]+$ ]]; then
             echo "Invalid release tag: ${release_tag}" >&2
             exit 1
           fi
@@ -427,19 +427,8 @@ jobs:
               --json targetCommitish \
               --jq .targetCommitish)
             if [[ "${existing_target}" != "${GITHUB_SHA}" ]]; then
-              if [[ "${RELEASE_TAG}" != 9.3.0-dzbarsky13-graal ]]; then
-                echo "Release ${RELEASE_TAG} already targets ${existing_target}, expected ${GITHUB_SHA}." >&2
-                exit 1
-              fi
-              gh api \
-                --method PATCH \
-                "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_TAG}" \
-                --raw-field "sha=${GITHUB_SHA}" \
-                --field force=true \
-                --silent
-              gh release edit "${RELEASE_TAG}" \
-                --repo "${GITHUB_REPOSITORY}" \
-                --target "${GITHUB_SHA}"
+              echo "Release ${RELEASE_TAG} already targets ${existing_target}, expected ${GITHUB_SHA}." >&2
+              exit 1
             fi
             gh release upload "${RELEASE_TAG}" artifacts/* \
               --repo "${GITHUB_REPOSITORY}" \
@@ -477,12 +466,3 @@ jobs:
               fi
             done
           done
-
-          if [[ "${RELEASE_TAG}" == 9.3.0-dzbarsky13-graal ]] &&
-            gh release view 9.3.0-dzbarsky24 \
-              --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
-            gh release delete 9.3.0-dzbarsky24 \
-              --repo "${GITHUB_REPOSITORY}" \
-              --cleanup-tag \
-              --yes
-          fi
