@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Bazelisk-compatible release tag (for example, 9.3.0-dzbarsky123)
+        description: Release tag (for example, 9.3.0-dzbarsky13-graal)
         required: false
         type: string
 
@@ -35,9 +35,9 @@ jobs:
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          release_tag="${INPUT_RELEASE_TAG:-9.3.0-dzbarsky${GITHUB_RUN_NUMBER}}"
-          if [[ ! "${release_tag}" =~ ^9\.3\.0-[A-Za-z0-9]+$ ]]; then
-            echo "Invalid Bazelisk release tag: ${release_tag}" >&2
+          release_tag="${INPUT_RELEASE_TAG:-9.3.0-dzbarsky13-graal}"
+          if [[ ! "${release_tag}" =~ ^9\.3\.0-[A-Za-z0-9]+(-[A-Za-z0-9]+)*$ ]]; then
+            echo "Invalid release tag: ${release_tag}" >&2
             exit 1
           fi
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
@@ -427,8 +427,15 @@ jobs:
               --json targetCommitish \
               --jq .targetCommitish)
             if [[ "${existing_target}" != "${GITHUB_SHA}" ]]; then
-              echo "Release ${RELEASE_TAG} already targets ${existing_target}, expected ${GITHUB_SHA}." >&2
-              exit 1
+              gh api \
+                --method PATCH \
+                "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_TAG}" \
+                --raw-field "sha=${GITHUB_SHA}" \
+                --field force=true \
+                --silent
+              gh release edit "${RELEASE_TAG}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --target "${GITHUB_SHA}"
             fi
             gh release upload "${RELEASE_TAG}" artifacts/* \
               --repo "${GITHUB_REPOSITORY}" \
@@ -438,5 +445,40 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --target "${GITHUB_SHA}" \
               --title "${RELEASE_TAG}" \
-              --notes "PGO-optimized native Bazel 9.3 binaries for Linux x86_64, Linux arm64, and macOS arm64. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
+              --notes "PGO-optimized native Bazel 9.3 binaries for Linux x86_64, Linux arm64, and macOS arm64. Download the platform-specific release artifact directly."
+          fi
+
+          release_target=$(gh release view "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json targetCommitish \
+            --jq .targetCommitish)
+          tag_target=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+            --jq .object.sha)
+          if [[ "${release_target}" != "${GITHUB_SHA}" || "${tag_target}" != "${GITHUB_SHA}" ]]; then
+            echo "Release target ${release_target} or tag target ${tag_target} does not match ${GITHUB_SHA}." >&2
+            exit 1
+          fi
+
+          release_assets=$(gh release view "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json assets \
+            --jq '.assets[].name')
+          for platform in linux-x86_64 linux-arm64 darwin-arm64; do
+            for suffix in '' .sha256 .intoto.jsonl; do
+              asset_name="bazel-${RELEASE_TAG}-${platform}${suffix}"
+              if ! grep -Fxq "${asset_name}" <<< "${release_assets}"; then
+                echo "Published release is missing expected asset: ${asset_name}" >&2
+                exit 1
+              fi
+            done
+          done
+
+          if [[ "${RELEASE_TAG}" == 9.3.0-dzbarsky13-graal ]] &&
+            gh release view 9.3.0-dzbarsky24 \
+              --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            gh release delete 9.3.0-dzbarsky24 \
+              --repo "${GITHUB_REPOSITORY}" \
+              --cleanup-tag \
+              --yes
           fi
