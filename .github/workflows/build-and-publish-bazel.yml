@@ -190,16 +190,8 @@ jobs:
             export BAZEL_NATIVE_IMAGE_SERVER_XMX=3g
           fi
 
-          shutdown_training_server() {
-            "${instrumented_binary}" \
-              "--output_base=${training_output_base}" \
-              --nohome_rc \
-              --nosystem_rc \
-              shutdown > /dev/null 2>&1 || true
-          }
-          trap shutdown_training_server EXIT
-
           "${instrumented_binary}" \
+            --batch \
             "--output_base=${training_output_base}" \
             --nohome_rc \
             --nosystem_rc \
@@ -214,13 +206,6 @@ jobs:
             --stamp \
             "--embed_label=${RELEASE_TAG}" \
             //src:bazel
-
-          "${instrumented_binary}" \
-            "--output_base=${training_output_base}" \
-            --nohome_rc \
-            --nosystem_rc \
-            shutdown
-          trap - EXIT
 
           for _ in {1..30}; do
             [[ -s "${profile_path}" ]] && break
