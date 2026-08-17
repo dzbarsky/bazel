@@ -222,7 +222,9 @@ jobs:
             exit 1
           fi
           cp "${profile_path}" src/bazel_server_native_pgo_profile.iprof
-          find -P "${training_output_base}" -type d ! -perm -u+w -exec chmod u+w {} +
+          if [[ "${ARTIFACT_OS}" == darwin ]]; then
+            find -P "${training_output_base}" -type d ! -perm -u+w -exec chmod u+w {} +
+          fi
           rm -rf "${training_output_base}"
           rm -f "${instrumented_binary}"
 
