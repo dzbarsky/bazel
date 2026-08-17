@@ -20,7 +20,7 @@ defaults:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   prepare:
@@ -131,7 +131,7 @@ jobs:
             build_args+=(
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=6656m
               --define=BAZEL_NATIVE_IMAGE_PARALLELISM=1
-              "--define=BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES=com.google.devtools.build,net.starlark.java"
+              "--define=BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES=com.google.devtools.build.skyframe,com.google.devtools.build.lib.vfs,com.google.devtools.build.lib.events,com.google.devtools.build.lib.analysis,com.google.devtools.build.lib.packages,com.google.devtools.build.lib.collect,net.starlark.java"
               --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
             )
           elif [[ "${ARTIFACT_OS}" == linux && "${ARTIFACT_ARCH}" == x86_64 ]]; then
@@ -258,7 +258,7 @@ jobs:
             build_args+=(
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=6656m
               --define=BAZEL_NATIVE_IMAGE_PARALLELISM=1
-              "--define=BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES=com.google.devtools.build,net.starlark.java"
+              "--define=BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES=com.google.devtools.build.skyframe,com.google.devtools.build.lib.vfs,com.google.devtools.build.lib.events,com.google.devtools.build.lib.analysis,com.google.devtools.build.lib.packages,com.google.devtools.build.lib.collect,net.starlark.java"
               --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
             )
           elif [[ "${ARTIFACT_OS}" == linux && "${ARTIFACT_ARCH}" == x86_64 ]]; then
