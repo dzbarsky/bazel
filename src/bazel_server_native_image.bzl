@@ -105,6 +105,10 @@ def _bazel_server_native_image_impl(ctx):
         if not hosted_jvm_new_ratio.isdigit() or int(hosted_jvm_new_ratio) < 1:
             fail("BAZEL_NATIVE_IMAGE_NEW_RATIO must be a positive integer")
 
+    hosted_jvm_gc = ctx.var.get("BAZEL_NATIVE_IMAGE_HOSTED_GC")
+    if hosted_jvm_gc != None and hosted_jvm_gc != "g1":
+        fail("BAZEL_NATIVE_IMAGE_HOSTED_GC must be g1")
+
     parallelism = ctx.attr.parallelism
     parallelism_override = ctx.var.get("BAZEL_NATIVE_IMAGE_PARALLELISM")
     if parallelism_override != None:
@@ -114,6 +118,7 @@ def _bazel_server_native_image_impl(ctx):
 
     profiling_package_prefixes = None
     disable_pgo_sampling = False
+    disable_pgo_priority_inlining = False
     if ctx.attr.pgo_instrument:
         profiling_package_prefixes = ctx.var.get("BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES")
         if profiling_package_prefixes != None:
@@ -131,6 +136,11 @@ def _bazel_server_native_image_impl(ctx):
         if disable_pgo_sampling_value not in ["0", "1"]:
             fail("BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING must be 0 or 1")
         disable_pgo_sampling = disable_pgo_sampling_value == "1"
+
+        disable_pgo_priority_inlining_value = ctx.var.get("BAZEL_NATIVE_IMAGE_DISABLE_PGO_PRIORITY_INLINING", "0")
+        if disable_pgo_priority_inlining_value not in ["0", "1"]:
+            fail("BAZEL_NATIVE_IMAGE_DISABLE_PGO_PRIORITY_INLINING must be 0 or 1")
+        disable_pgo_priority_inlining = disable_pgo_priority_inlining_value == "1"
 
     classpath = depset([ctx.file.deploy_jar])
 
@@ -190,6 +200,9 @@ def _bazel_server_native_image_impl(ctx):
         args.add("-J-XX:+UseCompactObjectHeaders")
     if hosted_jvm_new_ratio != None:
         args.add("-J-XX:NewRatio=" + hosted_jvm_new_ratio)
+    if hosted_jvm_gc == "g1":
+        args.add("-J-XX:-UseParallelGC")
+        args.add("-J-XX:+UseG1GC")
     args.add("-Dfile.encoding=ISO-8859-1")
     args.add("-Dnative.encoding=UTF-8")
     args.add("--add-opens=java.base/java.lang=ALL-UNNAMED")
@@ -209,6 +222,8 @@ def _bazel_server_native_image_impl(ctx):
             args.add("-H:ProfilingPackagePrefixes=" + profiling_package_prefixes)
         if disable_pgo_sampling:
             args.add("-H:-SamplingCollect")
+        if disable_pgo_priority_inlining:
+            args.add("-H:-AOTPriorityInline")
     elif ctx.files.pgo_profiles:
         args.add_joined(ctx.files.pgo_profiles, join_with = ",", format_joined = "--pgo=%s")
     args.add(bundle, format = "--bundle-create=%s,dry-run")
@@ -336,12 +351,14 @@ def _bazel_server_native_image_impl(ctx):
     apply_args.add(build_output_json)
     apply_args.add(management_library_name)
     apply_args.add("1" if is_macos else "0")
-    if hosted_jvm_max_heap != None or compact_object_headers or hosted_jvm_new_ratio != None:
+    if hosted_jvm_max_heap != None or compact_object_headers or hosted_jvm_new_ratio != None or hosted_jvm_gc != None:
         apply_args.add(hosted_jvm_max_heap or "")
-    if compact_object_headers or hosted_jvm_new_ratio != None:
+    if compact_object_headers or hosted_jvm_new_ratio != None or hosted_jvm_gc != None:
         apply_args.add("1" if compact_object_headers else "")
-    if hosted_jvm_new_ratio != None:
-        apply_args.add(hosted_jvm_new_ratio)
+    if hosted_jvm_new_ratio != None or hosted_jvm_gc != None:
+        apply_args.add(hosted_jvm_new_ratio or "")
+    if hosted_jvm_gc != None:
+        apply_args.add(hosted_jvm_gc)
 
     apply_command = """
 set -eu
@@ -358,6 +375,7 @@ is_macos="$8"
 hosted_jvm_max_heap="${9:-}"
 compact_object_headers="${10:-}"
 hosted_jvm_new_ratio="${11:-}"
+hosted_jvm_gc="${12:-}"
 image_output="$execroot/$(dirname "$build_output_json")/native-image.output"
 
 chmod -R u+w "$image_output" 2>/dev/null || true
@@ -374,6 +392,9 @@ if [ "$compact_object_headers" = "1" ]; then
 fi
 if [ -n "$hosted_jvm_new_ratio" ]; then
   set -- "$@" "-J-XX:NewRatio=$hosted_jvm_new_ratio"
+fi
+if [ "$hosted_jvm_gc" = "g1" ]; then
+  set -- "$@" "-J-XX:-UseParallelGC" "-J-XX:+UseG1GC"
 fi
 
 if [ "$is_macos" = "1" ]; then

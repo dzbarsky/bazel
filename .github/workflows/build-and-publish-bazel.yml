@@ -131,10 +131,11 @@ jobs:
             build_args+=(
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=6656m
               --define=BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS=1
-              --define=BAZEL_NATIVE_IMAGE_NEW_RATIO=4
+              --define=BAZEL_NATIVE_IMAGE_HOSTED_GC=g1
               --define=BAZEL_NATIVE_IMAGE_PARALLELISM=1
-              "--define=BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES=com.google.devtools.build.skyframe,com.google.devtools.build.lib.vfs,com.google.devtools.build.lib.events,com.google.devtools.build.lib.collect,net.starlark.java"
+              "--define=BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES=com.google.devtools.build.skyframe,com.google.devtools.build.lib.vfs,com.google.devtools.build.lib.events,com.google.devtools.build.lib.collect,net.starlark.java.eval"
               --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_PRIORITY_INLINING=1
             )
           elif [[ "${ARTIFACT_OS}" == linux && "${ARTIFACT_ARCH}" == x86_64 ]]; then
             startup_args+=(--host_jvm_args=-Xmx768m)
@@ -260,10 +261,11 @@ jobs:
             build_args+=(
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=6656m
               --define=BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS=1
-              --define=BAZEL_NATIVE_IMAGE_NEW_RATIO=4
+              --define=BAZEL_NATIVE_IMAGE_HOSTED_GC=g1
               --define=BAZEL_NATIVE_IMAGE_PARALLELISM=1
-              "--define=BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES=com.google.devtools.build.skyframe,com.google.devtools.build.lib.vfs,com.google.devtools.build.lib.events,com.google.devtools.build.lib.collect,net.starlark.java"
+              "--define=BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES=com.google.devtools.build.skyframe,com.google.devtools.build.lib.vfs,com.google.devtools.build.lib.events,com.google.devtools.build.lib.collect,net.starlark.java.eval"
               --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_PRIORITY_INLINING=1
             )
           elif [[ "${ARTIFACT_OS}" == linux && "${ARTIFACT_ARCH}" == x86_64 ]]; then
             startup_args+=(--host_jvm_args=-Xmx768m)
