@@ -346,6 +346,10 @@ _NATIVE_IMAGE_PLATFORM_CONSTRAINTS = select({
         "@platforms//cpu:arm64",
         "@platforms//os:macos",
     ],
+    "//src/conditions:linux_aarch64": [
+        "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+    ],
     "//src/conditions:linux_x86_64": [
         "@platforms//cpu:x86_64",
         "@platforms//os:linux",
@@ -355,11 +359,13 @@ _NATIVE_IMAGE_PLATFORM_CONSTRAINTS = select({
 
 _NATIVE_IMAGE_GRAALVM_FILES = select({
     "//src/conditions:darwin_arm64": "@graalvm_oracle//:files",
+    "//src/conditions:linux_aarch64": "@graalvm_oracle//:files",
     "//conditions:default": "@graalvm_25_2_4_linux_x64//:files",
 })
 
 _NATIVE_IMAGE_TOOL = select({
     "//src/conditions:darwin_arm64": "@graalvm_oracle//:bin/native-image",
+    "//src/conditions:linux_aarch64": "@graalvm_oracle//:native-image",
     "//conditions:default": "@graalvm_25_2_4_linux_x64//:bin/native-image",
 })
 

@@ -46,7 +46,7 @@ jobs:
     name: Build ${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    timeout-minutes: 360
     container:
       image: ${{ matrix.container }}
     strategy:
@@ -59,25 +59,22 @@ jobs:
             bazelisk_arch: amd64
             artifact_os: linux
             artifact_arch: x86_64
+            buildbuddy_config: buildbuddy-remote
           - runner: ubuntu-24.04-arm
             container: oraclelinux:8
             bazelisk_os: linux
             bazelisk_arch: arm64
             artifact_os: linux
             artifact_arch: arm64
-          - runner: macos-15-intel
-            bazelisk_os: darwin
-            bazelisk_arch: amd64
-            artifact_os: darwin
-            artifact_arch: x86_64
+            buildbuddy_config: buildbuddy-cache
           - runner: macos-15
             bazelisk_os: darwin
             bazelisk_arch: arm64
             artifact_os: darwin
             artifact_arch: arm64
+            buildbuddy_config: buildbuddy-cache
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
     steps:
       - name: Install Linux build tools
         if: runner.os == 'Linux'
@@ -87,11 +84,13 @@ jobs:
             curl \
             gcc-c++ \
             git \
+            glibc-devel \
             java-21-openjdk \
             python3 \
             unzip \
             which \
-            zip
+            zip \
+            zlib-devel
 
       - name: Check out Bazel
         uses: actions/checkout@v4
@@ -107,24 +106,193 @@ jobs:
             "https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-${BAZELISK_OS}-${BAZELISK_ARCH}"
           chmod +x bazelisk
 
-      - name: Build Bazel
+      - name: Build platform-instrumented native Bazel
+        env:
+          ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
+          ARTIFACT_OS: ${{ matrix.artifact_os }}
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_CONFIG: ${{ matrix.buildbuddy_config }}
         run: |
           set -euo pipefail
           if [[ -z "${BUILDBUDDY_API_KEY}" ]]; then
             echo 'Missing the BUILDBUDDY_API_KEY Actions secret.' >&2
             exit 1
           fi
-          ./bazelisk --batch --nohome_rc --nosystem_rc build \
-            --config=buildbuddy-cache \
-            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
+
+          startup_args=(--batch --nohome_rc --nosystem_rc)
+          build_args=(
+            "--config=${BUILDBUDDY_CONFIG}"
+            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
+          )
+          build_jobs=2
+          if [[ "${ARTIFACT_OS}" == darwin ]]; then
+            startup_args+=(--host_jvm_args=-Xmx768m)
+            build_jobs=1
+            build_args+=(
+              --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=6656m
+              --define=BAZEL_NATIVE_IMAGE_PARALLELISM=1
+              "--define=BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES=com.google.devtools.build,net.starlark.java"
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+            )
+          elif [[ "${ARTIFACT_OS}" == linux && "${ARTIFACT_ARCH}" == x86_64 ]]; then
+            startup_args+=(--host_jvm_args=-Xmx768m)
+            build_jobs=1
+            build_args+=(
+              --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=11g
+              --define=BAZEL_NATIVE_IMAGE_PARALLELISM=2
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+              --strategy=BazelNativeImageBundle=local
+              --strategy=BazelNativeImage=local
+            )
+          elif [[ "${ARTIFACT_OS}" == linux && "${ARTIFACT_ARCH}" == arm64 ]]; then
+            startup_args+=(--host_jvm_args=-Xmx768m)
+            build_jobs=1
+            build_args+=(
+              --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=11g
+              --define=BAZEL_NATIVE_IMAGE_PARALLELISM=2
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+            )
+          fi
+
+          ./bazelisk "${startup_args[@]}" build \
+            "${build_args[@]}" \
             --verbose_failures \
             --compilation_mode=opt \
-            --jobs=2 \
+            "--jobs=${build_jobs}" \
+            --stamp \
+            "--embed_label=${RELEASE_TAG}" \
+            //src:bazel-bin_native_pgo_instrumented
+
+      - name: Collect platform-native PGO profile with BuildBuddy
+        env:
+          ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
+          ARTIFACT_OS: ${{ matrix.artifact_os }}
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          set -euo pipefail
+          platform="${ARTIFACT_OS}-${ARTIFACT_ARCH}"
+          instrumented_binary="${RUNNER_TEMP}/bazel-native-pgo-instrumented-${platform}"
+          training_output_base="${RUNNER_TEMP}/bazel-pgo-training-${platform}"
+          profile_path="${RUNNER_TEMP}/bazel_server_native_pgo_profile-${platform}.iprof"
+          cp bazel-bin/src/bazel_native_pgo_instrumented "${instrumented_binary}"
+          chmod +x "${instrumented_binary}"
+          export BAZEL_NATIVE_IMAGE_SERVER_ARGS="-XX:ProfilesDumpFile=${profile_path}"
+          if [[ "${ARTIFACT_OS}" == darwin ]]; then
+            export BAZEL_NATIVE_IMAGE_SERVER_XMX=3g
+          fi
+
+          shutdown_training_server() {
+            "${instrumented_binary}" \
+              "--output_base=${training_output_base}" \
+              --nohome_rc \
+              --nosystem_rc \
+              shutdown > /dev/null 2>&1 || true
+          }
+          trap shutdown_training_server EXIT
+
+          "${instrumented_binary}" \
+            "--output_base=${training_output_base}" \
+            --nohome_rc \
+            --nosystem_rc \
+            build \
+            --config=buildbuddy-remote \
+            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
+            --noremote_accept_cached \
+            --platforms=//:buildbuddy_linux_x86_64 \
+            --verbose_failures \
+            --compilation_mode=opt \
+            --jobs=500 \
             --stamp \
             "--embed_label=${RELEASE_TAG}" \
             //src:bazel
 
-      - name: Verify and package Bazel
+          "${instrumented_binary}" \
+            "--output_base=${training_output_base}" \
+            --nohome_rc \
+            --nosystem_rc \
+            shutdown
+          trap - EXIT
+
+          for _ in {1..30}; do
+            [[ -s "${profile_path}" ]] && break
+            sleep 1
+          done
+          if [[ ! -s "${profile_path}" ]]; then
+            echo "Native-image training produced no PGO profile: ${profile_path}" >&2
+            exit 1
+          fi
+          if [[ -e src/bazel_server_native_pgo_profile.iprof ]]; then
+            echo 'Refusing to overwrite an existing native-image PGO profile.' >&2
+            exit 1
+          fi
+          cp "${profile_path}" src/bazel_server_native_pgo_profile.iprof
+          rm -rf "${training_output_base}"
+          rm -f "${instrumented_binary}"
+
+      - name: Build PGO-optimized native Bazel
+        env:
+          ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
+          ARTIFACT_OS: ${{ matrix.artifact_os }}
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_CONFIG: ${{ matrix.buildbuddy_config }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${BUILDBUDDY_API_KEY}" ]]; then
+            echo 'Missing the BUILDBUDDY_API_KEY Actions secret.' >&2
+            exit 1
+          fi
+          if [[ ! -s src/bazel_server_native_pgo_profile.iprof ]]; then
+            echo 'Missing the native-image PGO training profile.' >&2
+            exit 1
+          fi
+
+          startup_args=(--batch --nohome_rc --nosystem_rc)
+          build_args=(
+            "--config=${BUILDBUDDY_CONFIG}"
+            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
+          )
+          build_jobs=2
+          if [[ "${ARTIFACT_OS}" == darwin ]]; then
+            startup_args+=(--host_jvm_args=-Xmx768m)
+            build_jobs=1
+            build_args+=(
+              --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=6656m
+              --define=BAZEL_NATIVE_IMAGE_PARALLELISM=1
+              "--define=BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES=com.google.devtools.build,net.starlark.java"
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+            )
+          elif [[ "${ARTIFACT_OS}" == linux && "${ARTIFACT_ARCH}" == x86_64 ]]; then
+            startup_args+=(--host_jvm_args=-Xmx768m)
+            build_jobs=1
+            build_args+=(
+              --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=11g
+              --define=BAZEL_NATIVE_IMAGE_PARALLELISM=2
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+              --strategy=BazelNativeImageBundle=local
+              --strategy=BazelNativeImage=local
+            )
+          elif [[ "${ARTIFACT_OS}" == linux && "${ARTIFACT_ARCH}" == arm64 ]]; then
+            startup_args+=(--host_jvm_args=-Xmx768m)
+            build_jobs=1
+            build_args+=(
+              --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=11g
+              --define=BAZEL_NATIVE_IMAGE_PARALLELISM=2
+              --define=BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING=1
+            )
+          fi
+
+          ./bazelisk "${startup_args[@]}" build \
+            "${build_args[@]}" \
+            --verbose_failures \
+            --compilation_mode=opt \
+            "--jobs=${build_jobs}" \
+            --stamp \
+            "--embed_label=${RELEASE_TAG}" \
+            --output_groups=+native_image_diagnostics \
+            //src:bazel-bin_native_pgo \
+            //src:bazel-server-native-image-pgo
+
+      - name: Verify and package native Bazel
         env:
           ARTIFACT_OS: ${{ matrix.artifact_os }}
           ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
@@ -132,8 +300,45 @@ jobs:
           set -euo pipefail
           asset_name="bazel-${RELEASE_TAG}-${ARTIFACT_OS}-${ARTIFACT_ARCH}"
           mkdir -p artifacts
-          cp bazel-bin/src/bazel "artifacts/${asset_name}"
+          cp bazel-bin/src/bazel_native_pgo "artifacts/${asset_name}"
           chmod +x "artifacts/${asset_name}"
+
+          python3 - \
+            bazel-bin/src/bazel-server-native-image-pgo/build-output.json \
+            "artifacts/${asset_name}" \
+            "${ARTIFACT_OS}" <<'PY'
+          import json
+          import sys
+          import zipfile
+
+          with open(sys.argv[1], encoding="utf-8") as diagnostics_file:
+              diagnostics = json.load(diagnostics_file)
+          general_info = diagnostics["general_info"]
+          vendor = general_info["vendor_version"]
+          garbage_collector = general_info["garbage_collector"]
+          pgo_modes = general_info["graal_compiler"]["pgo"]
+          if not vendor.startswith("Oracle GraalVM"):
+              raise SystemExit(f"Expected Oracle GraalVM, got {vendor!r}")
+          if garbage_collector != "G1 GC":
+              raise SystemExit(f"Expected G1 GC, got {garbage_collector!r}")
+          if "user-provided" not in pgo_modes:
+              raise SystemExit(f"Expected a user-provided PGO profile, got {pgo_modes!r}")
+
+          management_library = (
+              "libmanagement_ext.dylib" if sys.argv[3] == "darwin"
+              else "libmanagement_ext.so"
+          )
+          with zipfile.ZipFile(sys.argv[2]) as bazel_archive:
+              archive_entries = set(bazel_archive.namelist())
+          for required_entry in ("A-server-native", management_library):
+              if required_entry not in archive_entries:
+                  raise SystemExit(f"Missing native Bazel archive entry: {required_entry}")
+          if "A-server.jar" in archive_entries:
+              raise SystemExit("Native Bazel archive unexpectedly includes A-server.jar")
+
+          print(f"Validated {vendor}, {garbage_collector}, PGO={pgo_modes}")
+          PY
+
           "artifacts/${asset_name}" --batch --ignore_all_rc_files version | tee bazel-version.txt
           grep -Fq "Build label: ${RELEASE_TAG}" bazel-version.txt
           if command -v sha256sum > /dev/null; then
@@ -167,20 +372,18 @@ jobs:
       - name: Download Bazel artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: bazel-*
+          pattern: bazel-${{ needs.prepare.outputs.release_tag }}-*
           path: artifacts
           merge-multiple: true
 
       - name: Verify Bazel artifacts
         run: |
           set -euo pipefail
-          for artifact_os in linux darwin; do
-            for artifact_arch in x86_64 arm64; do
-              asset_name="bazel-${RELEASE_TAG}-${artifact_os}-${artifact_arch}"
-              test -f "artifacts/${asset_name}"
-              test -f "artifacts/${asset_name}.sha256"
-              (cd artifacts && sha256sum --check "${asset_name}.sha256")
-            done
+          for platform in linux-x86_64 linux-arm64 darwin-arm64; do
+            asset_name="bazel-${RELEASE_TAG}-${platform}"
+            test -f "artifacts/${asset_name}"
+            test -f "artifacts/${asset_name}.sha256"
+            (cd artifacts && sha256sum --check "${asset_name}.sha256")
           done
 
       - name: Attest Bazel artifacts
@@ -190,7 +393,6 @@ jobs:
           subject-path: |
             artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-linux-x86_64
             artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-linux-arm64
-            artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-darwin-x86_64
             artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-darwin-arm64
 
       - name: Write Bazel artifact attestations
@@ -199,13 +401,11 @@ jobs:
         run: |
           set -euo pipefail
           test -s "${ATTESTATION_BUNDLE}"
-          for artifact_os in linux darwin; do
-            for artifact_arch in x86_64 arm64; do
-              asset_name="bazel-${RELEASE_TAG}-${artifact_os}-${artifact_arch}"
-              jq --compact-output . "${ATTESTATION_BUNDLE}" \
-                > "artifacts/${asset_name}.intoto.jsonl"
-              test -s "artifacts/${asset_name}.intoto.jsonl"
-            done
+          for platform in linux-x86_64 linux-arm64 darwin-arm64; do
+            asset_name="bazel-${RELEASE_TAG}-${platform}"
+            jq --compact-output . "${ATTESTATION_BUNDLE}" \
+              > "artifacts/${asset_name}.intoto.jsonl"
+            test -s "artifacts/${asset_name}.intoto.jsonl"
           done
 
       - name: Upload Bazel artifacts to GitHub release
@@ -228,5 +428,5 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --target "${GITHUB_SHA}" \
               --title "${RELEASE_TAG}" \
-              --notes "Bazel 9.3 binaries for Linux and macOS. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
+              --notes "PGO-optimized native Bazel 9.3 binaries for Linux x86_64, Linux arm64, and macOS arm64. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
           fi

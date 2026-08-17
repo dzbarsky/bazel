@@ -266,6 +266,18 @@ platform(
 )
 
 platform(
+    name = "buildbuddy_linux_x86_64",
+    constraint_values = ["@platforms//cpu:x86_64"],
+    exec_properties = {
+        "Arch": "amd64",
+        "container-image": "docker://docker.io/cimg/base@sha256:a61f8eb98815995af8de3d30ffa16d9c22d4f5d38df673d407dfaaf73ce5435e",
+        "network": "external",
+    },
+    parents = ["@llvm//:rbe_platform"],
+    visibility = ["//visibility:public"],
+)
+
+platform(
     name = "windows_arm64",
     constraint_values = [
         "@platforms//os:windows",

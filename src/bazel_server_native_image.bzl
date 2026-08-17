@@ -79,6 +79,48 @@ def _bazel_server_native_image_impl(ctx):
     is_macos = ctx.target_platform_has_constraint(
         ctx.attr._macos_constraint[platform_common.ConstraintValueInfo],
     )
+    is_arm64 = ctx.target_platform_has_constraint(
+        ctx.attr._arm64_constraint[platform_common.ConstraintValueInfo],
+    )
+    is_x86_64 = ctx.target_platform_has_constraint(
+        ctx.attr._x86_64_constraint[platform_common.ConstraintValueInfo],
+    )
+    requires_local_execution = is_macos or is_arm64
+
+    hosted_jvm_max_heap = ctx.var.get("BAZEL_NATIVE_IMAGE_MAX_HEAP")
+    if hosted_jvm_max_heap != None:
+        heap_size_digits = hosted_jvm_max_heap
+        if hosted_jvm_max_heap and hosted_jvm_max_heap[-1:].lower() in ["k", "m", "g"]:
+            heap_size_digits = hosted_jvm_max_heap[:-1]
+        if not heap_size_digits or not heap_size_digits.isdigit() or int(heap_size_digits) < 1:
+            fail("BAZEL_NATIVE_IMAGE_MAX_HEAP must be a positive integer optionally followed by k, m, or g")
+
+    parallelism = ctx.attr.parallelism
+    parallelism_override = ctx.var.get("BAZEL_NATIVE_IMAGE_PARALLELISM")
+    if parallelism_override != None:
+        if not parallelism_override.isdigit() or int(parallelism_override) < 1:
+            fail("BAZEL_NATIVE_IMAGE_PARALLELISM must be a positive integer")
+        parallelism = int(parallelism_override)
+
+    profiling_package_prefixes = None
+    disable_pgo_sampling = False
+    if ctx.attr.pgo_instrument:
+        profiling_package_prefixes = ctx.var.get("BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES")
+        if profiling_package_prefixes != None:
+            identifier_start = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$"
+            identifier_characters = identifier_start + "0123456789"
+            for prefix in profiling_package_prefixes.split(","):
+                for component in prefix.split("."):
+                    if not component or component[0] not in identifier_start:
+                        fail("BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES must be comma-separated Java package prefixes")
+                    for character in component.elems():
+                        if character not in identifier_characters:
+                            fail("BAZEL_NATIVE_IMAGE_PROFILING_PACKAGE_PREFIXES must be comma-separated Java package prefixes")
+
+        disable_pgo_sampling_value = ctx.var.get("BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING", "0")
+        if disable_pgo_sampling_value not in ["0", "1"]:
+            fail("BAZEL_NATIVE_IMAGE_DISABLE_PGO_SAMPLING must be 0 or 1")
+        disable_pgo_sampling = disable_pgo_sampling_value == "1"
 
     classpath = depset([ctx.file.deploy_jar])
 
@@ -111,7 +153,7 @@ def _bazel_server_native_image_impl(ctx):
         inputs = [ctx.file.deploy_jar],
         tools = [ctx.executable._config_generator],
         outputs = [dynamic_proxy_config] + generated_reflection_configs,
-        execution_requirements = {"no-remote": ""} if is_macos else {},
+        execution_requirements = {"no-remote": ""} if requires_local_execution else {},
         mnemonic = "BazelNativeImageConfig",
         progress_message = "Generating native-image configs %{label}",
     )
@@ -132,6 +174,8 @@ def _bazel_server_native_image_impl(ctx):
     ] + generated_reflection_configs
 
     args = ctx.actions.args().use_param_file("@%s", use_always = False)
+    if hosted_jvm_max_heap != None:
+        args.add("-J-Xmx" + hosted_jvm_max_heap)
     args.add("-Dfile.encoding=ISO-8859-1")
     args.add("-Dnative.encoding=UTF-8")
     args.add("--add-opens=java.base/java.lang=ALL-UNNAMED")
@@ -147,6 +191,10 @@ def _bazel_server_native_image_impl(ctx):
         args.add("--gc=" + ctx.attr.gc)
     if ctx.attr.pgo_instrument:
         args.add("--pgo-instrument")
+        if profiling_package_prefixes != None:
+            args.add("-H:ProfilingPackagePrefixes=" + profiling_package_prefixes)
+        if disable_pgo_sampling:
+            args.add("-H:-SamplingCollect")
     elif ctx.files.pgo_profiles:
         args.add_joined(ctx.files.pgo_profiles, join_with = ",", format_joined = "--pgo=%s")
     args.add(bundle, format = "--bundle-create=%s,dry-run")
@@ -159,11 +207,11 @@ def _bazel_server_native_image_impl(ctx):
     args.add(ctx.file.jni_configuration, format = "-H:JNIConfigurationFiles=%s")
     args.add(dynamic_proxy_config, format = "-H:DynamicProxyConfigurationFiles=%s")
     args.add(ctx.attr.include_resources, format = "-H:IncludeResources=%s")
-    if not is_macos:
+    if is_x86_64:
         args.add("-march=x86-64-v2")
     args.add(cc_toolchain.c_compiler_path, format = "--native-compiler-path=%s")
-    if ctx.attr.parallelism > 0:
-        args.add(ctx.attr.parallelism, format = "--parallelism=%s")
+    if parallelism > 0:
+        args.add(parallelism, format = "--parallelism=%s")
     args.add("-o")
     args.add(binary)
     args.add_joined("-cp", classpath, join_with = ctx.configuration.host_path_separator)
@@ -215,7 +263,7 @@ def _bazel_server_native_image_impl(ctx):
         requirement: ""
         for requirement in cc_toolchain.execution_requirements
     }
-    if is_macos:
+    if requires_local_execution:
         execution_requirements["no-remote"] = ""
 
     native_image_inputs = depset(
@@ -274,6 +322,8 @@ def _bazel_server_native_image_impl(ctx):
     apply_args.add(build_output_json)
     apply_args.add(management_library_name)
     apply_args.add("1" if is_macos else "0")
+    if hosted_jvm_max_heap != None:
+        apply_args.add(hosted_jvm_max_heap)
 
     apply_command = """
 set -eu
@@ -287,18 +337,25 @@ jdk_library="$5"
 build_output_json="$6"
 management_library_name="$7"
 is_macos="$8"
+hosted_jvm_max_heap="${9:-}"
 image_output="$execroot/$(dirname "$build_output_json")/native-image.output"
 
 chmod -R u+w "$image_output" 2>/dev/null || true
 rm -rf "$image_output"
 trap 'rm -rf "$image_output"' EXIT
 
+if [ -n "$hosted_jvm_max_heap" ]; then
+  set -- "-J-Xmx$hosted_jvm_max_heap"
+else
+  set --
+fi
+
 if [ "$is_macos" = "1" ]; then
-  "$native_image_tool" "--bundle-apply=$bundle" \
+  "$native_image_tool" "$@" "--bundle-apply=$bundle" \
     "-EDEVELOPER_DIR=$DEVELOPER_DIR" "-ESDKROOT=$SDKROOT" \
     -o "$executable_name"
 else
-  "$native_image_tool" "--bundle-apply=$bundle" -o "$executable_name"
+  "$native_image_tool" "$@" "--bundle-apply=$bundle" -o "$executable_name"
 fi
 
 image_source="$image_output/default/$executable_name"
@@ -431,6 +488,9 @@ bazel_server_native_image = rule(
             allow_single_file = [".json"],
             mandatory = True,
         ),
+        "_arm64_constraint": attr.label(
+            default = Label("@platforms//cpu:arm64"),
+        ),
         "_cc_toolchain": attr.label(
             default = Label("@bazel_tools//tools/cpp:current_cc_toolchain"),
         ),
@@ -441,6 +501,9 @@ bazel_server_native_image = rule(
         ),
         "_macos_constraint": attr.label(
             default = Label("@platforms//os:macos"),
+        ),
+        "_x86_64_constraint": attr.label(
+            default = Label("@platforms//cpu:x86_64"),
         ),
         "_xcode_config": attr.label(
             default = configuration_field(

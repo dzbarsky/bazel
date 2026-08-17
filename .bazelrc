@@ -8,6 +8,17 @@ common:buildbuddy-cache --remote_upload_local_results
 common:buildbuddy-cache --remote_download_toplevel
 common:buildbuddy-cache --remote_timeout=600
 
+# BuildBuddy remote execution with the hermetic Linux x86_64 LLVM toolchain.
+common:buildbuddy-remote --config=buildbuddy-cache
+common:buildbuddy-remote --extra_execution_platforms=//:buildbuddy_linux_x86_64
+common:buildbuddy-remote --extra_toolchains=@llvm//toolchain:all
+common:buildbuddy-remote --remote_cache_compression
+common:buildbuddy-remote --remote_executor=grpcs://remote.buildbuddy.io
+common:buildbuddy-remote --shell_executable=/bin/bash
+common:buildbuddy-remote --action_env=PATH=/bin:/usr/bin:/usr/local/bin
+common:buildbuddy-remote --@rules_python//python/config_settings:build_python_zip=false
+build:buildbuddy-remote --remote_download_toplevel
+
 common:native-image-tests --//src/test/shell/bazel:use_native_bazel
 common:native-image-tests --test_env=BAZEL_NATIVE_IMAGE_TEST=1
 common:native-image-tests --test_env=BAZEL_NATIVE_IMAGE_CAPTURE_SERVER_LOGS=1

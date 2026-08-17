@@ -108,7 +108,9 @@ def emit_proto_reflection_config(path: str, entries: list[str]) -> None:
   }
 
   def is_proto_class(entry: str) -> bool:
-    if not class_entry(entry):
+    if not class_entry(entry) or entry.startswith(
+        ("com/google/apps/card/", "com/google/shopping/type/")
+    ):
       return False
     class_path = remove_suffix(entry, ".class")
     if class_path in proto_prefixes:
