@@ -418,7 +418,7 @@ genrule(
     name = "install_base_key-file_native",
     srcs = [
         ":bazel-server-native-image",
-        ":install_base_key-file_jdk_allmodules",
+        ":install_base_key-file_nojdk",
     ],
     outs = ["install_base_key_native"],
     cmd = "$(location :md5) $(SRCS) > $@",
@@ -432,7 +432,7 @@ genrule(
     name = "install_base_key-file_native_pgo_instrumented",
     srcs = [
         ":bazel-server-native-image-pgo-instrumented",
-        ":install_base_key-file_jdk_allmodules",
+        ":install_base_key-file_nojdk",
     ],
     outs = ["install_base_key_native_pgo_instrumented"],
     cmd = "$(location :md5) $(SRCS) > $@",
@@ -446,7 +446,7 @@ genrule(
     name = "install_base_key-file_native_pgo",
     srcs = [
         ":bazel-server-native-image-pgo",
-        ":install_base_key-file_jdk_allmodules",
+        ":install_base_key-file_nojdk",
     ],
     outs = ["install_base_key_native_pgo"],
     cmd = "$(location :md5) $(SRCS) > $@",
@@ -459,7 +459,7 @@ genrule(
 genrule(
     name = "package-zip_native",
     srcs = [
-        ":embedded_tools_jdk_allmodules.zip",
+        ":embedded_tools_nojdk.zip",
         "//src/main/java/com/google/devtools/build/lib/bazel:BazelServer_deploy.jar",
         "install_base_key_native",
         "//:platforms-srcs",
@@ -484,7 +484,7 @@ genrule(
 genrule(
     name = "package-zip_native_pgo_instrumented",
     srcs = [
-        ":embedded_tools_jdk_allmodules.zip",
+        ":embedded_tools_nojdk.zip",
         "//src/main/java/com/google/devtools/build/lib/bazel:BazelServer_deploy.jar",
         "install_base_key_native_pgo_instrumented",
         "//:platforms-srcs",
@@ -509,7 +509,7 @@ genrule(
 genrule(
     name = "package-zip_native_pgo",
     srcs = [
-        ":embedded_tools_jdk_allmodules.zip",
+        ":embedded_tools_nojdk.zip",
         "//src/main/java/com/google/devtools/build/lib/bazel:BazelServer_deploy.jar",
         "install_base_key_native_pgo",
         "//:platforms-srcs",

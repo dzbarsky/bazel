@@ -164,6 +164,7 @@ cc_binary(
     }) + ["-DBAZEL_NATIVE_IMAGE_SERVER"],
     linkopts = select({
         "//src/conditions:darwin": [
+            "-Wl,-x",
         ],
         "//src/conditions:freebsd": [
             "-lprocstat",

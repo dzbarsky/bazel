@@ -386,7 +386,7 @@ bazel_server_native_image = rule(
             mandatory = True,
         ),
         "include_resources": attr.string(
-            default = ".*",
+            default = "^(?!.*[.]class/?$)(?!jdk/(javadoc|jpackage|jshell|internal/jshell)/).*",
         ),
         "jni_configuration": attr.label(
             allow_single_file = [".json"],
