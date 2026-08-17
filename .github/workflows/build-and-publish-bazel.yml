@@ -129,6 +129,8 @@ jobs:
             startup_args+=(--host_jvm_args=-Xmx768m)
             build_jobs=1
             build_args+=(
+              --discard_analysis_cache
+              --notrack_incremental_state
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=6656m
               --define=BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS=1
               --define=BAZEL_NATIVE_IMAGE_NEW_RATIO=4
@@ -220,6 +222,7 @@ jobs:
             exit 1
           fi
           cp "${profile_path}" src/bazel_server_native_pgo_profile.iprof
+          find -P "${training_output_base}" -type d ! -perm -u+w -exec chmod u+w {} +
           rm -rf "${training_output_base}"
           rm -f "${instrumented_binary}"
 
@@ -250,6 +253,8 @@ jobs:
             startup_args+=(--host_jvm_args=-Xmx768m)
             build_jobs=1
             build_args+=(
+              --discard_analysis_cache
+              --notrack_incremental_state
               --define=BAZEL_NATIVE_IMAGE_MAX_HEAP=6656m
               --define=BAZEL_NATIVE_IMAGE_COMPACT_OBJECT_HEADERS=1
               --define=BAZEL_NATIVE_IMAGE_NEW_RATIO=4
