@@ -21,7 +21,7 @@ defaults:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   prepare:
@@ -33,10 +33,25 @@ jobs:
       - name: Select release tag
         id: release_tag
         env:
+          GH_TOKEN: ${{ github.token }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          release_tag="${INPUT_RELEASE_TAG:-9.3.0-dzbarsky${GITHUB_RUN_NUMBER}}"
+          if [[ -n "${INPUT_RELEASE_TAG}" ]]; then
+            release_tag="${INPUT_RELEASE_TAG}"
+          else
+            published_tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[] | select(.draft == false) | .tag_name')"
+            max_release_number=0
+            while IFS= read -r published_tag; do
+              if [[ "${published_tag}" =~ ^9\.3\.0-dzbarsky([0-9]+)$ ]]; then
+                release_number=$((10#${BASH_REMATCH[1]}))
+                if (( release_number > max_release_number )); then
+                  max_release_number="${release_number}"
+                fi
+              fi
+            done <<< "${published_tags}"
+            release_tag="9.3.0-dzbarsky$((max_release_number + 1))"
+          fi
           if [[ ! "${release_tag}" =~ ^9\.3\.0-[A-Za-z0-9]+$ ]]; then
             echo "Invalid Bazelisk release tag: ${release_tag}" >&2
             exit 1
