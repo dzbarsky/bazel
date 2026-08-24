@@ -199,12 +199,20 @@ public final class TestActionBuilder {
     TestConfiguration testConfiguration = config.getFragment(TestConfiguration.class);
     AnalysisEnvironment env = ruleContext.getAnalysisEnvironment();
     ArtifactRoot root = ruleContext.getTestLogsDirectory();
-    ActionOwner actionOwner =
-        getTestActionOwner(config.getOptions().get(CoreOptions.class).useTargetPlatformForTests);
+    boolean useTargetPlatformForTests =
+        config.getOptions().get(CoreOptions.class).useTargetPlatformForTests;
+    ActionOwner actionOwner = getTestActionOwner(useTargetPlatformForTests);
     OS executionOs = getOsFromConstraintsOrHost(actionOwner.getExecutionPlatform());
     boolean isExecutedOnWindows = executionOs == OS.WINDOWS;
+    Artifact nativeTestWrapper = ruleContext.getPrerequisiteArtifact("$test_wrapper");
     boolean usesNativeTestWrapper =
-        executionOs == OS.WINDOWS || executionOs == OS.LINUX || executionOs == OS.DARWIN;
+        isExecutedOnWindows
+            || ((executionOs == OS.LINUX || executionOs == OS.DARWIN)
+                && !useTargetPlatformForTests
+                && (executionRequirements == null
+                    || DEFAULT_TEST_RUNNER_EXEC_GROUP_NAME.equals(
+                        executionRequirements.getExecGroup()))
+                && !"dummy.sh".equals(nativeTestWrapper.getFilename()));
 
     NestedSetBuilder<Artifact> inputsBuilder = NestedSetBuilder.stableOrder();
     inputsBuilder.addTransitive(
@@ -224,7 +232,7 @@ public final class TestActionBuilder {
 
     Artifact testActionExecutable =
         usesNativeTestWrapper
-            ? ruleContext.getPrerequisiteArtifact("$test_wrapper")
+            ? nativeTestWrapper
             : ruleContext.getPrerequisiteArtifact("$test_setup_script");
 
     inputsBuilder.add(testActionExecutable);

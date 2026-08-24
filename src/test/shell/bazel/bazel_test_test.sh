@@ -1378,4 +1378,41 @@ EOF
   expect_not_log "my_rule is being analyzed"
 }
 
+function test_failing_test_runs_without_execution_os_constraint() {
+  mkdir -p osless
+  cat > osless/defs.bzl <<'EOF'
+def _failing_test_impl(ctx):
+    executable = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(
+        output = executable,
+        content = "#!/bin/sh\necho OSLESS_TEST_EXECUTED\nexit 42\n",
+        is_executable = True,
+    )
+    return [DefaultInfo(executable = executable)]
+
+failing_test = rule(implementation = _failing_test_impl, test = True)
+EOF
+  cat > osless/BUILD <<'EOF'
+load(":defs.bzl", "failing_test")
+
+constraint_setting(name = "test_runner")
+constraint_value(name = "osless_runner", constraint_setting = ":test_runner")
+platform(name = "execution_platform", constraint_values = [":osless_runner"])
+failing_test(
+    name = "failing_test",
+    exec_compatible_with = [":osless_runner"],
+    exec_group_compatible_with = {"test": [":osless_runner"]},
+)
+EOF
+
+  if bazel test \
+      --platforms=//osless:execution_platform \
+      --extra_execution_platforms=//osless:execution_platform \
+      --test_output=all \
+      //osless:failing_test > "$TEST_log" 2>&1; then
+    fail "failing test passed without executing on its OS-less platform"
+  fi
+  expect_log "OSLESS_TEST_EXECUTED"
+}
+
 run_suite "bazel test tests"
