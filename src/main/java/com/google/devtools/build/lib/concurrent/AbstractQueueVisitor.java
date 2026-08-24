@@ -35,6 +35,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
@@ -342,7 +343,7 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
         // execute() itself failed, vs. a caller-runs policy on pool exhaustion, where the
         // runnable threw. To be extra cautious, we decrement the task count in a finally
         // block, even though the CountDownLatch is unlikely to throw.
-        recordError(e);
+        recordError(e, wrappedRunnable);
       }
     }
   }
@@ -386,7 +387,7 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
     }
   }
 
-  private void recordError(Throwable e) {
+  private void recordError(Throwable e, WrappedRunnable wrappedRunnable) {
     try {
       // If threadInterrupted is true, then RejectedExecutionExceptions are expected. There's no
       // need to remember them, but there is a need to call decrementRemainingTasks, which is
@@ -397,7 +398,7 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
       catastrophe = e;
       maybeSaveUnhandledThrowable(e, /*markToStopJobs=*/ false);
     } finally {
-      decrementRemainingTasks();
+      wrappedRunnable.decrementRemainingTasksOnce();
     }
   }
 
@@ -417,11 +418,23 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
    * </ul>
    */
   protected final class WrappedRunnable implements Runnable, Comparable<WrappedRunnable> {
+    private static final AtomicIntegerFieldUpdater<WrappedRunnable> DECREMENTED_UPDATER =
+        AtomicIntegerFieldUpdater.newUpdater(WrappedRunnable.class, "decremented");
+
     private final Runnable originalRunnable;
     private volatile boolean ran;
 
+    @SuppressWarnings("unused") // Accessed via DECREMENTED_UPDATER
+    volatile int decremented;
+
     private WrappedRunnable(Runnable originalRunnable) {
       this.originalRunnable = originalRunnable;
+    }
+
+    void decrementRemainingTasksOnce() {
+      if (DECREMENTED_UPDATER.compareAndSet(this, 0, 1)) {
+        decrementRemainingTasks();
+      }
     }
 
     @Override
@@ -448,7 +461,7 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
             removeJob(thread);
           }
         } finally {
-          decrementRemainingTasks();
+          decrementRemainingTasksOnce();
         }
       }
     }
