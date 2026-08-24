@@ -3,12 +3,11 @@ name: Build and publish Bazel 9.3
 on:
   push:
     branches:
-      - codex/bazel-9.3-buildbuddy-release
-      - codex/bazel-9.3-jvm-buildbuddy-release
+      - 9.3.0-actiond-dzbarsky14
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Bazelisk-compatible release tag (for example, 9.3.0-dzbarsky123)
+        description: Release tag (9.3.0-actiond-dzbarsky14)
         required: false
         type: string
 
@@ -33,27 +32,12 @@ jobs:
       - name: Select release tag
         id: release_tag
         env:
-          GH_TOKEN: ${{ github.token }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          if [[ -n "${INPUT_RELEASE_TAG}" ]]; then
-            release_tag="${INPUT_RELEASE_TAG}"
-          else
-            published_tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[] | select(.draft == false) | .tag_name')"
-            max_release_number=0
-            while IFS= read -r published_tag; do
-              if [[ "${published_tag}" =~ ^9\.3\.0-dzbarsky([0-9]+)$ ]]; then
-                release_number=$((10#${BASH_REMATCH[1]}))
-                if (( release_number > max_release_number )); then
-                  max_release_number="${release_number}"
-                fi
-              fi
-            done <<< "${published_tags}"
-            release_tag="9.3.0-dzbarsky$((max_release_number + 1))"
-          fi
-          if [[ ! "${release_tag}" =~ ^9\.3\.0-[A-Za-z0-9]+$ ]]; then
-            echo "Invalid Bazelisk release tag: ${release_tag}" >&2
+          release_tag="${INPUT_RELEASE_TAG:-${GITHUB_REF_NAME}}"
+          if [[ ! "${release_tag}" =~ ^9\.3\.0-actiond-dzbarsky14$ ]]; then
+            echo "Invalid actiond release tag: ${release_tag}" >&2
             exit 1
           fi
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
@@ -158,6 +142,109 @@ jobs:
             (cd artifacts && shasum -a 256 "${asset_name}" > "${asset_name}.sha256")
           fi
 
+      - name: Verify packaged Bazel executes tests with its native wrapper
+        env:
+          ARTIFACT_OS: ${{ matrix.artifact_os }}
+          ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
+        run: |
+          set -euo pipefail
+          unset BUILDBUDDY_API_KEY
+
+          asset_path="${GITHUB_WORKSPACE}/artifacts/bazel-${RELEASE_TAG}-${ARTIFACT_OS}-${ARTIFACT_ARCH}"
+          smoke_root="$(mktemp -d "${RUNNER_TEMP}/bazel-actiond-smoke.XXXXXXXX")"
+          smoke_workspace="${smoke_root}/workspace"
+          mkdir -p "${smoke_workspace}"
+          touch "${smoke_workspace}/MODULE.bazel"
+          cp "${GITHUB_WORKSPACE}/src/test/tools/bzlmod/MODULE.bazel.lock" \
+            "${smoke_workspace}/MODULE.bazel.lock"
+
+          cat > "${smoke_workspace}/smoke.bzl" <<'STARLARK'
+          def _smoke_impl(ctx):
+              executable = ctx.actions.declare_file(ctx.label.name)
+              ctx.actions.write(
+                  output = executable,
+                  content = "#!/bin/sh\nset -eu\ntest \"${BAZEL_TEST:-}\" = 1\necho native-wrapper-smoke-ok\necho smoke > \"${TEST_UNDECLARED_OUTPUTS_DIR}/smoke.txt\"\n",
+                  is_executable = True,
+              )
+              return [DefaultInfo(
+                  executable = executable,
+                  runfiles = ctx.runfiles(files = [executable]),
+              )]
+
+          native_wrapper_smoke_test = rule(
+              implementation = _smoke_impl,
+              test = True,
+          )
+          STARLARK
+
+          cat > "${smoke_workspace}/BUILD.bazel" <<'STARLARK'
+          load(":smoke.bzl", "native_wrapper_smoke_test")
+
+          native_wrapper_smoke_test(name = "native_wrapper_smoke_test")
+          STARLARK
+
+          (
+            cd "${smoke_workspace}"
+            "${asset_path}" --batch --ignore_all_rc_files \
+              "--output_base=${smoke_root}/output-base" test \
+              --lockfile_mode=error \
+              --spawn_strategy=local \
+              --nocache_test_results \
+              "--execution_log_json_file=${smoke_root}/execution.json" \
+              --test_output=all \
+              //:native_wrapper_smoke_test
+          )
+
+          python3 - "${smoke_root}/execution.json" <<'PYTHON'
+          import json
+          import os
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as execution_log:
+              content = execution_log.read()
+
+          decoder = json.JSONDecoder()
+          position = 0
+          wrappers = []
+          while position < len(content):
+              while position < len(content) and content[position].isspace():
+                  position += 1
+              if position == len(content):
+                  break
+
+              action, position = decoder.raw_decode(content, position)
+              if action.get("mnemonic") != "TestRunner":
+                  continue
+
+              arguments = action.get("commandArgs") or []
+              if not arguments or os.path.basename(arguments[0]) != "tw":
+                  continue
+
+              inputs = action.get("inputs") or []
+              if any(
+                  os.path.basename(item.get("path", "")) == "test-setup.sh"
+                  for item in inputs
+              ):
+                  raise SystemExit(
+                      "Native TestRunner unexpectedly includes test-setup.sh"
+                  )
+              wrappers.append(arguments[0])
+
+          if len(wrappers) != 1:
+              raise SystemExit(
+                  "Expected one executed native tw TestRunner; "
+                  f"found {len(wrappers)}"
+              )
+          print(f"Verified native test wrapper: {wrappers[0]}")
+          PYTHON
+
+          smoke_log="${smoke_workspace}/bazel-testlogs/native_wrapper_smoke_test/test.log"
+          grep -Fq 'native-wrapper-smoke-ok' "${smoke_log}"
+          [[ "$(head -n 1 "${smoke_log}")" == 'exec ${PAGER:-/usr/bin/less} "$0" || exit 1' ]]
+
+          smoke_manifest="${smoke_workspace}/bazel-testlogs/native_wrapper_smoke_test/test.outputs_manifest/MANIFEST"
+          [[ "$(cat "${smoke_manifest}")" == $'smoke.txt\t6\ttext/plain' ]]
+
       - name: Upload Bazel artifact
         uses: actions/upload-artifact@v4
         with:
@@ -244,5 +331,5 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --target "${GITHUB_SHA}" \
               --title "${RELEASE_TAG}" \
-              --notes "Bazel 9.3 binaries for Linux and macOS. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
+              --notes "Bazel 9.3 binaries with native test wrappers for Linux and macOS. Download the platform-specific release artifact directly."
           fi

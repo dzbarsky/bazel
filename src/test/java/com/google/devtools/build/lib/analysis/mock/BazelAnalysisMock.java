@@ -388,7 +388,7 @@ launcher_flag_alias(
 
         filegroup(
             name = "test_wrapper",
-            srcs = ["test_wrapper_bin"],
+            srcs = ["test-setup.sh"],
         )
 
         filegroup(

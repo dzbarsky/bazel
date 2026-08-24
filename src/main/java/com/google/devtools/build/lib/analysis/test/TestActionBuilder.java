@@ -201,14 +201,16 @@ public final class TestActionBuilder {
     ArtifactRoot root = ruleContext.getTestLogsDirectory();
     ActionOwner actionOwner =
         getTestActionOwner(config.getOptions().get(CoreOptions.class).useTargetPlatformForTests);
-    boolean isExecutedOnWindows =
-        getOsFromConstraintsOrHost(actionOwner.getExecutionPlatform()) == OS.WINDOWS;
+    OS executionOs = getOsFromConstraintsOrHost(actionOwner.getExecutionPlatform());
+    boolean isExecutedOnWindows = executionOs == OS.WINDOWS;
+    boolean usesNativeTestWrapper =
+        executionOs == OS.WINDOWS || executionOs == OS.LINUX || executionOs == OS.DARWIN;
 
     NestedSetBuilder<Artifact> inputsBuilder = NestedSetBuilder.stableOrder();
     inputsBuilder.addTransitive(
         NestedSetBuilder.create(Order.STABLE_ORDER, runfilesSupport.getRunfilesTreeArtifact()));
 
-    if (!isExecutedOnWindows) {
+    if (!usesNativeTestWrapper) {
       NestedSet<Artifact> testRuntime =
           PrerequisiteArtifacts.nestedSet(
               ruleContext.getRulePrerequisitesCollection(), "$test_runtime");
@@ -221,7 +223,7 @@ public final class TestActionBuilder {
     final boolean collectCodeCoverage = config.isCodeCoverageEnabled() && instrumentedFiles != null;
 
     Artifact testActionExecutable =
-        isExecutedOnWindows
+        usesNativeTestWrapper
             ? ruleContext.getPrerequisiteArtifact("$test_wrapper")
             : ruleContext.getPrerequisiteArtifact("$test_setup_script");
 
@@ -420,7 +422,7 @@ public final class TestActionBuilder {
                 run,
                 config,
                 ruleContext.getWorkspaceName(),
-                (!isExecutedOnWindows || executionSettings.needsShell())
+                (!usesNativeTestWrapper || executionSettings.needsShell())
                     ? ShToolchain.getPathForPlatform(
                         ruleContext.getConfiguration(), actionOwner.getExecutionPlatform())
                     : null,

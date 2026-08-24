@@ -1,3 +1,6 @@
+load("@platforms//host:constraints.bzl", "HOST_CONSTRAINTS")
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load(":default_test_toolchain.bzl", "bool_flag", "empty_toolchain")
 
@@ -133,25 +136,117 @@ alias(
     actual = "@remote_coverage_tools//:lcov_merger",
 )
 
+config_setting(
+    name = "matches_host_constraints",
+    constraint_values = HOST_CONSTRAINTS,
+    visibility = ["//visibility:private"],
+)
+
+cc_library(
+    name = "compiled_test_wrapper_lib",
+    srcs = ["test_wrapper_common.cc"] + select({
+        "@bazel_tools//src/conditions:windows": ["windows/tw.cc"],
+        "@bazel_tools//src/conditions:linux": [
+            "posix/tw.cc",
+            "posix/tw_outputs.cc",
+        ],
+        "@bazel_tools//src/conditions:darwin": [
+            "posix/tw.cc",
+            "posix/tw_outputs.cc",
+        ],
+        "//conditions:default": [],
+    }),
+    hdrs = ["test_wrapper_common.h"] + select({
+        "@bazel_tools//src/conditions:windows": ["windows/tw.h"],
+        "@bazel_tools//src/conditions:linux": ["posix/tw_outputs.h"],
+        "@bazel_tools//src/conditions:darwin": ["posix/tw_outputs.h"],
+        "//conditions:default": [],
+    }),
+    linkopts = select({
+        "@bazel_tools//src/conditions:windows": [
+            "-DEFAULTLIB:advapi32.lib",  # GetUserNameW
+        ],
+        "//conditions:default": [],
+    }),
+    visibility = ["//visibility:private"],
+    deps = [
+        "//src/main/cpp/util:filesystem",
+        "//third_party/ijar:zip",
+    ] + select({
+        "@bazel_tools//src/conditions:windows": [
+            "//src/main/cpp/util:strings",
+            "//src/main/native/windows:lib-file",
+            "//src/main/native/windows:lib-process",
+            "@rules_cc//cc/runfiles",
+        ],
+        "//conditions:default": [],
+    }),
+)
+
+cc_binary(
+    name = "compiled_test_wrapper",
+    srcs = select({
+        "@bazel_tools//src/conditions:windows": ["windows/tw_main.cc"],
+        "@bazel_tools//src/conditions:linux": ["posix/tw_main.cc"],
+        "@bazel_tools//src/conditions:darwin": ["posix/tw_main.cc"],
+        "//conditions:default": [],
+    }),
+    target_compatible_with = select({
+        "@bazel_tools//src/conditions:windows": [],
+        "@bazel_tools//src/conditions:linux": [],
+        "@bazel_tools//src/conditions:darwin": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    visibility = ["//visibility:private"],
+    deps = [":compiled_test_wrapper_lib"],
+)
+
+filegroup(
+    name = "native_test_wrapper",
+    srcs = select({
+        ":matches_host_constraints": glob(
+            ["tw*"],
+            allow_empty = True,
+        ),
+        "//conditions:default": [":compiled_test_wrapper"],
+    }),
+    visibility = ["//visibility:private"],
+)
+
 filegroup(
     name = "test_wrapper",
-    # "tw" is the Windows-native test wrapper. It has a short name because paths
-    # have short limits on Windows.
-    # On other platforms this binary is a no-op.
-    # See https://github.com/bazelbuild/bazel/issues/5508
     srcs = select({
-        "@bazel_tools//src/conditions:windows": ["tw.exe"],
+        "@bazel_tools//src/conditions:windows": [":native_test_wrapper"],
+        "@bazel_tools//src/conditions:linux": [":native_test_wrapper"],
+        "@bazel_tools//src/conditions:darwin": [":native_test_wrapper"],
         "//conditions:default": ["dummy.sh"],
     }),
 )
 
+cc_binary(
+    name = "compiled_xml_writer",
+    srcs = ["windows/xml_main.cc"],
+    target_compatible_with = ["@platforms//os:windows"],
+    visibility = ["//visibility:private"],
+    deps = [":compiled_test_wrapper_lib"],
+)
+
+filegroup(
+    name = "windows_xml_writer",
+    srcs = select({
+        ":matches_host_constraints": glob(
+            ["xml*"],
+            allow_empty = True,
+        ),
+        "//conditions:default": [":compiled_xml_writer"],
+    }),
+    visibility = ["//visibility:private"],
+)
+
 filegroup(
     name = "xml_writer",
-    # "xml" is the Windows-native test XML writer. It has a short name because
-    # paths have short limits on Windows.
-    # On other platforms this binary is a no-op.
     srcs = select({
-        "@bazel_tools//src/conditions:windows": ["xml.exe"],
+        "@bazel_tools//src/conditions:windows": [":windows_xml_writer"],
         "//conditions:default": ["dummy.sh"],
     }),
 )
