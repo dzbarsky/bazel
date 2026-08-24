@@ -249,14 +249,24 @@ public final class TestActionBuilder {
     ActionOwner actionOwner =
         getTestActionOwner(config.getOptions().get(CoreOptions.class).useTargetPlatformForTests);
     String unrunnableReason = getUnrunnableReason();
-    boolean isExecutedOnWindows =
-        getOsFromConstraintsOrHost(actionOwner.getExecutionPlatform()) == OS.WINDOWS;
+    OS executionOs = getOsFromConstraintsOrHost(actionOwner.getExecutionPlatform());
+    boolean isExecutedOnWindows = executionOs == OS.WINDOWS;
+    Artifact testWrapper = ruleContext.getPrerequisiteArtifact("$test_wrapper");
+    Artifact nativePosixTestWrapper =
+        ruleContext.getPrerequisiteArtifact(":native_posix_test_wrapper");
+    boolean usesNativePosixTestWrapper =
+        testConfiguration.incompatibleUseNativePosixTestWrapper()
+            && (executionOs == OS.LINUX || executionOs == OS.DARWIN)
+            && DEFAULT_TEST_RUNNER_EXEC_GROUP_NAME.equals(getTestExecGroupName())
+            && nativePosixTestWrapper != null
+            && !nativePosixTestWrapper.equals(testWrapper);
+    boolean usesNativeTestWrapper = isExecutedOnWindows || usesNativePosixTestWrapper;
 
     NestedSetBuilder<Artifact> inputsBuilder = NestedSetBuilder.stableOrder();
     inputsBuilder.addTransitive(
         NestedSetBuilder.create(Order.STABLE_ORDER, runfilesSupport.getRunfilesTreeArtifact()));
 
-    if (!isExecutedOnWindows) {
+    if (!usesNativeTestWrapper) {
       NestedSet<Artifact> testRuntime =
           PrerequisiteArtifacts.nestedSet(
               ruleContext.getRulePrerequisitesCollection(), "$test_runtime");
@@ -270,8 +280,10 @@ public final class TestActionBuilder {
 
     Artifact testActionExecutable =
         isExecutedOnWindows
-            ? ruleContext.getPrerequisiteArtifact("$test_wrapper")
-            : ruleContext.getPrerequisiteArtifact("$test_setup_script");
+            ? testWrapper
+            : usesNativePosixTestWrapper
+                ? nativePosixTestWrapper
+                : ruleContext.getPrerequisiteArtifact("$test_setup_script");
 
     inputsBuilder.add(testActionExecutable);
     Artifact testXmlGeneratorExecutable =
@@ -468,7 +480,7 @@ public final class TestActionBuilder {
                 run,
                 config,
                 ruleContext.getWorkspaceName(),
-                (!isExecutedOnWindows || executionSettings.needsShell())
+                (!usesNativeTestWrapper || executionSettings.needsShell())
                     ? ShToolchain.getPathForPlatform(
                         ruleContext.getConfiguration(), actionOwner.getExecutionPlatform())
                     : null,
