@@ -1252,6 +1252,10 @@ public class RemoteExecutionService {
     // This avoids holding the output lock while downloading, which would prevent the local branch
     // from completing sooner under the dynamic execution strategy.
     Map<Path, Path> realToTmpPath = new HashMap<>();
+    // Isolate each action's downloads so finalizing its outputs does not contend with other
+    // actions creating files in the same temporary directory.
+    TempPathGenerator actionTempPathGenerator =
+        new TempPathGenerator(tempPathGenerator.generateTempPath());
 
     for (FileMetadata file : metadata.files()) {
       if (realToTmpPath.containsKey(file.path)) {
@@ -1261,7 +1265,7 @@ public class RemoteExecutionService {
       var execPath = file.path.relativeTo(execRoot);
       var isInMemoryOutputFile = inMemoryOutput != null && execPath.equals(inMemoryOutputPath);
       if (!isInMemoryOutputFile && shouldDownload(result, execPath, /* treeRootExecPath= */ null)) {
-        Path tmpPath = tempPathGenerator.generateTempPath();
+        Path tmpPath = actionTempPathGenerator.generateTempPath();
         realToTmpPath.put(file.path, tmpPath);
         downloadsBuilder.add(
             downloadFile(
@@ -1317,7 +1321,7 @@ public class RemoteExecutionService {
         }
 
         if (shouldDownload(result, file.path.relativeTo(execRoot), treeRootExecPath)) {
-          Path tmpPath = tempPathGenerator.generateTempPath();
+          Path tmpPath = actionTempPathGenerator.generateTempPath();
           realToTmpPath.put(file.path, tmpPath);
           downloadsBuilder.add(
               downloadFile(
