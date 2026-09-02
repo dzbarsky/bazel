@@ -20,8 +20,8 @@ defaults:
     shell: bash
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: bazel-9.3-release
+  cancel-in-progress: false
 
 jobs:
   prepare:
@@ -30,6 +30,12 @@ jobs:
     outputs:
       release_tag: ${{ steps.release_tag.outputs.release_tag }}
     steps:
+      - name: Check out Bazel
+        uses: actions/checkout@v4
+
+      - name: Test immutable release publication
+        run: bash .github/scripts/publish-bazel-release-test.sh
+
       - name: Select release tag
         id: release_tag
         env:
@@ -180,6 +186,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     steps:
+      - name: Check out Bazel
+        uses: actions/checkout@v4
+
       - name: Download Bazel artifacts
         uses: actions/download-artifact@v4
         with:
@@ -224,25 +233,5 @@ jobs:
             done
           done
 
-      - name: Upload Bazel artifacts to GitHub release
-        run: |
-          set -euo pipefail
-          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
-            existing_target=$(gh release view "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --json targetCommitish \
-              --jq .targetCommitish)
-            if [[ "${existing_target}" != "${GITHUB_SHA}" ]]; then
-              echo "Release ${RELEASE_TAG} already targets ${existing_target}, expected ${GITHUB_SHA}." >&2
-              exit 1
-            fi
-            gh release upload "${RELEASE_TAG}" artifacts/* \
-              --repo "${GITHUB_REPOSITORY}" \
-              --clobber
-          else
-            gh release create "${RELEASE_TAG}" artifacts/* \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}" \
-              --title "${RELEASE_TAG}" \
-              --notes "Bazel 9.3 binaries for Linux and macOS. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
-          fi
+      - name: Publish immutable GitHub release
+        run: bash .github/scripts/publish-bazel-release.sh artifacts
