@@ -1124,7 +1124,7 @@ public class CombinedCacheTest {
         /* diskCacheClient= */ null,
         /* symlinkTemplate= */ null,
         digestUtil,
-        /* chunkingEnabled= */ true);
+        /* chunkingFunction= */ RemoteOptions.ChunkingFunctionValue.FAST_CDC_2020);
   }
 
   private InMemoryCombinedCache newCombinedCache() {
