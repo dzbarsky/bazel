@@ -57,18 +57,23 @@ public final class DigestUtilsTest {
     Path file = tracingFileSystem.getPath("/file.txt");
     FileSystemUtils.writeContentAsLatin1(file, "some contents");
 
-    byte[] digest = DigestUtils.getDigestWithManualFallback(file, SyscallCache.NO_CACHE);
+    byte[] digest =
+        DigestUtils.getDigestWithManualFallback(file, SyscallCache.NO_CACHE, /* status= */ null);
     assertThat(getFastDigestCounter.get()).isEqualTo(1);
     assertThat(getDigestCounter.get()).isEqualTo(1);
 
-    assertThat(DigestUtils.getDigestWithManualFallback(file, SyscallCache.NO_CACHE))
+    assertThat(
+            DigestUtils.getDigestWithManualFallback(
+                file, SyscallCache.NO_CACHE, /* status= */ null))
         .isEqualTo(digest);
     assertThat(getFastDigestCounter.get()).isEqualTo(2);
     assertThat(getDigestCounter.get()).isEqualTo(1); // Cached.
 
     DigestUtils.clearCache();
 
-    assertThat(DigestUtils.getDigestWithManualFallback(file, SyscallCache.NO_CACHE))
+    assertThat(
+            DigestUtils.getDigestWithManualFallback(
+                file, SyscallCache.NO_CACHE, /* status= */ null))
         .isEqualTo(digest);
     assertThat(getFastDigestCounter.get()).isEqualTo(3);
     assertThat(getDigestCounter.get()).isEqualTo(2); // Not cached.
@@ -108,6 +113,43 @@ public final class DigestUtilsTest {
     assertThat(DigestUtils.manuallyComputeDigest(file, /* status= */ null)).isEqualTo(newDigest);
     assertThat(getDigestCounter.get()).isEqualTo(2);
     assertThat(DigestUtils.getCacheStats().hitCount()).isEqualTo(1);
+  }
+
+  @Test
+  public void cacheHitWithoutRestatingWhenTheCallerSuppliesTheStat() throws Exception {
+    AtomicInteger getDigestCounter = new AtomicInteger(0);
+    AtomicInteger statCounter = new AtomicInteger(0);
+    FileSystem tracingFileSystem =
+        new InMemoryFileSystem(DigestHashFunction.SHA256) {
+          @Override
+          protected byte[] getDigest(PathFragment path) throws IOException {
+            getDigestCounter.incrementAndGet();
+            return super.getDigest(path);
+          }
+
+          @Override
+          public FileStatus stat(PathFragment path, boolean followSymlinks) throws IOException {
+            statCounter.incrementAndGet();
+            return super.stat(path, followSymlinks);
+          }
+        };
+    DigestUtils.configureCache(/* maximumSize= */ 100);
+    Path file = tracingFileSystem.getPath("/file.txt");
+    FileSystemUtils.writeContentAsLatin1(file, "some contents");
+
+    // Without a stat, DigestUtils has to stat the file itself to build the cache key.
+    byte[] digest = DigestUtils.manuallyComputeDigest(file);
+    assertThat(getDigestCounter.get()).isEqualTo(1);
+    assertThat(statCounter.get()).isEqualTo(1);
+
+    // A caller that already stat'ed the file gets the cached digest without a further stat, which
+    // only works if both spellings of the key agree.
+    FileStatus stat = file.stat();
+    getDigestCounter.set(0);
+    statCounter.set(0);
+    assertThat(DigestUtils.manuallyComputeDigest(file, stat)).isEqualTo(digest);
+    assertThat(getDigestCounter.get()).isEqualTo(0);
+    assertThat(statCounter.get()).isEqualTo(0);
   }
 
   @Test
