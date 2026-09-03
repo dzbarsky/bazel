@@ -1064,7 +1064,9 @@ public final class RemoteModule extends BlazeModule {
       AnalysisResult analysisResult) {
     BuildRequestOptions buildRequestOptions =
         env.getOptions().getOptions(BuildRequestOptions.class);
-    if (remoteOutputChecker != null && buildRequestOptions.getPerformExecutionPhase()) {
+    if (remoteOutputChecker != null
+        && buildRequestOptions != null
+        && buildRequestOptions.performExecutionPhase) {
       remoteOutputChecker.afterAnalysis(analysisResult);
     }
   }
