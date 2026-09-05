@@ -27,13 +27,13 @@ import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Interner;
 import com.google.common.collect.Iterables;
-import com.google.devtools.build.lib.actions.InputMetadataProvider;
 import com.google.devtools.build.lib.actions.PathMapper;
 import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.Expandable;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.SingleVariables;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.StringChunk;
+import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.TreeArtifactExpander;
 import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
@@ -114,7 +114,7 @@ public class CcToolchainFeatures implements StarlarkValue {
     @Override
     public void expand(
         CcToolchainVariables variables,
-        @Nullable InputMetadataProvider inputMetadataProvider,
+        @Nullable TreeArtifactExpander treeArtifactExpander,
         PathMapper pathMapper,
         List<String> commandLine)
         throws ExpansionException {
@@ -141,7 +141,7 @@ public class CcToolchainFeatures implements StarlarkValue {
       @Override
       public void expand(
           CcToolchainVariables variables,
-          @Nullable InputMetadataProvider inputMetadataProvider,
+          @Nullable TreeArtifactExpander treeArtifactExpander,
           PathMapper pathMapper,
           List<String> commandLine)
           throws ExpansionException {
@@ -211,58 +211,58 @@ public class CcToolchainFeatures implements StarlarkValue {
     @Override
     public void expand(
         CcToolchainVariables variables,
-        @Nullable InputMetadataProvider inputMetadataProvider,
+        @Nullable TreeArtifactExpander treeArtifactExpander,
         PathMapper pathMapper,
         final List<String> commandLine)
         throws ExpansionException {
-      if (!canBeExpanded(variables, inputMetadataProvider, pathMapper)) {
+      if (!canBeExpanded(variables, treeArtifactExpander, pathMapper)) {
         return;
       }
       if (iterateOverVariable != null) {
         for (CcToolchainVariables.VariableValue variableValue :
             getSequenceValue(
                 iterateOverVariable,
-                variables.getVariable(iterateOverVariable, inputMetadataProvider, pathMapper))) {
+                variables.getVariable(iterateOverVariable, treeArtifactExpander, pathMapper))) {
           CcToolchainVariables nestedVariables =
               new SingleVariables(variables, iterateOverVariable, variableValue);
           for (Expandable expandable : expandables) {
-            expandable.expand(nestedVariables, inputMetadataProvider, pathMapper, commandLine);
+            expandable.expand(nestedVariables, treeArtifactExpander, pathMapper, commandLine);
           }
         }
       } else {
         for (Expandable expandable : expandables) {
-          expandable.expand(variables, inputMetadataProvider, pathMapper, commandLine);
+          expandable.expand(variables, treeArtifactExpander, pathMapper, commandLine);
         }
       }
     }
 
     private boolean canBeExpanded(
         CcToolchainVariables variables,
-        @Nullable InputMetadataProvider inputMetadataProvider,
+        @Nullable TreeArtifactExpander treeArtifactExpander,
         PathMapper pathMapper)
         throws ExpansionException {
       for (String variable : expandIfAllAvailable) {
-        if (!variables.isAvailable(variable, inputMetadataProvider)) {
+        if (!variables.isAvailable(variable, treeArtifactExpander)) {
           return false;
         }
       }
       for (String variable : expandIfNoneAvailable) {
-        if (variables.isAvailable(variable, inputMetadataProvider)) {
+        if (variables.isAvailable(variable, treeArtifactExpander)) {
           return false;
         }
       }
       if (expandIfTrue != null
-          && (!variables.isAvailable(expandIfTrue, inputMetadataProvider)
+          && (!variables.isAvailable(expandIfTrue, treeArtifactExpander)
               || !variables.getVariable(expandIfTrue, pathMapper).isTruthy())) {
         return false;
       }
       if (expandIfFalse != null
-          && (!variables.isAvailable(expandIfFalse, inputMetadataProvider)
+          && (!variables.isAvailable(expandIfFalse, treeArtifactExpander)
               || variables.getVariable(expandIfFalse, pathMapper).isTruthy())) {
         return false;
       }
       if (expandIfEqual != null
-          && (!variables.isAvailable(expandIfEqual.variable, inputMetadataProvider)
+          && (!variables.isAvailable(expandIfEqual.variable, treeArtifactExpander)
               || !variables
                   .getVariable(expandIfEqual.variable, pathMapper)
                   .getStringValue(expandIfEqual.variable, pathMapper)
@@ -289,11 +289,11 @@ public class CcToolchainFeatures implements StarlarkValue {
      */
     private void expandCommandLine(
         CcToolchainVariables variables,
-        @Nullable InputMetadataProvider inputMetadataProvider,
+        @Nullable TreeArtifactExpander treeArtifactExpander,
         PathMapper pathMapper,
         final List<String> commandLine)
         throws ExpansionException {
-      expand(variables, inputMetadataProvider, pathMapper, commandLine);
+      expand(variables, treeArtifactExpander, pathMapper, commandLine);
     }
   }
 
@@ -325,12 +325,12 @@ public class CcToolchainFeatures implements StarlarkValue {
         String action,
         CcToolchainVariables variables,
         Set<String> enabledFeatureNames,
-        @Nullable InputMetadataProvider inputMetadataProvider,
+        @Nullable TreeArtifactExpander treeArtifactExpander,
         PathMapper pathMapper,
         List<String> commandLine)
         throws ExpansionException {
       for (String variable : expandIfAllAvailable) {
-        if (!variables.isAvailable(variable, inputMetadataProvider)) {
+        if (!variables.isAvailable(variable, treeArtifactExpander)) {
           return;
         }
       }
@@ -341,7 +341,7 @@ public class CcToolchainFeatures implements StarlarkValue {
         return;
       }
       for (FlagGroup flagGroup : flagGroups) {
-        flagGroup.expandCommandLine(variables, inputMetadataProvider, pathMapper, commandLine);
+        flagGroup.expandCommandLine(variables, treeArtifactExpander, pathMapper, commandLine);
       }
     }
   }
@@ -458,13 +458,13 @@ public class CcToolchainFeatures implements StarlarkValue {
         String action,
         CcToolchainVariables variables,
         Set<String> enabledFeatureNames,
-        @Nullable InputMetadataProvider inputMetadataProvider,
+        @Nullable TreeArtifactExpander treeArtifactExpander,
         PathMapper pathMapper,
         List<String> commandLine)
         throws ExpansionException {
       for (FlagSet flagSet : flagSets) {
         flagSet.expandCommandLine(
-            action, variables, enabledFeatureNames, inputMetadataProvider, pathMapper, commandLine);
+            action, variables, enabledFeatureNames, treeArtifactExpander, pathMapper, commandLine);
       }
     }
 
@@ -706,7 +706,7 @@ public class CcToolchainFeatures implements StarlarkValue {
     private void expandCommandLine(
         CcToolchainVariables variables,
         Set<String> enabledFeatureNames,
-        @Nullable InputMetadataProvider inputMetadataProvider,
+        @Nullable TreeArtifactExpander treeArtifactExpander,
         PathMapper pathMapper,
         List<String> commandLine)
         throws ExpansionException {
@@ -715,7 +715,7 @@ public class CcToolchainFeatures implements StarlarkValue {
             actionName,
             variables,
             enabledFeatureNames,
-            inputMetadataProvider,
+            treeArtifactExpander,
             pathMapper,
             commandLine);
       }
@@ -905,18 +905,17 @@ public class CcToolchainFeatures implements StarlarkValue {
       return enabledActionConfigActionNames.contains(actionName);
     }
 
-    /**
-     * @return the command line for the given {@code action}.
-     */
+    @VisibleForTesting
     public List<String> getCommandLine(String action, CcToolchainVariables variables)
         throws ExpansionException {
-      return getCommandLine(action, variables, /* inputMetadataProvider= */ null, PathMapper.NOOP);
+      return getCommandLine(action, variables, /* treeArtifactExpander= */ null, PathMapper.NOOP);
     }
 
+    /** Returns the command line for the given {@code action}. */
     public List<String> getCommandLine(
         String action,
         CcToolchainVariables variables,
-        @Nullable InputMetadataProvider inputMetadataProvider,
+        @Nullable TreeArtifactExpander treeArtifactExpander,
         PathMapper pathMapper)
         throws ExpansionException {
       List<String> commandLine = new ArrayList<>();
@@ -924,12 +923,12 @@ public class CcToolchainFeatures implements StarlarkValue {
         actionConfigByActionName
             .get(action)
             .expandCommandLine(
-                variables, enabledFeatureNames, inputMetadataProvider, pathMapper, commandLine);
+                variables, enabledFeatureNames, treeArtifactExpander, pathMapper, commandLine);
       }
 
       for (Feature feature : enabledFeatures) {
         feature.expandCommandLine(
-            action, variables, enabledFeatureNames, inputMetadataProvider, pathMapper, commandLine);
+            action, variables, enabledFeatureNames, treeArtifactExpander, pathMapper, commandLine);
       }
 
       return commandLine;
@@ -947,7 +946,7 @@ public class CcToolchainFeatures implements StarlarkValue {
     public ImmutableList<Pair<String, List<String>>> getPerFeatureExpansions(
         String action,
         CcToolchainVariables variables,
-        @Nullable InputMetadataProvider inputMetadataProvider,
+        @Nullable TreeArtifactExpander treeArtifactExpander,
         PathMapper pathMapper)
         throws ExpansionException {
       ImmutableList.Builder<Pair<String, List<String>>> perFeatureExpansions =
@@ -956,14 +955,14 @@ public class CcToolchainFeatures implements StarlarkValue {
         List<String> commandLine = new ArrayList<>();
         ActionConfig actionConfig = actionConfigByActionName.get(action);
         actionConfig.expandCommandLine(
-            variables, enabledFeatureNames, inputMetadataProvider, pathMapper, commandLine);
+            variables, enabledFeatureNames, treeArtifactExpander, pathMapper, commandLine);
         perFeatureExpansions.add(Pair.of(actionConfig.getName(), commandLine));
       }
 
       for (Feature feature : enabledFeatures) {
         List<String> commandLine = new ArrayList<>();
         feature.expandCommandLine(
-            action, variables, enabledFeatureNames, inputMetadataProvider, pathMapper, commandLine);
+            action, variables, enabledFeatureNames, treeArtifactExpander, pathMapper, commandLine);
         perFeatureExpansions.add(Pair.of(feature.getName(), commandLine));
       }
 
