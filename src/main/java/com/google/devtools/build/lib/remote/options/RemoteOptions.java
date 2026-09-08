@@ -406,6 +406,18 @@ public final class RemoteOptions extends CommonRemoteOptions {
   public PathFragment diskCache;
 
   @Option(
+      name = "experimental_disk_cache_async",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help =
+          "Populate the disk cache from remote hits asynchronously for action results and CAS blobs"
+              + " up to 64 KiB. Uses a shared 1 GiB buffer budget and 32 background writers."
+              + " Cache population is best effort: entries may be skipped when buffers are full or"
+              + " lost on server exit. Large entries retain synchronous cache population.")
+  public boolean diskCacheAsync;
+
+  @Option(
       name = "experimental_disk_cache_gc_idle_delay",
       defaultValue = "5m",
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,

@@ -24,6 +24,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/remote/util:digest_util",
         "//src/main/java/com/google/devtools/build/lib/remote/util:utils",
         "//src/main/java/com/google/devtools/build/lib/server:idle_task",
+        "//src/main/java/com/google/devtools/build/lib/util:debug-logger-configurator",
         "//src/main/java/com/google/devtools/build/lib/util:file_system_lock",
         "//src/main/java/com/google/devtools/build/lib/util:string",
         "//src/main/java/com/google/devtools/build/lib/vfs",

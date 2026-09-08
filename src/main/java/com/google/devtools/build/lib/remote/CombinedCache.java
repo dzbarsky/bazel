@@ -49,6 +49,7 @@ import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.ActionKey;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.Blob;
+import com.google.devtools.build.lib.remote.disk.AsyncDiskCacheWriter;
 import com.google.devtools.build.lib.remote.disk.DiskCacheClient;
 import com.google.devtools.build.lib.remote.options.RemoteOptions.ChunkingFunctionValue;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
@@ -287,6 +288,11 @@ public class CombinedCache extends AbstractReferenceCounted {
           }
 
           if (diskCacheClient != null && context.getWriteCachePolicy().allowDiskCache()) {
+            if (diskCacheClient.getAsyncWriter() != null
+                && actionResult.getSerializedSize() <= AsyncDiskCacheWriter.MAX_BLOB_SIZE) {
+              diskCacheClient.getAsyncWriter().uploadActionResult(actionKey.digest(), actionResult);
+              return immediateFuture(actionResult);
+            }
             return Futures.transform(
                 diskCacheClient.uploadActionResult(actionKey, actionResult),
                 v -> actionResult,
@@ -576,6 +582,35 @@ public class CombinedCache extends AbstractReferenceCounted {
     checkState(remoteCacheClient != null && context.getReadCachePolicy().allowRemoteCache());
 
     if (diskCacheClient != null && context.getWriteCachePolicy().allowDiskCache()) {
+      AsyncDiskCacheWriter writer = diskCacheClient.getAsyncWriter();
+      if (writer != null && digest.getSizeBytes() <= AsyncDiskCacheWriter.MAX_BLOB_SIZE) {
+        AsyncDiskCacheWriter.Buffer buffer = writer.tryBuffer(digest.getSizeBytes());
+        if (buffer == null) {
+          return remoteCacheClient.downloadBlob(context, digest, out);
+        }
+        ListenableFuture<Void> result;
+        try {
+          result =
+              Futures.transformAsync(
+                  remoteCacheClient.downloadBlob(context, digest, buffer),
+                  unused -> {
+                    try (AsyncDiskCacheWriter.Entry entry = buffer.finish()) {
+                      entry.writeTo(out);
+                      entry.publish(digest, Store.CAS);
+                    }
+                    return immediateFuture(null);
+                  },
+                  directExecutor());
+        } catch (RuntimeException e) {
+          buffer.close();
+          throw e;
+        }
+        // A failed or cancelled download owns no queued write. Closing rejects late network
+        // writes; finish() transfers the reservation before output I/O, so cancellation cannot
+        // release a buffer still in use by the delivery callback or background writer.
+        result.addListener(buffer::close, directExecutor());
+        return result;
+      }
       Path tempPath = diskCacheClient.getTempPath();
       LazyFileOutputStream tempOut = new LazyFileOutputStream(tempPath);
       ListenableFuture<Void> download = remoteCacheClient.downloadBlob(context, digest, tempOut);
