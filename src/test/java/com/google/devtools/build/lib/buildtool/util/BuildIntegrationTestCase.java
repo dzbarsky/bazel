@@ -432,9 +432,9 @@ public abstract class BuildIntegrationTestCase {
   @After
   public final void cleanUp() throws Exception {
     try {
-      doCleanup();
-    } finally {
       getRuntime().getBlazeModules().forEach(BlazeModule::blazeShutdown);
+    } finally {
+      doCleanup();
     }
   }
 
@@ -1074,14 +1074,18 @@ public abstract class BuildIntegrationTestCase {
       command.execute(outErr.getOutputStream(), outErr.getErrorStream());
     } catch (AbnormalTerminationException e) { // non-zero exit or signal or I/O problem
       IntegrationTestExecException e2 =
-          new IntegrationTestExecException(CommandUtils.describeCommandFailure(verboseFailures, e));
+          new IntegrationTestExecException(
+              CommandUtils.describeCommandFailure(
+                  verboseFailures, /* expandParamFiles= */ false, e));
       e2.initCause(e); // We don't pass cause=e to the ExecException constructor
       // since we don't want it to contribute to the exception
       // message again; it's already in describeCommandFailure().
       throw e2;
     } catch (CommandException e) {
       IntegrationTestExecException e2 =
-          new IntegrationTestExecException(CommandUtils.describeCommandFailure(verboseFailures, e));
+          new IntegrationTestExecException(
+              CommandUtils.describeCommandFailure(
+                  verboseFailures, /* expandParamFiles= */ false, e));
       e2.initCause(e); // We don't pass cause=e to the ExecException constructor
       // since we don't want it to contribute to the exception
       // message again; it's already in describeCommandFailure().
@@ -1128,6 +1132,14 @@ public abstract class BuildIntegrationTestCase {
 
   protected TreeArtifactValue getTreeArtifactValue(Artifact treeArtifact)
       throws InterruptedException {
+    assertThat(treeArtifact.isTreeArtifact()).isTrue();
+    SkyValue value = getSkyframeExecutor().getEvaluator().getExistingValue(treeArtifact);
+    if (value != null) {
+      assertThat(value).isInstanceOf(TreeArtifactValue.class);
+      return (TreeArtifactValue) value;
+    }
+    // Tree artifacts may not have an artifact node in the graph if they are produced by an action
+    // but not consumed, e.g. undeclared test outputs. Fall back to the ActionExecutionValue.
     return checkNotNull(
         getActionExecutionValue(treeArtifact).getAllTreeArtifactValues().get(treeArtifact),
         treeArtifact);

@@ -2316,6 +2316,46 @@ public final class OptionsParserTest {
     assertThat(e).hasMessageThat().contains("Unrecognized option: --no_foo");
   }
 
+  @OptionsClass
+  public abstract static class PrefixErrorOptions extends OptionsBase {
+    @Option(
+        name = "non_boolean",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.NO_OP},
+        defaultValue = "defaultValue")
+    public abstract String getNonBoolean();
+
+    @Option(
+        name = "boolean_option",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.NO_OP},
+        defaultValue = "false")
+    public abstract boolean getBooleanOption();
+  }
+
+  @Test
+  public void testNoPrefixErrors() {
+    OptionsParser parser = OptionsParser.builder().optionsClasses(PrefixErrorOptions.class).build();
+
+    OptionsParsingException e1 =
+        assertThrows(
+            "--nonon_boolean should fail to parse.",
+            OptionsParsingException.class,
+            () -> parser.parse("--nonon_boolean"));
+    assertThat(e1)
+        .hasMessageThat()
+        .contains("Illegal use of 'no' prefix on non-boolean option: --nonon_boolean");
+
+    OptionsParsingException e2 =
+        assertThrows(
+            "--noboolean_option=true should fail to parse.",
+            OptionsParsingException.class,
+            () -> parser.parse("--noboolean_option=true"));
+    assertThat(e2)
+        .hasMessageThat()
+        .contains("Unexpected value after boolean option: --noboolean_option=true");
+  }
+
   /** Dummy options for testing getHelpCompletion() and visitOptions(). */
   @OptionsClass
   public abstract static class CompletionOptions extends OptionsBase {
@@ -2651,6 +2691,23 @@ public final class OptionsParserTest {
         PriorityCategory.RC_FILE, o -> ".bazelrc", ImmutableList.of("--foo"), null);
 
     assertThat(parser.getUserOptions().keySet()).containsExactly("--foo", "--nobar");
+  }
+
+  @Test
+  public void testOptionsParser_getUserOptions_retainsOptionValueContainingDefaultOverride()
+      throws Exception {
+    OptionsParser parser = OptionsParser.builder().optionsClasses(TestOptions.class).build();
+    parser.parse(
+        PriorityCategory.RC_FILE,
+        ".bazelrc",
+        ImmutableList.of("--test_string=prefix_default_override_suffix"));
+    parser.parse(
+        PriorityCategory.COMMAND_LINE,
+        "command line",
+        ImmutableList.of("--test_string=-Ddefault_override_flag=1"));
+
+    assertThat(parser.getUserOptions()).containsKey("--test_string=prefix_default_override_suffix");
+    assertThat(parser.getUserOptions()).containsKey("--test_string=-Ddefault_override_flag=1");
   }
 
   private static OptionInstanceOrigin createInvocationPolicyOrigin() {

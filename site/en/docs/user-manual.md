@@ -1085,9 +1085,10 @@ If `--explain` is not enabled, then
 #### `--profile={{ "<var>" }}file{{ "</var>" }}` {:#profile}
 
 This option, which takes a filename argument, causes Bazel to write
-profiling data into a file. The data then can be analyzed or parsed using the
-`bazel analyze-profile` command. The Build profile can be useful in
-understanding where Bazel's `build` command is spending its time.
+profiling data into a file. The build profile can be useful in understanding
+where Bazel's `build` command is spending its time. See
+[JSON trace profile](/advanced/performance/json-trace-profile) for profile
+format and tooling details.
 
 #### `--[no]show_loading_progress` {:#show-loading-progress}
 
@@ -1264,6 +1265,61 @@ echo "STABLE_USER_NAME $USER"
 
 Pass this program's path with `--workspace_status_command`, and the stable status file
 will include the STABLE lines and the volatile status file will include the rest of the lines.
+
+#### Using workspace status in your build
+
+The status key-value pairs can be used in your build through Starlark actions
+and templates. Bazel provides built-in rules like `cc_binary` and `genrule`
+that support the `stamp` attribute, which can embed workspace status
+information into the compiled binaries.
+
+For example, when using `cc_binary` with `stamp = 1`, Bazel will automatically
+make the workspace status available to the build. You can then access these
+values through template files:
+
+```python
+# In your BUILD file
+cc_binary(
+    name = "my_binary",
+    srcs = ["main.cc"],
+    stamp = 1,  # Enable stamping to include workspace status
+)
+
+# For custom use of workspace status, you can use ctx.actions.declare_file
+# and read the status files from ctx.workspace_status
+```
+
+For Java projects, you can use the `bazel_java_build_info` rule to generate
+Java source files with workspace status information:
+
+```python
+load("@bazel_tools//tools/build_defs/build_info:bazel_java_build_info.bzl", "bazel_java_build_info")
+
+bazel_java_build_info(
+    name = "build_info",
+    stamp = 1,
+)
+
+java_binary(
+    name = "my_app",
+    srcs = ["Main.java", ":build_info"],
+    main_class = "com.example.Main",
+)
+```
+
+This will generate a Java source file containing the workspace status values
+as string constants, which you can then use in your Java code:
+
+```java
+// In your Java code
+public class Main {
+    public static void main(String[] args) {
+        System.out.println("Build label: " + BuildInfo.BUILD_LABEL);
+        System.out.println("Build host: " + BuildInfo.BUILD_HOST);
+        System.out.println("Build user: " + BuildInfo.BUILD_USER);
+    }
+}
+```
 
 #### `--[no]stamp` {:#stamp}
 
@@ -1559,14 +1615,19 @@ failing status.
 
 Specifies how the test result summary should be displayed.
 
-*   `short` prints the results of each test along with the name of
-    the file containing the test output if the test failed. This is the default
-    value.
-*   `terse` like `short`, but even shorter: only print
-    information about tests which did not pass.
-*   `detailed` prints each individual test case that failed, not
-    only each test. The names of test output files are omitted.
-*   `none` does not print test summary.
+*   `short` lists all tests that ran to completion, along with the name of
+    the file containing the test output if the test failed. This is the
+    default value.
+*   `short_uncached` like `short`, but omits tests whose results were cached.
+*   `terse` lists only failed and flaky tests.
+*   `detailed` lists all tests that ran to completion and prints each
+    individual test case (passed, skipped, and failed). The names of test
+    output files are omitted.
+*   `detailed_uncached` like `detailed`, but omits tests whose results were
+    cached.
+*   `testcase` prints a summary at test-case resolution without detailed
+    information about failed test cases.
+*   `none` does not print a test summary.
 
 #### `--test_output={{ "<var>" }}output_style{{ "</var>" }}` {:#test-output}
 
@@ -2206,12 +2267,6 @@ Example:
     dump --skylark_memory=$HOME/prof.gz
     % pprof -flame $HOME/prof.gz
 </pre>
-
-### `analyze-profile` {:#analyze-profile}
-
-The `analyze-profile` command analyzes a
-[JSON trace profile](/advanced/performance/json-trace-profile) previously
-gathered during a Bazel invocation.
 
 ### `canonicalize-flags` {:#canonicalize-flags}
 

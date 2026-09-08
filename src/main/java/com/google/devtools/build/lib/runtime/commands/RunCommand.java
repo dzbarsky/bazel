@@ -54,7 +54,6 @@ import com.google.devtools.build.lib.buildtool.BuildTool;
 import com.google.devtools.build.lib.buildtool.PathPrettyPrinter;
 import com.google.devtools.build.lib.buildtool.buildevent.ExecRequestEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.RunBuildCompleteEvent;
-import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.exec.ExecutionOptions;
@@ -320,7 +319,7 @@ public class RunCommand implements BlazeCommand {
                   env,
                   /* testLogDir= */ builtTargets
                       .configuration
-                      .getTestLogsDirectory(RepositoryName.MAIN)
+                      .getTestLogsDirectory()
                       .getExecPathString(),
                   runCommandLine.isTestTarget())
               : ImmutableList.of();
@@ -527,7 +526,7 @@ public class RunCommand implements BlazeCommand {
     // target to run needs to be preserved, as it acts as the working directory.
     Path targetToRunRunfilesDir = null;
     RunfilesSupport targetToRunRunfilesSupport = null;
-    RunfilesTreeUpdater runfilesTreeUpdater = RunfilesTreeUpdater.forCommandEnvironment(env);
+    RunfilesTreeUpdater runfilesTreeUpdater = env.getRunfilesTreeUpdater();
     for (ConfiguredTarget target : topLevelTargets) {
       FilesToRunProvider provider = target.getProvider(FilesToRunProvider.class);
       RunfilesSupport runfilesSupport = provider == null ? null : provider.getRunfilesSupport();

@@ -105,7 +105,7 @@ public class WorkerModuleTest {
     workerDir.createDirectoryAndParents();
     aLog.createSymbolicLink(PathFragment.EMPTY_FRAGMENT);
     WorkerPool oldPool = module.workerPool;
-    options.setWorkerSandboxing(!options.getWorkerSandboxing());
+    options.setWorkerSandboxing(ImmutableList.of(Maps.immutableEntry("", true)));
     module.beforeCommand(env);
     module.buildStarting(buildStartingEvent(request));
     assertThat(storedEventHandler.getEvents()).isEmpty();
@@ -320,7 +320,8 @@ public class WorkerModuleTest {
             /* allocationTracker= */ null,
             /* syscallCache= */ null,
             /* analysisCodecRegistrySupplier= */ null,
-            /* fingerprintValueServiceFactory= */ null,
+            /* remoteAnalysisCachingServicesSupplier= */ null,
+            /* fingerprinterForAnalysisCaching= */ null,
             /* allowExternalRepositories= */ true);
     when(env.getBlazeWorkspace()).thenReturn(blazeWorkspace);
     when(env.getDirectories()).thenReturn(blazeDirectories);

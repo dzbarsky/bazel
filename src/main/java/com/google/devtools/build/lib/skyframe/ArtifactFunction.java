@@ -24,6 +24,7 @@ import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.ActionLookupValue;
 import com.google.devtools.build.lib.actions.ActionTemplate;
+import com.google.devtools.build.lib.actions.ActionTemplateOutputEvent;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
@@ -173,7 +174,12 @@ public final class ArtifactFunction implements SkyFunction {
       if (mkdirForTreeArtifacts.get()) {
         mkdirForTreeArtifact(artifact, env, actionTemplate);
       }
-      return createTreeArtifactValueFromActionKey(artifactDependencies, env);
+      var result = createTreeArtifactValueFromActionKey(artifactDependencies, env);
+      if (result != null) {
+        SkyValueRetrieverUtils.tryUploadAsync(remoteCachingDependencies, artifact, result, env);
+        env.getListener().post(new ActionTemplateOutputEvent(artifact, result));
+      }
+      return result;
     }
 
     ActionLookupData generatingActionKey = derivedArtifact.getGeneratingActionKey();
@@ -189,7 +195,9 @@ public final class ArtifactFunction implements SkyFunction {
 
     // We got a request for the whole tree artifact. We can just return the associated
     // TreeArtifactValue.
-    return Preconditions.checkNotNull(actionValue.getTreeArtifactValue(artifact), artifact);
+    var result = Preconditions.checkNotNull(actionValue.getTreeArtifactValue(artifact), artifact);
+    SkyValueRetrieverUtils.tryUploadAsync(remoteCachingDependencies, artifact, result, env);
+    return result;
   }
 
   private static void mkdirForTreeArtifact(
@@ -296,14 +304,13 @@ public final class ArtifactFunction implements SkyFunction {
           artifactDependencies);
     }
 
-    TreeArtifactValue tree = treeBuilder.build();
-    return tree;
+    return treeBuilder.build();
   }
 
   @Nullable
   private SkyValue createSourceValue(Artifact artifact, Environment env)
       throws InterruptedException, ArtifactFunctionException {
-    RootedPath path = RootedPath.toRootedPath(artifact.getRoot().getRoot(), artifact.getPath());
+    RootedPath path = artifact.getRootedPath();
     SkyKey fileSkyKey = FileValue.key(path);
     FileValue fileValue;
     try {
@@ -445,18 +452,12 @@ public final class ArtifactFunction implements SkyFunction {
         // No additional useful information from path.
         return String.format("%s '%s'", error, ownerLabel);
       }
-    } else {
-      // Not worth threading sibling repository layout config value all the way here: if either
-      // match, we know the label isn't useful.
-      for (boolean siblingRepositoryLayout : ImmutableList.of(Boolean.FALSE, Boolean.TRUE)) {
-        if (ownerLabel
-            .getRepository()
-            .getExecPath(siblingRepositoryLayout)
-            .getRelative(labelFragment)
-            .equals(artifact.getExecPath())) {
-          return String.format("%s '%s'", error, ownerLabel);
-        }
-      }
+    } else if (ownerLabel
+        .getRepository()
+        .getExecPath()
+        .getRelative(labelFragment)
+        .equals(artifact.getExecPath())) {
+      return String.format("%s '%s'", error, ownerLabel);
     }
 
     // TODO(bazel-team): when is this hit?
