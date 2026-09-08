@@ -73,8 +73,12 @@ elif method == 'POST' and endpoint == repo + '/releases':
     assert fields['draft'] == 'true'
     assert fields['target_commitish'] == sha
     assert fields['tag_name'] == tag
+    expected_body = f'Bazel 9.3 binaries for Linux and macOS. Use USE_BAZEL_VERSION=dzbarsky/{tag} with Bazelisk.'
+    if case == 'release_notes':
+        expected_body += '\n\n## Changes\n\n- Preserve `toolchain_type` aliases.'
+    assert fields['body'] == expected_body, fields['body']
     release = dict(id=101, tag_name=tag, target_commitish=sha, draft=True,
-                   immutable=False, assets=[])
+                   immutable=False, assets=[], body=fields['body'])
     save(release)
     emit(release)
 elif endpoint == repo + '/releases/101':
@@ -91,6 +95,7 @@ elif endpoint == repo + '/releases/101':
         if case == 'missing_remote_asset': release['assets'].pop()
         if case == 'wrong_remote_digest': release['assets'][0]['digest'] = 'sha256:bad'
         if case == 'wrong_remote_target': release['target_commitish'] = '2' * 40
+        if case == 'wrong_remote_body': release['body'] = 'Incorrect release notes'
     emit(release)
 elif endpoint == repo + '/git/ref/tags/' + tag:
     event('tag')
@@ -107,7 +112,8 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
     environment = dict(os.environ, PATH=str(temporary / 'bin') + os.pathsep + os.environ['PATH'],
                        GITHUB_REPOSITORY='dzbarsky/bazel', GITHUB_SHA='1' * 40,
                        RELEASE_TAG='9.3.0-dzbarsky17', GH_TOKEN='', GITHUB_TOKEN='')
-    cases = ['success', 'existing_tag', 'existing_published', 'existing_draft',
+    cases = ['success', 'release_notes', 'missing_notes', 'wrong_remote_body',
+             'existing_tag', 'existing_published', 'existing_draft',
              'tag_api_error', 'release_api_error', 'missing_local_asset', 'bad_checksum',
              'create_error', 'upload_error', 'verify_api_error', 'missing_remote_asset',
              'wrong_remote_digest', 'wrong_remote_target', 'publish_error',
@@ -128,12 +134,18 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
         if case == 'bad_checksum': target.write_text('Corrupted mock binary\n')
         # Unrelated files must not be uploaded by a broad artifacts/* argument.
         (artifacts / 'unrelated.txt').write_text('Not a release asset\n')
+        if case == 'release_notes':
+            notes = directory / 'notes.md'
+            notes.write_text('## Changes\n\n- Preserve `toolchain_type` aliases.\n')
         env = dict(environment, MOCK_CASE=case, MOCK_STATE=str(directory), TMPDIR=str(directory))
+        env.pop('RELEASE_NOTES_FILE', None)
+        if case in ('release_notes', 'missing_notes'):
+            env['RELEASE_NOTES_FILE'] = str(directory / 'notes.md')
         result = subprocess.run(['bash', str(publisher), str(artifacts)], env=env,
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         events = (directory / 'events').read_text().splitlines() if (directory / 'events').exists() else []
-        assert (result.returncode == 0) == (case == 'success'), (case, result.stdout)
-        if case == 'success':
+        assert (result.returncode == 0) == (case in ('success', 'release_notes')), (case, result.stdout)
+        if case in ('success', 'release_notes'):
             assert events == ['tags', 'releases', 'create', 'upload', 'draft', 'publish', 'published', 'tag'], events
         elif case not in ('publish_error', 'mutable_release', 'wrong_tag'):
             assert 'publish' not in events, (case, events)
@@ -155,5 +167,5 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
     subprocess.run(['bash', '-c', '\n'.join(code)], env=env, check=True)
     assert output.read_text() == 'release_tag=9.3.0-dzbarsky17\n', output.read_text()
     print('PASS numbering_16_to_17')
-print('All 18 mocked publication checks passed; no network calls or GitHub mutations.')
+print('All 21 mocked publication checks passed; no network calls or GitHub mutations.')
 PY
