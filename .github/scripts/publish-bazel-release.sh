@@ -11,6 +11,15 @@ if [[ ! "${RELEASE_TAG}" =~ ^9\.3\.0-[A-Za-z0-9]+$ ]] ||
 fi
 
 artifacts_dir="${1:-artifacts}"
+notes_file="${RELEASE_NOTES_FILE:-$(dirname "${BASH_SOURCE[0]}")/../release-notes/${RELEASE_TAG}.md}"
+release_body="Bazel 9.3 binaries for Linux and macOS. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
+if [[ -f "${notes_file}" ]]; then
+  test -s "${notes_file}"
+  release_body+=$'\n\n'"$(cat "${notes_file}")"
+elif [[ -n "${RELEASE_NOTES_FILE:-}" ]]; then
+  echo "Release notes file ${notes_file} does not exist." >&2
+  exit 1
+fi
 release_api="repos/${GITHUB_REPOSITORY}/releases"
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf "${temporary_dir}"' EXIT
@@ -55,7 +64,7 @@ gh api --method POST "${release_api}" \
   -f "tag_name=${RELEASE_TAG}" \
   -f "target_commitish=${GITHUB_SHA}" \
   -f "name=${RELEASE_TAG}" \
-  -f "body=Bazel 9.3 binaries for Linux and macOS. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk." \
+  -f "body=${release_body}" \
   -F draft=true > "${temporary_dir}/created.json"
 release_id="$(jq --exit-status --raw-output \
   '.id | select(type == "number" and . > 0 and . == floor)' \
@@ -65,9 +74,10 @@ release_api="${release_api}/${release_id}"
 gh release upload "${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}"
 gh api "${release_api}" > "${temporary_dir}/draft.json"
 jq --exit-status \
-  --arg tag "${RELEASE_TAG}" --arg sha "${GITHUB_SHA}" \
+  --arg tag "${RELEASE_TAG}" --arg sha "${GITHUB_SHA}" --arg body "${release_body}" \
   --slurpfile expected "${temporary_dir}/assets.json" \
   '.draft == true and .tag_name == $tag and .target_commitish == $sha and
+   .body == $body and
    (.assets | map({name, size, digest, state}) | sort_by(.name)) == $expected[0]' \
   "${temporary_dir}/draft.json" > /dev/null
 
@@ -75,10 +85,11 @@ jq --exit-status \
 gh api --method PATCH "${release_api}" -F draft=false > /dev/null
 gh api "${release_api}" > "${temporary_dir}/published.json"
 jq --exit-status \
-  --arg tag "${RELEASE_TAG}" --arg sha "${GITHUB_SHA}" \
+  --arg tag "${RELEASE_TAG}" --arg sha "${GITHUB_SHA}" --arg body "${release_body}" \
   --slurpfile expected "${temporary_dir}/assets.json" \
   '.draft == false and .immutable == true and .tag_name == $tag and
    .target_commitish == $sha and
+   .body == $body and
    (.assets | map({name, size, digest, state}) | sort_by(.name)) == $expected[0]' \
   "${temporary_dir}/published.json" > /dev/null
 gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
