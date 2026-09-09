@@ -80,7 +80,10 @@ public class SingleToolchainResolutionFunction implements SkyFunction {
           (RegisteredToolchainsValue)
               env.getValueOrThrow(
                   RegisteredToolchainsValue.key(
-                      key.configurationKey(), key.toolchainTypeInfo().typeLabel(), debug),
+                      key.configurationKey(),
+                      key.toolchainTypeInfo().typeLabel(),
+                      key.targetPlatformKey(),
+                      debug),
                   InvalidToolchainLabelException.class);
       if (toolchains == null) {
         return null;
