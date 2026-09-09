@@ -20,6 +20,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableTable;
 import com.google.devtools.build.lib.analysis.platform.DeclaredToolchainInfo;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.config.BuildConfigurationKey;
 import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
@@ -49,8 +50,11 @@ public record RegisteredToolchainsValue(
 
   /** Returns the {@link SkyKey} for {@link RegisteredToolchainsValue}s. */
   public static Key key(
-      BuildConfigurationKey configurationKey, Label toolchainType, boolean debug) {
-    return Key.of(configurationKey, toolchainType, debug);
+      BuildConfigurationKey configurationKey,
+      Label toolchainType,
+      ConfiguredTargetKey targetPlatformKey,
+      boolean debug) {
+    return Key.of(configurationKey, toolchainType, targetPlatformKey, debug);
   }
 
   /** A {@link SkyKey} for {@code RegisteredToolchainsValue}. */
@@ -60,17 +64,26 @@ public record RegisteredToolchainsValue(
 
     private final BuildConfigurationKey configurationKey;
     private final Label toolchainType;
+    private final ConfiguredTargetKey targetPlatformKey;
     private final boolean debug;
 
-    private Key(BuildConfigurationKey configurationKey, Label toolchainType, boolean debug) {
+    private Key(
+        BuildConfigurationKey configurationKey,
+        Label toolchainType,
+        ConfiguredTargetKey targetPlatformKey,
+        boolean debug) {
       this.configurationKey = configurationKey;
       this.toolchainType = requireNonNull(toolchainType);
+      this.targetPlatformKey = requireNonNull(targetPlatformKey);
       this.debug = debug;
     }
 
     private static Key of(
-        BuildConfigurationKey configurationKey, Label toolchainType, boolean debug) {
-      return interner.intern(new Key(configurationKey, toolchainType, debug));
+        BuildConfigurationKey configurationKey,
+        Label toolchainType,
+        ConfiguredTargetKey targetPlatformKey,
+        boolean debug) {
+      return interner.intern(new Key(configurationKey, toolchainType, targetPlatformKey, debug));
     }
 
     @VisibleForSerialization
@@ -92,6 +105,10 @@ public record RegisteredToolchainsValue(
       return toolchainType;
     }
 
+    ConfiguredTargetKey targetPlatformKey() {
+      return targetPlatformKey;
+    }
+
     boolean debug() {
       return debug;
     }
@@ -103,6 +120,8 @@ public record RegisteredToolchainsValue(
           + configurationKey
           + ", toolchainType: "
           + toolchainType
+          + ", targetPlatformKey: "
+          + targetPlatformKey
           + ", debug: "
           + debug
           + "}";
@@ -115,12 +134,13 @@ public record RegisteredToolchainsValue(
       }
       return Objects.equals(this.configurationKey, that.configurationKey)
           && this.toolchainType.equals(that.toolchainType)
+          && this.targetPlatformKey.equals(that.targetPlatformKey)
           && this.debug == that.debug;
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(configurationKey, toolchainType, debug);
+      return Objects.hash(configurationKey, toolchainType, targetPlatformKey, debug);
     }
 
     @Override
