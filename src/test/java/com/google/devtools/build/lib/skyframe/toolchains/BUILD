@@ -96,6 +96,10 @@ java_test(
         "-Djava.lang.Thread.allowVirtualThreads=true",
     ],
     deps = [
+        "//src/main/java/com/google/devtools/build/lib/analysis:platform_configuration",
+        "//src/main/java/com/google/devtools/build/lib/analysis/config:common_options",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:configured_target_key",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/config",
         "//src/main/java/com/google/devtools/build/lib/analysis/platform",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/skyframe/toolchains:registered_toolchains_value",
