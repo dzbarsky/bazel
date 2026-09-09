@@ -27,8 +27,12 @@ import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.analysis.PlatformConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.analysis.config.CommonOptions;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
+import com.google.devtools.build.lib.analysis.platform.ConstraintCollection;
+import com.google.devtools.build.lib.analysis.platform.ConstraintValueInfo;
 import com.google.devtools.build.lib.analysis.platform.DeclaredToolchainInfo;
+import com.google.devtools.build.lib.analysis.platform.PlatformInfo;
 import com.google.devtools.build.lib.analysis.platform.PlatformProviderUtils;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelDepGraphValue;
 import com.google.devtools.build.lib.bazel.bzlmod.ExternalDepsException;
@@ -44,6 +48,7 @@ import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.RawAttributeMapper;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.pkgcache.FilteringPolicies;
 import com.google.devtools.build.lib.rules.platform.ToolchainRule;
 import com.google.devtools.build.lib.server.FailureDetails.Toolchain.Code;
@@ -53,6 +58,7 @@ import com.google.devtools.build.lib.skyframe.PackageValue;
 import com.google.devtools.build.lib.skyframe.RepositoryMappingValue;
 import com.google.devtools.build.lib.skyframe.TargetPatternUtil;
 import com.google.devtools.build.lib.skyframe.TargetPatternUtil.InvalidTargetPatternException;
+import com.google.devtools.build.lib.skyframe.config.BuildConfigurationKey;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
@@ -60,6 +66,10 @@ import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 import javax.annotation.Nullable;
@@ -124,6 +134,14 @@ public class RegisteredToolchainsFunction implements SkyFunction {
     toolchainLabels = filterToolchainTypes(env, toolchainLabels, key.toolchainType());
     if (toolchainLabels == null) {
       return null;
+    }
+
+    // Debugging retains all declarations so resolution can explain every rejection.
+    if (!key.debug()) {
+      toolchainLabels = filterTargetPlatforms(env, key.targetPlatformKey(), toolchainLabels);
+      if (toolchainLabels == null) {
+        return null;
+      }
     }
 
     // Load the configured target for each, and get the declared toolchain providers.
@@ -212,6 +230,150 @@ public class RegisteredToolchainsFunction implements SkyFunction {
       result.add(label);
     }
     return result.build();
+  }
+
+  @Nullable
+  private static ImmutableSet<Label> filterTargetPlatforms(
+      Environment env, ConfiguredTargetKey platformKey, ImmutableSet<Label> labels)
+      throws InterruptedException {
+    Map<ConfiguredTargetKey, PlatformInfo> platforms;
+    try {
+      platforms = PlatformLookupUtil.getPlatformInfo(ImmutableList.of(platformKey), env);
+    } catch (PlatformLookupUtil.InvalidPlatformException e) {
+      // The normal resolution path reports invalid platforms.
+      return labels;
+    }
+    if (platforms == null) {
+      return null;
+    }
+
+    SkyframeLookupResult packages =
+        env.getValuesAndExceptions(
+            labels.stream().map(Label::getPackageIdentifier).collect(toImmutableSet()));
+    if (env.valuesMissing()) {
+      return null;
+    }
+    ImmutableMap.Builder<Label, List<Label>> constraintsBuilder = ImmutableMap.builder();
+    for (Label label : labels) {
+      Target target = getTarget(packages, label);
+      if (isNativeRule(target, ToolchainRule.RULE_NAME)) {
+        RawAttributeMapper attributes = RawAttributeMapper.of((Rule) target);
+        if (!attributes.get(ToolchainRule.USE_TARGET_PLATFORM_CONSTRAINTS_ATTR, Type.BOOLEAN)) {
+          constraintsBuilder.put(
+              label,
+              attributes.get(ToolchainRule.TARGET_COMPATIBLE_WITH_ATTR, BuildType.LABEL_LIST));
+        }
+      }
+    }
+    ImmutableMap<Label, List<Label>> constraints = constraintsBuilder.buildOrThrow();
+    ImmutableSet<Label> constraintLabels =
+        constraints.values().stream().flatMap(List::stream).collect(toImmutableSet());
+    ImmutableMap<Label, Label> nativeConstraints = resolveNativeConstraints(env, constraintLabels);
+    if (nativeConstraints == null) {
+      return null;
+    }
+    List<ConstraintValueInfo> constraintValues;
+    try {
+      constraintValues =
+          ConstraintValueLookupUtil.getConstraintValueInfo(
+              nativeConstraints.values().stream()
+                  .map(
+                      label ->
+                          ConfiguredTargetKey.builder()
+                              .setLabel(label)
+                              .setConfigurationKey(
+                                  BuildConfigurationKey.create(CommonOptions.EMPTY_OPTIONS))
+                              .build())
+                  .collect(toImmutableSet()),
+              env);
+    } catch (ConstraintValueLookupUtil.InvalidConstraintValueException e) {
+      // Preserve configured target analysis and its error context for malformed declarations.
+      return labels;
+    }
+    if (constraintValues == null) {
+      return null;
+    }
+    ImmutableMap.Builder<Label, ConstraintValueInfo> valuesBuilder = ImmutableMap.builder();
+    for (ConstraintValueInfo value : constraintValues) {
+      valuesBuilder.put(value.label(), value);
+    }
+    ImmutableMap<Label, ConstraintValueInfo> values = valuesBuilder.buildOrThrow();
+    ImmutableSet.Builder<Label> result = ImmutableSet.builder();
+    for (Label label : labels) {
+      List<Label> required = constraints.get(label);
+      // Configurable constraint aliases still need the original configuration.
+      if (required != null && nativeConstraints.keySet().containsAll(required)) {
+        List<ConstraintValueInfo> expected =
+            required.stream().map(nativeConstraints::get).map(values::get).toList();
+        try {
+          ConstraintCollection.builder().addConstraints(expected).build();
+          if (!platforms.get(platformKey).constraints().containsAll(expected)) {
+            continue;
+          }
+        } catch (ConstraintCollection.DuplicateConstraintException e) {
+          // Keep conflicting constraints for the toolchain rule's attribute error.
+        }
+      }
+      result.add(label);
+    }
+    return result.build();
+  }
+
+  @Nullable
+  private static ImmutableMap<Label, Label> resolveNativeConstraints(
+      Environment env, ImmutableSet<Label> labels) throws InterruptedException {
+    Map<Label, Label> aliases = new HashMap<>();
+    Set<Label> nativeConstraints = new HashSet<>();
+    Set<Label> visited = new HashSet<>();
+    ImmutableSet<Label> pending = labels;
+    while (!pending.isEmpty()) {
+      SkyframeLookupResult packages =
+          env.getValuesAndExceptions(
+              pending.stream().map(Label::getPackageIdentifier).collect(toImmutableSet()));
+      if (env.valuesMissing()) {
+        return null;
+      }
+      visited.addAll(pending);
+      ImmutableSet.Builder<Label> next = ImmutableSet.builder();
+      for (Label label : pending) {
+        Target target = getTarget(packages, label);
+        if (isNativeRule(target, "constraint_value")) {
+          nativeConstraints.add(label);
+        } else if (isNativeRule(target, "alias")) {
+          RawAttributeMapper attributes = RawAttributeMapper.of((Rule) target);
+          if (!attributes.isConfigurable("actual")) {
+            Label actual = attributes.get("actual", BuildType.LABEL);
+            if (actual != null) {
+              aliases.put(label, actual);
+              if (!visited.contains(actual)) {
+                next.add(actual);
+              }
+            }
+          }
+        }
+      }
+      pending = next.build();
+    }
+
+    ImmutableMap.Builder<Label, Label> resolved = ImmutableMap.builder();
+    for (Label label : labels) {
+      Label actual = label;
+      Set<Label> chain = new HashSet<>();
+      while (aliases.containsKey(actual) && chain.add(actual)) {
+        actual = aliases.get(actual);
+      }
+      // Cycles, configurable aliases, and invalid constraints retain normal analysis.
+      if (nativeConstraints.contains(actual)) {
+        resolved.put(label, actual);
+      }
+    }
+    return resolved.buildOrThrow();
+  }
+
+  private static boolean isNativeRule(@Nullable Target target, String ruleClass) {
+    return target instanceof Rule rule
+        && !rule.getRuleClassObject().isStarlark()
+        && rule.getRuleClass().equals(ruleClass);
   }
 
   @Nullable
