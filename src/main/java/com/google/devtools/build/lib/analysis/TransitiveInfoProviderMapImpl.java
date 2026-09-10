@@ -15,8 +15,12 @@
 package com.google.devtools.build.lib.analysis;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Interner;
+import com.google.devtools.build.lib.analysis.config.ConfigMatchingProvider;
 import com.google.devtools.build.lib.collect.ImmutableSharedKeyMap;
+import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.packages.Info;
+import com.google.devtools.build.lib.packages.NativeInfo;
 import com.google.devtools.build.lib.packages.Provider;
 import com.google.devtools.build.lib.skyframe.serialization.AsyncDeserializationContext;
 import com.google.devtools.build.lib.skyframe.serialization.DeferredObjectCodec;
@@ -37,6 +41,9 @@ import javax.annotation.Nullable;
  */
 public class TransitiveInfoProviderMapImpl extends ImmutableSharedKeyMap<Object, Object>
     implements TransitiveInfoProviderMap {
+
+  private static final Interner<TransitiveInfoProviderMapImpl> configSettingMaps =
+      BlazeInterners.newWeakInterner();
 
   @SerializationConstant @VisibleForSerialization
   static final TransitiveInfoProviderMapImpl EMPTY_TRANSITIVE_INFO_PROVIDER_MAP =
@@ -64,7 +71,22 @@ public class TransitiveInfoProviderMapImpl extends ImmutableSharedKeyMap<Object,
       ++i;
     }
     Preconditions.checkArgument(keys.length == values.length);
-    return new TransitiveInfoProviderMapImpl(keys, values);
+    return create(keys, values);
+  }
+
+  private static TransitiveInfoProviderMapImpl create(Object[] keys, Object[] values) {
+    var providers = new TransitiveInfoProviderMapImpl(keys, values);
+    // config_setting providers often remain identical across unrelated configuration changes.
+    if (providers.getProvider(ConfigMatchingProvider.class) == null) {
+      return providers;
+    }
+    for (Object value : values) {
+      // NativeInfo equality can omit native-only state, such as coverage support files.
+      if (value instanceof NativeInfo) {
+        return providers;
+      }
+    }
+    return configSettingMaps.intern(providers);
   }
 
   @SuppressWarnings("unchecked")
@@ -230,7 +252,7 @@ public class TransitiveInfoProviderMapImpl extends ImmutableSharedKeyMap<Object,
 
     @Override
     public TransitiveInfoProviderMapImpl call() {
-      return new TransitiveInfoProviderMapImpl(keys, values);
+      return create(keys, values);
     }
 
     private static void setKeys(DeserializationBuilder builder, Object value) {

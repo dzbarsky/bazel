@@ -14,6 +14,10 @@
 package com.google.devtools.build.lib.analysis;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableMultimap;
+import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.analysis.config.ConfigMatchingProvider;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.skyframe.serialization.testutils.SerializationTester;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
@@ -28,7 +32,16 @@ public final class TransitiveInfoProviderMapImplCodecTest {
     var tester =
         new SerializationTester(
             TransitiveInfoProviderMapImpl.create(ImmutableMap.of()),
-            TransitiveInfoProviderMapImpl.create(ImmutableMap.of("key", 1, "key2", 2)));
+            TransitiveInfoProviderMapImpl.create(ImmutableMap.of("key", 1, "key2", 2)),
+            TransitiveInfoProviderMapImpl.create(
+                ImmutableMap.of(
+                    ConfigMatchingProvider.class,
+                    ConfigMatchingProvider.create(
+                        Label.parseCanonicalUnchecked("//test:condition"),
+                        ImmutableMultimap.of("cpu", "k8"),
+                        ImmutableMap.of(),
+                        ImmutableSet.of(),
+                        ConfigMatchingProvider.MatchResult.MATCH))));
 
     if (useSharedValues) {
       tester
