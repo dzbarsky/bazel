@@ -286,6 +286,40 @@ public final class RequiredConfigFragmentsTest extends BuildViewTestCase {
     assertThat(requiredFragments.defines()).containsExactly("required_var");
   }
 
+  @Test
+  public void starlarkCtxVarItems_tracksAllDefines() throws Exception {
+    assertCtxVarMethodTracksAllDefines("items");
+  }
+
+  @Test
+  public void starlarkCtxVarKeys_tracksAllDefines() throws Exception {
+    assertCtxVarMethodTracksAllDefines("keys");
+  }
+
+  @Test
+  public void starlarkCtxVarValues_tracksAllDefines() throws Exception {
+    assertCtxVarMethodTracksAllDefines("values");
+  }
+
+  private void assertCtxVarMethodTracksAllDefines(String method) throws Exception {
+    useConfiguration(
+        "--include_config_fragments_provider=direct", "--define=first=1", "--define=second=2");
+    scratch.file(
+        "a/defs.bzl",
+        "def _impl(ctx):",
+        "    result = ctx.var." + method + "()",
+        "    if not result:",
+        "        fail('ctx.var method returned no values')",
+        "simple_rule = rule(implementation = _impl)");
+    scratch.file(
+        "a/BUILD",
+        "load('//a:defs.bzl', 'simple_rule')",
+        "simple_rule(name = 'simple')");
+    RequiredConfigFragmentsProvider requiredFragments =
+        getConfiguredTarget("//a:simple").getProvider(RequiredConfigFragmentsProvider.class);
+    assertThat(requiredFragments.defines()).containsExactly("first", "second");
+  }
+
   /**
    * Aspect that requires fragments both in its definition and through {@link
    * #addAspectImplSpecificRequiredConfigFragments}.
