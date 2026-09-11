@@ -506,8 +506,8 @@ public final class BuildTypeTest {
     Dict<String, String> left;
     Dict<String, String> right;
     try (Mutability mu = Mutability.create("selector dictionaries")) {
-      left = Dict.of(mu, "a", "//a:a");
-      right = Dict.of(mu, "b", "//b:b");
+      left = Dict.copyOf(mu, ImmutableMap.of("a", "//a:a"));
+      right = Dict.copyOf(mu, ImmutableMap.of("b", "//b:b"));
     }
     Object compact = ((Compactable) right).unsafeOptimizeMemoryLayout();
     Object leftSelect =
