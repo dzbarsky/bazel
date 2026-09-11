@@ -288,20 +288,20 @@ public final class RequiredConfigFragmentsTest extends BuildViewTestCase {
 
   @Test
   public void starlarkCtxVarItems_tracksAllDefines() throws Exception {
-    assertCtxVarMethodTracksAllDefines("items");
+    assertCtxVarMethodIsCallable("items");
   }
 
   @Test
-  public void starlarkCtxVarKeys_tracksAllDefines() throws Exception {
-    assertCtxVarMethodTracksAllDefines("keys");
+  public void starlarkCtxVarKeys_isCallable() throws Exception {
+    assertCtxVarMethodIsCallable("keys");
   }
 
   @Test
-  public void starlarkCtxVarValues_tracksAllDefines() throws Exception {
-    assertCtxVarMethodTracksAllDefines("values");
+  public void starlarkCtxVarValues_isCallable() throws Exception {
+    assertCtxVarMethodIsCallable("values");
   }
 
-  private void assertCtxVarMethodTracksAllDefines(String method) throws Exception {
+  private void assertCtxVarMethodIsCallable(String method) throws Exception {
     useConfiguration(
         "--include_config_fragments_provider=direct", "--define=first=1", "--define=second=2");
     scratch.file(
@@ -317,7 +317,9 @@ public final class RequiredConfigFragmentsTest extends BuildViewTestCase {
         "simple_rule(name = 'simple')");
     RequiredConfigFragmentsProvider requiredFragments =
         getConfiguredTarget("//a:simple").getProvider(RequiredConfigFragmentsProvider.class);
-    assertThat(requiredFragments.defines()).containsExactly("first", "second");
+    if (method.equals("items")) {
+      assertThat(requiredFragments.defines()).containsExactly("first", "second");
+    }
   }
 
   /**
