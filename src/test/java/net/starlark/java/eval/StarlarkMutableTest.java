@@ -64,6 +64,7 @@ public final class StarlarkMutableTest {
             ImmutableMap.of(
                 StarlarkInt.of(1), StarlarkInt.of(2), StarlarkInt.of(3), StarlarkInt.of(4)));
     mutability.freeze();
+    dict.unsafeOptimizeMemoryLayout();
 
     {
       Iterator<Map.Entry<Object, Object>> it = dict.entrySet().iterator();

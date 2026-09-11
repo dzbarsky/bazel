@@ -113,7 +113,8 @@ public class Dict<K, V>
         StarlarkIndexable,
         StarlarkIterable<K> {
 
-  private final Map<K, V> contents;
+  // Replaced only by unsafeOptimizeMemoryLayout after this dict has been frozen.
+  private Map<K, V> contents;
   // Number of active iterators (unused once frozen).
   private transient int iteratorCount; // transient for serialization by Bazel
 
@@ -494,6 +495,17 @@ public class Dict<K, V>
   /** Returns an immutable dict containing the entries of {@code m}. */
   public static <K, V> Dict<K, V> immutableCopyOf(Map<? extends K, ? extends V> m) {
     return copyOf(null, m);
+  }
+
+  /**
+   * Compacts the backing map of a frozen dict without changing its entries or their order.
+   *
+   * <p>Call this only for retained values, after freezing their mutability. As with list layout
+   * optimization, the caller must ensure this dict is not accessed concurrently during the call.
+   */
+  public void unsafeOptimizeMemoryLayout() {
+    Preconditions.checkState(mutability.isFrozen());
+    contents = ImmutableMap.copyOf(contents);
   }
 
   /** Returns a new empty Dict.Builder. */
