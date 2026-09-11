@@ -22,6 +22,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkList;
@@ -288,6 +289,8 @@ public class StarlarkInfoNoSchema extends StarlarkInfo {
         table[i] = ((StarlarkList<?>) table[i]).unsafeOptimizeMemoryLayout();
       } else if (table[i] instanceof StarlarkInfo) {
         table[i] = ((StarlarkInfo) table[i]).unsafeOptimizeMemoryLayout();
+      } else if (table[i] instanceof Dict<?, ?> dict) {
+        dict.unsafeOptimizeMemoryLayout();
       }
     }
     return this;
