@@ -30,8 +30,10 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import net.starlark.java.eval.Compactable;
 import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Mutability;
 import net.starlark.java.eval.Printer;
 import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkInt;
@@ -497,6 +499,36 @@ public final class BuildTypeTest {
     assertThat(converted).isInstanceOf(Map.class);
     assertThat((Map<String, String>) converted)
         .containsExactly("a", "//a:a", "b", "//b:b", "c", "//c:c");
+  }
+
+  @Test
+  public void testSelectorList_concatenate_compactAndMapBackedDicts() throws Exception {
+    Dict<String, String> left;
+    Dict<String, String> right;
+    try (Mutability mu = Mutability.create("selector dictionaries")) {
+      left = Dict.of(mu, "a", "//a:a");
+      right = Dict.of(mu, "b", "//b:b");
+    }
+    Object compact = ((Compactable) right).unsafeOptimizeMemoryLayout();
+    Object leftSelect =
+        SelectorList.of(new SelectorValue(ImmutableMap.of("//conditions:default", left), ""));
+    Object rightSelect =
+        SelectorList.of(new SelectorValue(ImmutableMap.of("//conditions:default", compact), ""));
+    for (Object lhs : ImmutableList.of(left, leftSelect)) {
+      for (Object rhs : ImmutableList.of(compact, rightSelect)) {
+        for (SelectorList result :
+            ImmutableList.of(SelectorList.concat(lhs, rhs), SelectorList.concat(rhs, lhs))) {
+          Object converted =
+              BuildType.selectableConvert(
+                  Types.STRING_DICT,
+                  result,
+                  null,
+                  labelConverter,
+                  /* simplifyUnconditionalSelects= */ true);
+          assertThat((Map<?, ?>) converted).containsExactly("a", "//a:a", "b", "//b:b");
+        }
+      }
+    }
   }
 
   @Test
