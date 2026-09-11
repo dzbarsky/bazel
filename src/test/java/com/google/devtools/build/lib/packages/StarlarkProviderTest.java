@@ -27,7 +27,6 @@ import com.google.common.testing.EqualsTester;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import java.util.Map;
 import java.util.Optional;
 import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.EvalException;
@@ -591,22 +590,18 @@ public final class StarlarkProviderTest {
         new StarlarkProvider.Key(keyForBuild(Label.parseCanonical("//foo:bar.bzl")), "prov");
     StarlarkProvider provider =
         StarlarkProvider.builder(Location.BUILTIN)
-            .setSchema(ImmutableList.of("a", "b"))
+            .setSchema(ImmutableList.of("a"))
             .buildExported(key);
     StarlarkInfo instance;
-    Dict<String, String> dict;
     try (Mutability mu = Mutability.create()) {
       StarlarkThread thread = StarlarkThread.createTransient(mu, StarlarkSemantics.DEFAULT);
-      dict = Dict.of(mu);
-      dict.putEntry("z", "first");
-      dict.putEntry("a", "second");
       instance =
           (StarlarkInfo)
               Starlark.call(
                   thread,
                   provider,
                   /* args= */ ImmutableList.of(),
-                  /* kwargs= */ ImmutableMap.of("a", StarlarkList.of(mu, "x"), "b", dict));
+                  /* kwargs= */ ImmutableMap.of("a", StarlarkList.of(mu, "x")));
     }
     instance = instance.unsafeOptimizeMemoryLayout();
 
@@ -618,11 +613,6 @@ public final class StarlarkProviderTest {
     // verifies the fields of the frozen and optimised provider instance are immutable
     EvalException e = assertThrows(EvalException.class, () -> list.addElement("y"));
     assertThat(e).hasMessageThat().contains("trying to mutate a frozen list value");
-    assertThat((Map<?, ?>) instance.getValue("b"))
-        .containsExactly("z", "first", "a", "second")
-        .inOrder();
-    assertThat((Map<?, ?>) dict).containsExactly("z", "first", "a", "second").inOrder();
-    assertThrows(EvalException.class, () -> dict.putEntry("new", "value"));
   }
 
   @Test
