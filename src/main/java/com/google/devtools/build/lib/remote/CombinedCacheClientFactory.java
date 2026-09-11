@@ -127,7 +127,8 @@ public final class CombinedCacheClientFactory {
       boolean checkActionResultIntegrity)
       throws IOException {
     Path cacheDir = workingDirectory.getRelative(Preconditions.checkNotNull(options.diskCache));
-    return new DiskCacheClient(cacheDir, digestUtil, checkActionResultIntegrity);
+    return new DiskCacheClient(
+        cacheDir, digestUtil, checkActionResultIntegrity, options.diskCacheAsync);
   }
 
   public static boolean isDiskCache(RemoteOptions options) {

@@ -48,6 +48,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.UUID;
 import java.util.concurrent.Executors;
+import javax.annotation.Nullable;
 
 /**
  * An on-disk store for the remote action cache.
@@ -73,6 +74,7 @@ public class DiskCacheClient {
   private final ImmutableMap<Store, Path> storeRootMap;
   private final Path tmpRoot;
   private final boolean checkActionResultIntegrity;
+  @Nullable private final AsyncDiskCacheWriter asyncWriter;
 
   // Disk cache operations are almost entirely I/O-bound as digests are only computed as part of
   // I/O operations, so using virtual threads is appropriate.
@@ -89,6 +91,12 @@ public class DiskCacheClient {
    */
   public DiskCacheClient(Path root, DigestUtil digestUtil, boolean checkActionResultIntegrity)
       throws IOException {
+    this(root, digestUtil, checkActionResultIntegrity, /* async= */ false);
+  }
+
+  public DiskCacheClient(
+      Path root, DigestUtil digestUtil, boolean checkActionResultIntegrity, boolean async)
+      throws IOException {
     this.checkActionResultIntegrity = checkActionResultIntegrity;
     Path fnRoot =
         isOldStyleDigestFunction(digestUtil.getDigestFunction())
@@ -102,6 +110,12 @@ public class DiskCacheClient {
 
     fnRoot.createDirectoryAndParents();
     tmpRoot.createDirectoryAndParents();
+    asyncWriter = async ? new AsyncDiskCacheWriter(this, root.getPathString()) : null;
+  }
+
+  @Nullable
+  public AsyncDiskCacheWriter getAsyncWriter() {
+    return asyncWriter;
   }
 
   /**
@@ -334,6 +348,9 @@ public class DiskCacheClient {
   }
 
   public void close() {
+    if (asyncWriter != null) {
+      asyncWriter.close();
+    }
     executorService.close();
   }
 

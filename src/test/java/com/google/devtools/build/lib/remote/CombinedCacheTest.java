@@ -66,8 +66,11 @@ import com.google.devtools.build.lib.remote.common.BulkTransferException;
 import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
+import com.google.devtools.build.lib.remote.common.RemoteCacheClient.ActionKey;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.Blob;
 import com.google.devtools.build.lib.remote.common.RemotePathResolver;
+import com.google.devtools.build.lib.remote.disk.AsyncDiskCacheWriter;
+import com.google.devtools.build.lib.remote.disk.DiskCacheClient;
 import com.google.devtools.build.lib.remote.merkletree.MerkleTree;
 import com.google.devtools.build.lib.remote.merkletree.MerkleTreeComputer;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
@@ -91,6 +94,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Message;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Deque;
@@ -1143,6 +1147,160 @@ public class CombinedCacheTest {
         /* symlinkTemplate= */ null,
         digestUtil,
         /* chunkingFunction= */ null);
+  }
+
+  @Test
+  public void asyncDiskCacheKeepsLargeActionResultsOnTheSynchronousPath() throws Exception {
+    var actionKey = digestUtil.asActionKey(digestUtil.computeAsUtf8("action"));
+    var actionResult =
+        ActionResult.newBuilder()
+            .setStdoutRaw(ByteString.copyFrom(new byte[AsyncDiskCacheWriter.MAX_BLOB_SIZE + 1]))
+            .build();
+    var started = new CountDownLatch(1);
+    var upload = SettableFuture.<Void>create();
+    var disk =
+        new DiskCacheClient(fs.getPath("/cache"), digestUtil, true, true) {
+          @Override
+          public ListenableFuture<Void> uploadActionResult(ActionKey key, ActionResult result) {
+            assertThat(key).isEqualTo(actionKey);
+            assertThat(result).isEqualTo(actionResult);
+            started.countDown();
+            return upload;
+          }
+        };
+    RemoteCacheClient remote = mock(RemoteCacheClient.class);
+    doAnswer(call -> immediateFuture(actionResult))
+        .when(remote)
+        .downloadActionResult(any(), eq(actionKey), eq(false), any());
+    var cache = new CombinedCache(remote, disk, null, digestUtil, null);
+    try {
+      var result =
+          cache.downloadActionResultAsync(
+              remoteActionExecutionContext, actionKey, false, ImmutableSet.of());
+      assertThat(started.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+      assertThat(result.isDone()).isFalse();
+      upload.set(null);
+      assertThat(result.get(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS).actionResult())
+          .isEqualTo(actionResult);
+    } finally {
+      upload.set(null);
+      cache.release();
+    }
+  }
+
+  @Test
+  public void asyncDiskCacheDeliversOutputAndClosesBeforePersistenceFinishes() throws Exception {
+    byte[] data = "downloaded content".getBytes(UTF_8);
+    Digest digest = digestUtil.compute(data);
+    var writing = new CountDownLatch(1);
+    var allowWrite = new CountDownLatch(1);
+    var written = new CountDownLatch(1);
+    var disk =
+        new DiskCacheClient(fs.getPath("/cache"), digestUtil, true, true) {
+          @Override
+          public void saveFile(Digest key, Store store, InputStream in) throws IOException {
+            writing.countDown();
+            try {
+              if (!allowWrite.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                throw new IOException("Timed out waiting to release test cache write");
+              }
+              super.saveFile(key, store, in);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+              throw new IOException(e);
+            } finally {
+              written.countDown();
+            }
+          }
+        };
+    RemoteCacheClient remote = mock(RemoteCacheClient.class);
+    doAnswer(
+            call -> {
+              ((OutputStream) call.getArgument(2)).write(data);
+              return immediateFuture(null);
+            })
+        .when(remote)
+        .downloadBlob(any(), eq(digest), any());
+    CombinedCache cache = new CombinedCache(remote, disk, null, digestUtil, null);
+    var out = new ByteArrayOutputStream();
+    try {
+      cache
+          .downloadBlob(remoteActionExecutionContext, digest, out)
+          .get(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      assertThat(writing.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+      assertThat(out.toByteArray()).isEqualTo(data);
+      assertThat(disk.toPath(digest, Store.CAS).exists()).isFalse();
+      // Closing must not join the blocked persistence task.
+      cache.release();
+      out.reset();
+      allowWrite.countDown();
+      assertThat(written.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+      assertThat(FileSystemUtils.readContent(disk.toPath(digest, Store.CAS))).isEqualTo(data);
+    } finally {
+      allowWrite.countDown();
+      if (cache.refCnt() > 0) {
+        cache.release();
+      }
+    }
+  }
+
+  @Test
+  public void asyncDiskCacheCancellationRejectsLateDownloadWrites() throws Exception {
+    Digest digest = digestUtil.compute("data".getBytes(UTF_8));
+    var network = SettableFuture.<Void>create();
+    var started = new CountDownLatch(1);
+    var buffer = new AtomicReference<OutputStream>();
+    RemoteCacheClient remote = mock(RemoteCacheClient.class);
+    doAnswer(
+            call -> {
+              buffer.set(call.getArgument(2));
+              started.countDown();
+              return network;
+            })
+        .when(remote)
+        .downloadBlob(any(), eq(digest), any());
+    var disk = new DiskCacheClient(fs.getPath("/cache"), digestUtil, true, true);
+    var cache = new CombinedCache(remote, disk, null, digestUtil, null);
+    try {
+      var result =
+          cache.downloadBlob(remoteActionExecutionContext, digest, new ByteArrayOutputStream());
+      assertThat(started.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+      assertThat(result.cancel(true)).isTrue();
+      // The disk-lookup worker may still be installing its remote-fallback future when the
+      // caller cancels. Joining foreground work lets that cancellation finish propagating.
+      cache.release();
+      assertThat(network.isCancelled()).isTrue();
+      assertThrows(IOException.class, () -> buffer.get().write("data".getBytes(UTF_8)));
+      assertThat(disk.toPath(digest, Store.CAS).exists()).isFalse();
+    } finally {
+      if (cache.refCnt() > 0) {
+        cache.release();
+      }
+    }
+  }
+
+  @Test
+  public void asyncDiskCacheDoesNotHideDownloadFailure() throws Exception {
+    Digest digest = digestUtil.compute("data".getBytes(UTF_8));
+    RemoteCacheClient remote = mock(RemoteCacheClient.class);
+    doAnswer(call -> Futures.immediateFailedFuture(new IOException("network failed")))
+        .when(remote)
+        .downloadBlob(any(), eq(digest), any());
+    var disk = new DiskCacheClient(fs.getPath("/cache"), digestUtil, true, true);
+    var cache = new CombinedCache(remote, disk, null, digestUtil, null);
+    try {
+      IOException error =
+          assertThrows(
+              IOException.class,
+              () ->
+                  getFromFuture(
+                      cache.downloadBlob(
+                          remoteActionExecutionContext, digest, new ByteArrayOutputStream())));
+      assertThat(error).hasMessageThat().contains("network failed");
+      assertThat(disk.toPath(digest, Store.CAS).exists()).isFalse();
+    } finally {
+      cache.release();
+    }
   }
 
   private RemoteExecutionCache newRemoteExecutionCache(RemoteCacheClient remoteCacheClient) {
