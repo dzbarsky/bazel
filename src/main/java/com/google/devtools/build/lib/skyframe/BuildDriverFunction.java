@@ -21,12 +21,14 @@ import static com.google.devtools.build.lib.skyframe.BuildDriverKey.TestType.PAR
 import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.ActionConflictException;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
@@ -54,6 +56,7 @@ import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.server.FailureDetails.Analysis;
 import com.google.devtools.build.lib.server.FailureDetails.Analysis.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.skyframe.ArtifactConflictFinder.ActionConflictsAndStats;
 import com.google.devtools.build.lib.skyframe.AspectCompletionValue.AspectCompletionKey;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.BuildDriverKey.TestType;
@@ -79,6 +82,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
@@ -95,7 +100,7 @@ public class BuildDriverFunction implements SkyFunction {
 
   @Nullable private Supplier<Boolean> shouldCheckForConflictWithTraversal;
 
-  // A set of BuildDriverKeys that have been checked for conflicts.
+  // Conflict checks, including pending checks, keyed by BuildDriverKey.
   // This gets cleared after each build.
   // We can't use SkyKeyComputeState here since it doesn't guarantee that the same state for
   // a previously requested SkyKey is retrieved. This could cause a correctness issue:
@@ -104,7 +109,8 @@ public class BuildDriverFunction implements SkyFunction {
   // - If the SkyKeyComputeState for this BuildDriverKey was cleared, an evaluation of this key
   //   would attempt again to check for conflicts => we redo the work, or a race condition with the
   //   shutting down of the Executors could lead to a RejectedExecutionException.
-  private Set<BuildDriverKey> checkedForConflicts = Sets.newConcurrentHashSet();
+  private Map<BuildDriverKey, ListenableFuture<ActionConflictsAndStats>> conflictChecks =
+      Maps.newConcurrentMap();
 
   // Events coming from Skyframe may contain duplicates (because of resets). It would be better to
   // de-duplicate at the source to avoid repeated work by each subscriber.
@@ -195,12 +201,14 @@ public class BuildDriverFunction implements SkyFunction {
     }
 
     // We only check for action conflict once per BuildDriverKey.
-    if (Preconditions.checkNotNull(shouldCheckForConflictWithTraversal).get()
-        && checkedForConflicts.add(buildDriverKey)) {
+    if (Preconditions.checkNotNull(shouldCheckForConflictWithTraversal).get()) {
       try (SilentCloseable c =
           Profiler.instance().profile("BuildDriverFunction.checkActionConflicts")) {
         ImmutableMap<ActionAnalysisMetadata, ActionConflictException> actionConflicts =
-            checkActionConflicts(actionLookupKey);
+            checkActionConflicts(buildDriverKey, env);
+        if (actionConflicts == null) {
+          return null;
+        }
         if (!actionConflicts.isEmpty()) {
           // The analysis technically succeeded, even though the target/aspect can't be executed.
           signalAnalysisConclusionIfKeepGoing(
@@ -491,12 +499,12 @@ public class BuildDriverFunction implements SkyFunction {
   }
 
   public void resetStates() {
-    checkedForConflicts = Sets.newConcurrentHashSet();
+    conflictChecks = Maps.newConcurrentMap();
     keyToPostedEvents = Maps.newConcurrentMap();
   }
 
   private void removeStatesForKey(BuildDriverKey key) {
-    checkedForConflicts.remove(key);
+    conflictChecks.remove(key);
     keyToPostedEvents.remove(key);
   }
 
@@ -659,14 +667,35 @@ public class BuildDriverFunction implements SkyFunction {
   }
 
   @VisibleForTesting
+  @Nullable
   ImmutableMap<ActionAnalysisMetadata, ActionConflictException> checkActionConflicts(
-      ActionLookupKey actionLookupKey) throws InterruptedException {
-    IncrementalArtifactConflictFinder localRef = incrementalArtifactConflictFinder.get();
-    // a null value means that the conflict checker is shut down.
-    if (localRef == null) {
-      return ImmutableMap.of();
+      BuildDriverKey key, Environment env) throws InterruptedException {
+    ListenableFuture<ActionConflictsAndStats> check =
+        conflictChecks.computeIfAbsent(
+            key,
+            unused -> {
+              IncrementalArtifactConflictFinder finder = incrementalArtifactConflictFinder.get();
+              // A null value means that analysis finished and the conflict checker was shut down.
+              return finder == null
+                  ? Futures.immediateFuture(ActionConflictsAndStats.create(ImmutableMap.of(), 0))
+                  : finder.findArtifactConflictsAsync(key.getActionLookupKey());
+            });
+    // The finder owns cancellation; a Skyframe restart must not cancel a shared pending check.
+    env.dependOnFuture(Futures.nonCancellationPropagating(check));
+    if (env.valuesMissing()) {
+      return null;
     }
-    return localRef.findArtifactConflicts(actionLookupKey).conflicts();
+    try {
+      return Futures.getDone(check).conflicts();
+    } catch (CancellationException e) {
+      throw new InterruptedException("Artifact conflict checking was cancelled");
+    } catch (ExecutionException e) {
+      if (e.getCause() instanceof InterruptedException interrupted) {
+        throw interrupted;
+      }
+      Throwables.throwIfUnchecked(e.getCause());
+      throw new IllegalStateException("Unexpected conflict checking failure", e.getCause());
+    }
   }
 
   private void addExtraActionsIfRequested(

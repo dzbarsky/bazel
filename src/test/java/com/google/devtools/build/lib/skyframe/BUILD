@@ -8,6 +8,40 @@ package(
 
 test_suite(name = "SkyframeTests")
 
+java_test(
+    name = "BuildDriverFunctionTest",
+    srcs = ["BuildDriverFunctionTest.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/actions",
+        "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_key",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:artifact_conflict_finder",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:build_driver_function",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:build_driver_key",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:incremental_artifact_conflict_finder",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//third_party:guava",
+        "//third_party:junit4",
+        "//third_party:mockito",
+        "//third_party:truth",
+    ],
+)
+
+java_test(
+    name = "IncrementalArtifactConflictFinderTest",
+    srcs = ["IncrementalArtifactConflictFinderTest.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/actions",
+        "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_key",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:artifact_conflict_finder",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:incremental_artifact_conflict_finder",
+        "//src/main/java/com/google/devtools/build/skyframe",
+        "//third_party:guava",
+        "//third_party:junit4",
+        "//third_party:mockito",
+        "//third_party:truth",
+    ],
+)
+
 filegroup(
     name = "srcs",
     testonly = 0,
