@@ -925,6 +925,7 @@ java_library(
     name = "build_driver_function",
     srcs = ["BuildDriverFunction.java"],
     deps = [
+        ":artifact_conflict_finder",
         ":aspect_completion_value",
         ":aspect_key_creator",
         ":build_driver_key",

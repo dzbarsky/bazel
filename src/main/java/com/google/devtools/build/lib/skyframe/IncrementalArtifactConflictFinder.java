@@ -35,7 +35,6 @@ import com.google.devtools.build.lib.concurrent.AbstractQueueVisitor;
 import com.google.devtools.build.lib.concurrent.AbstractQueueVisitor.ExceptionHandlingMode;
 import com.google.devtools.build.lib.concurrent.ErrorClassifier;
 import com.google.devtools.build.lib.concurrent.ExecutorUtil;
-import com.google.devtools.build.lib.concurrent.QuiescingExecutor;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
@@ -71,8 +70,11 @@ import javax.annotation.concurrent.GuardedBy;
 public final class IncrementalArtifactConflictFinder {
   private final MutableActionGraph threadSafeMutableActionGraph;
   private final ConcurrentMap<String, Object> pathFragmentTrieRoot;
-  private final QuiescingExecutor exclusivePool;
+  private final ActionLookupCollector exclusivePool;
   private final ListeningExecutorService freeForAllPool;
+  private final ListeningExecutorService conflictCheckPool;
+  private final Set<ListenableFuture<ActionConflictsAndStats>> pendingChecks =
+      Sets.newConcurrentHashSet();
   private final WalkableGraph walkableGraph;
   private final AtomicBoolean conflictFound = new AtomicBoolean(false);
   private Set<ActionLookupKey> globalVisited = Sets.newConcurrentHashSet();
@@ -89,21 +91,36 @@ public final class IncrementalArtifactConflictFinder {
     this.threadSafeMutableActionGraph = threadSafeMutableActionGraph;
     this.pathFragmentTrieRoot = new ConcurrentHashMap<>();
     this.walkableGraph = walkableGraph;
-    this.exclusivePool =
-        AbstractQueueVisitor.createWithExecutorService(
-            Executors.newFixedThreadPool(
-                NUM_JOBS, new ThreadFactoryBuilder().setNameFormat("ALV collector %d").build()),
-            ExceptionHandlingMode.KEEP_GOING,
-            ErrorClassifier.DEFAULT);
+    this.exclusivePool = new ActionLookupCollector();
     this.freeForAllPool =
         MoreExecutors.listeningDecorator(
             Executors.newFixedThreadPool(
                 NUM_JOBS,
                 new ThreadFactoryBuilder().setNameFormat("Action conflict finder %d").build()));
+    this.conflictCheckPool =
+        MoreExecutors.listeningDecorator(
+            Executors.newFixedThreadPool(
+                NUM_JOBS,
+                new ThreadFactoryBuilder().setNameFormat("Incremental conflict check %d").build()));
   }
 
   public int getOutputArtifactCount() {
     return threadSafeMutableActionGraph.getSize();
+  }
+
+  ListenableFuture<ActionConflictsAndStats> findArtifactConflictsAsync(
+      ActionLookupKey actionLookupKey) {
+    synchronized (conflictCheckPool) {
+      if (conflictCheckPool.isShutdown()) {
+        return Futures.immediateCancelledFuture();
+      }
+      // Collection and predecessor checks may block. Do not occupy Skyframe's analysis workers.
+      ListenableFuture<ActionConflictsAndStats> result =
+          conflictCheckPool.submit(() -> findArtifactConflicts(actionLookupKey));
+      pendingChecks.add(result);
+      result.addListener(() -> pendingChecks.remove(result), directExecutor());
+      return result;
+    }
   }
 
   ActionConflictsAndStats findArtifactConflicts(ActionLookupKey actionLookupKey)
@@ -300,19 +317,55 @@ public final class IncrementalArtifactConflictFinder {
   }
 
   void shutdown() {
+    synchronized (conflictCheckPool) {
+      if (!conflictCheckPool.isShutdown()) {
+        // Stop callers before the pools they wait on. Cancel queued futures as well as running
+        // ones.
+        for (ListenableFuture<?> check : pendingChecks) {
+          check.cancel(true);
+        }
+        if (ExecutorUtil.uninterruptibleShutdownNow(conflictCheckPool)) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    }
     try {
       synchronized (exclusivePortionLock) {
-        exclusivePool.awaitQuiescence(true);
+        exclusivePool.shutdown();
       }
     } catch (InterruptedException e) {
       // Preserve the interrupt status.
       Thread.currentThread().interrupt();
     }
     synchronized (freeForAllPool) {
-      if (!freeForAllPool.isShutdown() && ExecutorUtil.interruptibleShutdown(freeForAllPool)) {
+      if (!freeForAllPool.isShutdown() && ExecutorUtil.uninterruptibleShutdownNow(freeForAllPool)) {
         // Preserve the interrupt status.
         Thread.currentThread().interrupt();
       }
+    }
+  }
+
+  private static final class ActionLookupCollector extends AbstractQueueVisitor {
+    private volatile boolean shuttingDown;
+
+    ActionLookupCollector() {
+      super(
+          Executors.newFixedThreadPool(
+              NUM_JOBS, new ThreadFactoryBuilder().setNameFormat("ALV collector %d").build()),
+          ExecutorOwnership.PRIVATE,
+          ExceptionHandlingMode.KEEP_GOING,
+          ErrorClassifier.DEFAULT);
+    }
+
+    void shutdown() throws InterruptedException {
+      // Cancelled callers no longer wait for collection, but its workers must still be stopped.
+      shuttingDown = true;
+      awaitTermination(/* interruptWorkers= */ true);
+    }
+
+    @Override
+    protected boolean blockNewActions() {
+      return shuttingDown || super.blockNewActions();
     }
   }
 
