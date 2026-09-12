@@ -47,6 +47,7 @@ class RemoteRepoContentsCacheTest(
         [
             'def _repo_impl(rctx):',
             '  rctx.file("BUILD", "filegroup(name=\'haha\')")',
+            '  rctx.file("._.", "cached contents")',
             '  print("JUST FETCHED")',
             '  return rctx.repo_metadata(reproducible=True)',
             'repo = repository_rule(_repo_impl)',
