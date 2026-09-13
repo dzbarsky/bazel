@@ -166,7 +166,8 @@ jobs:
             //src/test/java/com/google/devtools/build/lib/remote:RemoteTests
           run_bazel test --build_event_json_file=fallback-tests.bep.json --nocache_test_results --test_output=errors --local_test_jobs=1 \
             --test_sharding_strategy=disabled \
-            --test_filter='test_local_fallback_exec_unavailable*' \
+            --test_filter='test_ipv6_default_route_detection:test_local_fallback_exec_unavailable*' \
+            //src/test/shell/bazel:bazel_test_test \
             //src/test/shell/bazel/remote:remote_execution_test
 
       - name: Upload regression results

@@ -21,6 +21,42 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${CURRENT_DIR}/../integration_test_setup.sh" \
   || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
+function test_ipv6_default_route_detection() {
+  (
+    function is_darwin() { return 0; }
+    local routes=''
+    function netstat() { printf '%s\n' "${routes}"; }
+
+    if has_ipv6_default_route; then
+      fail "An empty route table must not enable IPv6 preference"
+    fi
+
+    # macOS can list tunnel-scoped defaults without a route for unbound sockets.
+    routes='default fe80::%utun0 UGcIg utun0
+default fe80::%utun1 UGcIg utun1
+default fe80::%utun2 UGcIg utun2
+default fe80::%utun3 UGcIg utun3'
+    if has_ipv6_default_route; then
+      fail "Interface-scoped defaults must not enable IPv6 preference"
+    fi
+
+    routes+='
+default fe80::1%en0 UGcg en0'
+    has_ipv6_default_route || fail "An unscoped default must retain IPv6 preference"
+
+    function is_darwin() { return 1; }
+    if has_ipv6_default_route; then
+      fail "Other platforms must not enable the macOS IPv6 preference"
+    fi
+
+    function is_darwin() { return 0; }
+    function netstat() { return 1; }
+    if has_ipv6_default_route; then
+      fail "A failed route lookup must not enable IPv6 preference"
+    fi
+  )
+}
+
 function set_up_jobcount() {
   tmp=$(mktemp -d ${TEST_TMPDIR}/testjobs.XXXXXXXX)
 
