@@ -514,10 +514,10 @@ UNNECESSARY_DYNAMIC_LIBRARIES = select({
     "//src/conditions:windows": "*.so *.jnilib",
     "//src/conditions:darwin": "*.so *.dll *.pyd",
     "//src/conditions:linux_x86_64": "*.jnilib *.dll *.pyd",
+    "//src/conditions:linux_aarch64": "*.jnilib *.dll *.pyd",
     "//src/conditions:linux_s390x": "*.jnilib *.dll *.pyd",
-    # The .so file is an x86/s390x one, so we can just remove it if the CPU is not x86/s390x
+    # Remove native libraries on platforms without a matching native artifact.
     "//src/conditions:arm": "*.so *.jnilib *.dll *.pyd",
-    "//src/conditions:linux_aarch64": "*.so *.jnilib *.dll *.pyd",
     "//src/conditions:linux_ppc": "*.so *.jnilib *.dll *.pyd",
     "//src/conditions:freebsd": "*.so *.jnilib *.dll *.pyd",
     "//src/conditions:openbsd": "*.so *.jnilib *.dll *.pyd",

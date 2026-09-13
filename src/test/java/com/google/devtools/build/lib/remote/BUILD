@@ -217,6 +217,8 @@ java_test(
         "-Djava.lang.Thread.allowVirtualThreads=true",
         # Required for compatibility with records.
         "-Djol.magicFieldOffset=true",
+        # Avoid an out-of-process Serviceability Agent attach from sandboxed tests.
+        "-Djol.skipHotspotSAAttach=true",
         # Match the Bazel startup flags.
         "-XX:+UseCompactObjectHeaders",
     ],
