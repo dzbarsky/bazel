@@ -126,7 +126,7 @@ public interface SpawnRunner {
    * instance is only used within a single thread. Different instances of the same class may be used
    * by different threads, so they MUST not call any shared non-thread-safe objects.
    */
-  interface SpawnExecutionContext {
+  interface SpawnExecutionContext extends ActionContext.ActionContextRegistry {
     /**
      * Returns an id for this spawn, unique within the context of this Bazel server instance, to be
      * used for logging. Note that a single spawn may be passed to multiple {@link SpawnRunner}
@@ -254,6 +254,7 @@ public interface SpawnRunner {
      * Returns the context registered for the given identifying type or {@code null} if none was
      * registered.
      */
+    @Override
     @Nullable
     <T extends ActionContext> T getContext(Class<T> identifyingType);
 

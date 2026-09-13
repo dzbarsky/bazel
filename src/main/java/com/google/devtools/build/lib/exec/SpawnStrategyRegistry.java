@@ -174,14 +174,27 @@ public final class SpawnStrategyRegistry
 
   @Nullable
   @Override
-  public AbstractSpawnStrategy getRemoteLocalFallbackStrategy(Spawn spawn) {
-    var strategies =
-        strategyPlatformFilter.getStrategies(
-            spawn, Lists.newArrayList(remoteLocalFallbackStrategy));
-    if (strategies.isEmpty()) {
+  public AbstractSpawnStrategy getRemoteLocalFallbackStrategy(
+      Spawn spawn, SpawnRunner remoteRunner, ActionContext.ActionContextRegistry context) {
+    if (remoteLocalFallbackStrategy == null) {
       return null;
     }
-    return strategies.getFirst();
+    List<SpawnStrategy> strategies = new ArrayList<>();
+    strategies.addAll(
+        strategyPlatformFilter.getStrategies(
+            spawn, Lists.newArrayList(remoteLocalFallbackStrategy)));
+    // Preserve the configured fallback when compatible, then honor the action's normal strategy
+    // order and restrictions. In particular, path mapping and no-sandbox require different runners.
+    strategies.addAll(getStrategies(spawn, /* reporter= */ null));
+    for (SpawnStrategy strategy : strategies) {
+      if (strategy instanceof AbstractSpawnStrategy abstractStrategy) {
+        SpawnRunner runner = abstractStrategy.getSpawnRunner();
+        if (runner != remoteRunner && strategy.canExec(spawn, context)) {
+          return abstractStrategy;
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -439,9 +452,10 @@ public final class SpawnStrategyRegistry
      * local execution.
      *
      * <p>Note that this is an optional setting, if not provided {@link
-     * SpawnStrategyRegistry#getRemoteLocalFallbackStrategy()} will return {@code null}. If the
-     * value <b>is</b> provided it must match the commandline identifier of a registered strategy
-     * (at {@linkplain #build build} time).
+     * SpawnStrategyRegistry#getRemoteLocalFallbackStrategy(Spawn, SpawnRunner,
+     * ActionContext.ActionContextRegistry)} will return {@code null}. If the value <b>is</b>
+     * provided it must match the commandline identifier of a registered strategy (at {@linkplain
+     * #build build} time).
      */
     @CanIgnoreReturnValue
     public Builder setRemoteLocalFallbackStrategyIdentifier(String commandlineIdentifier) {
@@ -652,7 +666,8 @@ public final class SpawnStrategyRegistry
      *     list vary depending on the context but are always the result of an initial strategy
      *     selection pass. e.g. {@link SpawnStrategyRegistry#getStrategies(Spawn, EventHandler)},
      *     {@link SpawnStrategyRegistry#getDynamicSpawnActionContexts(Spawn, DynamicMode)} and
-     *     {@link SpawnStrategyRegistry#getRemoteLocalFallbackStrategy(Spawn)}.
+     *     {@link SpawnStrategyRegistry#getRemoteLocalFallbackStrategy(Spawn, SpawnRunner,
+     *     ActionContext.ActionContextRegistry)}.
      * @return A subset of {@code candidateStrategies} that are allowed by the spawn's execution
      *     platform or all if no restrictions are in place. Order from {@code candidateStrategies}
      *     is preserved.

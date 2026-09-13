@@ -52,6 +52,7 @@ function set_up() {
 
 function tear_down() {
   bazel clean >& $TEST_log
+  stop_unavailable_executor
   stop_worker
 }
 
@@ -603,6 +604,149 @@ EOF
 
   mv gen1.log $TEST_log
   expect_log "2 processes: 1 internal, 1 local"
+}
+
+# The normal worker remains a healthy cache so the failure reaches Execute,
+# rather than failing while uploading action inputs.
+function start_unavailable_executor() {
+  local TEST_TMPDIR="${TEST_TMPDIR}/unavailable-executor"
+  local TEST_log="${TEST_UNDECLARED_OUTPUTS_DIR}/${TEST_name}.worker.log"
+  local work_path cas_path pid_file worker_port
+  mkdir -p "${TEST_TMPDIR}"
+  start_worker --unavailable
+  unavailable_executor_port="${worker_port}"
+  unavailable_executor_log="${TEST_log}"
+}
+
+function stop_unavailable_executor() {
+  local TEST_TMPDIR="${TEST_TMPDIR}/unavailable-executor"
+  local work_path cas_path pid_file
+  stop_worker
+}
+
+function expect_execute_unavailable() {
+  assert_equals "$1" "$(grep -c \
+      'Returning UNAVAILABLE for build.bazel.remote.execution.v2.Execution/Execute' \
+      "${unavailable_executor_log}")"
+}
+
+function setup_fallback_probe() {
+  mkdir -p fallback
+  cat > fallback/probe.bzl <<'EOF'
+def _tool_impl(ctx):
+    tool = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(tool, "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$(pwd -P)\" > \"$1\"\n", is_executable = True)
+    return [DefaultInfo(executable = tool)]
+
+probe_tool = rule(implementation = _tool_impl, executable = True)
+
+def _probe_impl(ctx):
+    output = ctx.actions.declare_file(ctx.label.name + ".txt")
+    args = ctx.actions.args()
+    args.add(output)
+    ctx.actions.run(
+        executable = ctx.executable.tool,
+        arguments = [args],
+        outputs = [output],
+        mnemonic = "FallbackProbe",
+        execution_requirements = {"no-sandbox": "1"} if ctx.attr.no_sandbox else {"supports-path-mapping": "1"},
+    )
+    return [DefaultInfo(files = depset([output]))]
+
+fallback_probe = rule(
+    implementation = _probe_impl,
+    attrs = {
+        "tool": attr.label(executable = True, cfg = "exec", mandatory = True),
+        "no_sandbox": attr.bool(),
+    },
+)
+EOF
+  cat > fallback/BUILD <<'EOF'
+load(":probe.bzl", "fallback_probe", "probe_tool")
+platform(name = "local")
+probe_tool(name = "tool")
+fallback_probe(name = "mapped", tool = ":tool")
+fallback_probe(name = "plain", tool = ":tool", no_sandbox = True)
+EOF
+  fallback_flags=(
+    --experimental_output_paths=strip
+    --host_platform=//fallback:local
+    --platforms=//fallback:local
+    --spawn_strategy=remote,processwrapper-sandbox,local
+    --jobs=1
+    --remote_retries=0
+    --remote_timeout=5s
+    --noremote_upload_local_results
+  )
+}
+
+function test_local_fallback_exec_unavailable_with_path_mapping() {
+  setup_fallback_probe
+  bazel build "${fallback_flags[@]}" //fallback:mapped >& "$TEST_log" \
+      || fail "Mapped tool must run with normal local strategy selection"
+  assert_equals "bazel-out/cfg/bin/fallback/tool.sh" \
+      "$(head -n 1 bazel-bin/fallback/mapped.txt)"
+  bazel clean >& "$TEST_log"
+  start_unavailable_executor
+
+  bazel build "${fallback_flags[@]}" \
+      --remote_executor="grpc://127.0.0.1:${unavailable_executor_port}" \
+      --remote_cache="grpc://127.0.0.1:${worker_port}" \
+      --remote_local_fallback \
+      --remote_grpc_log="${TEST_UNDECLARED_OUTPUTS_DIR}/${TEST_name}.grpc" \
+      //fallback:mapped >& "$TEST_log" \
+      || fail "Mapped tool must run after Execute returns UNAVAILABLE"
+  expect_execute_unavailable 1
+  assert_equals "bazel-out/cfg/bin/fallback/tool.sh" \
+      "$(head -n 1 bazel-bin/fallback/mapped.txt)"
+}
+
+function test_local_fallback_exec_unavailable_without_sandbox() {
+  setup_fallback_probe
+  bazel build "${fallback_flags[@]}" //fallback:plain >& "$TEST_log" \
+      || fail "no-sandbox tool must run with normal local strategy selection"
+  local execution_root
+  execution_root="$(cd "$(bazel info execution_root)" && pwd -P)"
+  assert_equals "${execution_root}" "$(tail -n 1 bazel-bin/fallback/plain.txt)"
+  start_unavailable_executor
+
+  local strategy count=0
+  for strategy in default processwrapper-sandbox; do
+    local strategy_flags=("${fallback_flags[@]}")
+    if [[ "${strategy}" == processwrapper-sandbox ]]; then
+      strategy_flags+=(--remote_local_fallback_strategy=processwrapper-sandbox)
+    fi
+    bazel clean >& "$TEST_log"
+    bazel build "${strategy_flags[@]}" \
+        --remote_executor="grpc://127.0.0.1:${unavailable_executor_port}" \
+        --remote_cache="grpc://127.0.0.1:${worker_port}" \
+        --remote_local_fallback \
+        --remote_grpc_log="${TEST_UNDECLARED_OUTPUTS_DIR}/${TEST_name}.${strategy}.grpc" \
+        //fallback:plain >& "$TEST_log" \
+        || fail "no-sandbox must be respected with preferred ${strategy} fallback"
+    count=$((count + 1))
+    expect_execute_unavailable "${count}"
+    assert_equals "${execution_root}" "$(tail -n 1 bazel-bin/fallback/plain.txt)"
+  done
+}
+
+function test_local_fallback_exec_unavailable_without_compatible_strategy() {
+  setup_fallback_probe
+  start_unavailable_executor
+  local bep="${TEST_UNDECLARED_OUTPUTS_DIR}/${TEST_name}.bep"
+  if bazel build "${fallback_flags[@]}" \
+      --remote_executor="grpc://127.0.0.1:${unavailable_executor_port}" \
+      --remote_cache="grpc://127.0.0.1:${worker_port}" \
+      --remote_local_fallback \
+      --allowed_strategies_by_exec_platform=//fallback:local=remote \
+      --build_event_text_file="${bep}" \
+      --remote_grpc_log="${TEST_UNDECLARED_OUTPUTS_DIR}/${TEST_name}.grpc" \
+      //fallback:mapped >& "$TEST_log"; then
+    fail "A remote-only platform must reject local fallback"
+  fi
+  expect_execute_unavailable 1
+  assert_contains "NO_USABLE_STRATEGY_FOUND" "${bep}"
+  [[ ! -e bazel-bin/fallback/mapped.txt ]] || fail "Tool executed without a compatible strategy"
 }
 
 function is_file_uploaded() {

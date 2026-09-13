@@ -151,10 +151,14 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
             assert 'publish' not in events, (case, events)
         print('PASS', case)
 
-    # Execute the unchanged workflow numbering code against published16 plus an
+    # Execute the workflow release-numbering code against published16 plus an
     # unrelated actiond99 release and a draft500 release.
     workflow = (root / '.github/workflows/build-and-publish-bazel.yml').read_text()
-    assert 'group: bazel-9.3-release\n  cancel-in-progress: false' in workflow
+    assert (
+        "group: ${{ github.event_name == 'pull_request' && "
+        "format('bazel-9.3-pr-{0}', github.event.pull_request.number) || "
+        "'bazel-9.3-release' }}\n  cancel-in-progress: false"
+    ) in workflow
     assert '--clobber' not in workflow
     start = workflow.index('        run: |\n') + len('        run: |\n')
     code = []
@@ -163,9 +167,20 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
         code.append(line[10:])
     output = temporary / 'github-output'
     env = dict(environment, MOCK_CASE='numbering', MOCK_STATE=str(temporary),
-               INPUT_RELEASE_TAG='', GITHUB_OUTPUT=str(output))
-    subprocess.run(['bash', '-c', '\n'.join(code)], env=env, check=True)
+               INPUT_RELEASE_TAG='', GITHUB_OUTPUT=str(output),
+               GITHUB_EVENT_NAME='push', SOURCE_SHA=environment['GITHUB_SHA'])
+    code = '\n'.join(code).replace('${{ github.event.pull_request.number }}', '123')
+    subprocess.run(['bash', '-c', code], env=env, check=True)
     assert output.read_text() == 'release_tag=9.3.0-dzbarsky17\n', output.read_text()
     print('PASS numbering_16_to_17')
-print('All 21 mocked publication checks passed; no network calls or GitHub mutations.')
+
+    # A PR stamp must not reserve a release number or query published releases.
+    events_before = (temporary / 'events').read_text()
+    pr_output = temporary / 'pr-output'
+    pr_env = dict(env, GITHUB_EVENT_NAME='pull_request', GITHUB_OUTPUT=str(pr_output))
+    subprocess.run(['bash', '-c', code], env=pr_env, check=True)
+    assert pr_output.read_text() == 'release_tag=9.3.0-pr123g111111111111\n'
+    assert (temporary / 'events').read_text() == events_before
+    print('PASS pull_request_stamp_without_release_lookup')
+print('All 22 mocked publication checks passed; no network calls or GitHub mutations.')
 PY

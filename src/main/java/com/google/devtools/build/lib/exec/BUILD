@@ -178,6 +178,7 @@ java_library(
     srcs = ["RemoteLocalFallbackRegistry.java"],
     deps = [
         ":abstract_spawn_strategy",
+        ":spawn_runner",
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//third_party:jsr305",
     ],
@@ -357,6 +358,7 @@ java_library(
     deps = [
         ":abstract_spawn_strategy",
         ":remote_local_fallback_registry",
+        ":spawn_runner",
         ":spawn_strategy_policy",
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/cmdline",

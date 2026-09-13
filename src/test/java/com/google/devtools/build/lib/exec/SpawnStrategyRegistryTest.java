@@ -15,6 +15,10 @@ package com.google.devtools.build.lib.exec;
 
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -28,6 +32,7 @@ import com.google.devtools.build.lib.actions.SimpleSpawn;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnStrategy;
+import com.google.devtools.build.lib.actions.Spawns;
 import com.google.devtools.build.lib.analysis.platform.PlatformInfo;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
@@ -51,6 +56,10 @@ public class SpawnStrategyRegistryTest {
       new RegexFilter(ImmutableList.of("ello"), ImmutableList.of());
   private static final RegexFilter LLO_MATCHER =
       new RegexFilter(ImmutableList.of("llo"), ImmutableList.of());
+
+  private final SpawnRunner remoteRunner = mock(SpawnRunner.class);
+  private final ActionContext.ActionContextRegistry context =
+      mock(ActionContext.ActionContextRegistry.class);
 
   private static void noopEventHandler(Event event) {}
 
@@ -574,13 +583,165 @@ public class SpawnStrategyRegistryTest {
         SpawnStrategyRegistry.builder()
             .registerStrategy(strategy1, "foo")
             .registerStrategy(strategy2, "bar")
+            .setDefaultStrategies(ImmutableList.of("foo"))
             .setRemoteLocalFallbackStrategyIdentifier("bar")
             .build();
 
     assertThat(
             strategyRegistry.getRemoteLocalFallbackStrategy(
-                createSpawnWithMnemonicAndDescription("", "")))
+                createSpawnWithMnemonicAndDescription("", ""), remoteRunner, context))
         .isEqualTo(strategy2);
+  }
+
+  @Test
+  public void remoteFallbackSkipsIncompatibleRunnersInConfiguredOrder() throws Exception {
+    Spawn spawn = createSpawnWithMnemonicAndDescription("", "");
+    NoopAbstractStrategy local = new NoopAbstractStrategy("local");
+    NoopAbstractStrategy worker = new NoopAbstractStrategy("worker");
+    NoopAbstractStrategy sandbox = new NoopAbstractStrategy("sandbox");
+    when(local.getSpawnRunner().canExec(spawn)).thenReturn(false);
+    when(worker.getSpawnRunner().canExec(spawn)).thenReturn(false);
+    SpawnStrategyRegistry registry =
+        SpawnStrategyRegistry.builder()
+            .registerStrategy(local, "local")
+            .registerStrategy(worker, "worker")
+            .registerStrategy(sandbox, "sandbox")
+            .setDefaultStrategies(ImmutableList.of("worker", "sandbox", "local"))
+            .setRemoteLocalFallbackStrategyIdentifier("local")
+            .build();
+
+    assertThat(registry.getRemoteLocalFallbackStrategy(spawn, remoteRunner, context))
+        .isSameInstanceAs(sandbox);
+  }
+
+  @Test
+  public void remoteFallbackHonorsNoSandboxRequirement() throws Exception {
+    Spawn spawn =
+        new SimpleSpawn(
+            new FakeOwner("", "", "//dummy:label"),
+            ImmutableList.of(),
+            ImmutableMap.of(),
+            ImmutableMap.of("no-sandbox", "1"),
+            NestedSetBuilder.emptySet(Order.STABLE_ORDER),
+            ImmutableSet.of(),
+            ResourceSet.ZERO);
+    NoopAbstractStrategy sandbox = new NoopAbstractStrategy("sandbox");
+    NoopAbstractStrategy local = new NoopAbstractStrategy("local");
+    when(sandbox.getSpawnRunner().canExec(spawn)).thenReturn(Spawns.mayBeSandboxed(spawn));
+    SpawnStrategyRegistry registry =
+        SpawnStrategyRegistry.builder()
+            .registerStrategy(sandbox, "sandbox")
+            .registerStrategy(local, "local")
+            .setDefaultStrategies(ImmutableList.of("sandbox", "local"))
+            .setRemoteLocalFallbackStrategyIdentifier("sandbox")
+            .build();
+
+    assertThat(registry.getRemoteLocalFallbackStrategy(spawn, remoteRunner, context))
+        .isSameInstanceAs(local);
+  }
+
+  @Test
+  public void remoteFallbackHonorsStrategyEligibilityWithContext() throws Exception {
+    Spawn spawn = createSpawnWithMnemonicAndDescription("", "");
+    NoopAbstractStrategy local = new NoopAbstractStrategy("local");
+    AbstractSpawnStrategy custom = mock(AbstractSpawnStrategy.class);
+    when(custom.getSpawnRunner()).thenReturn(local.getSpawnRunner());
+    when(custom.canExec(spawn, context)).thenReturn(false);
+    SpawnStrategyRegistry registry =
+        SpawnStrategyRegistry.builder()
+            .registerStrategy(custom, "custom")
+            .registerStrategy(local, "local")
+            .setDefaultStrategies(ImmutableList.of("local"))
+            .setRemoteLocalFallbackStrategyIdentifier("custom")
+            .build();
+
+    assertThat(registry.getRemoteLocalFallbackStrategy(spawn, remoteRunner, context))
+        .isSameInstanceAs(local);
+    verify(custom).canExec(spawn, context);
+  }
+
+  @Test
+  public void remoteFallbackSkipsRemoteRunnerAliases() throws Exception {
+    Spawn spawn = createSpawnWithMnemonicAndDescription("", "");
+    NoopAbstractStrategy remote = new NoopAbstractStrategy("remote", remoteRunner);
+    NoopAbstractStrategy remoteAlias = new NoopAbstractStrategy("remote-alias", remoteRunner);
+    NoopAbstractStrategy local = new NoopAbstractStrategy("local");
+    when(remoteRunner.canExec(spawn)).thenReturn(true);
+    SpawnStrategyRegistry registry =
+        SpawnStrategyRegistry.builder()
+            .registerStrategy(remote, "remote")
+            .registerStrategy(remoteAlias, "remote-alias")
+            .registerStrategy(local, "local")
+            .setDefaultStrategies(ImmutableList.of("remote", "remote-alias", "local"))
+            .setRemoteLocalFallbackStrategyIdentifier("remote")
+            .build();
+
+    assertThat(registry.getRemoteLocalFallbackStrategy(spawn, remoteRunner, context))
+        .isSameInstanceAs(local);
+  }
+
+  @Test
+  public void remoteFallbackHonorsPlatformRestrictions() throws Exception {
+    Spawn spawn = createSpawnWithMnemonicAndDescription("", "");
+    NoopAbstractStrategy local = new NoopAbstractStrategy("local");
+    NoopAbstractStrategy sandbox = new NoopAbstractStrategy("sandbox");
+    SpawnStrategyRegistry.Builder builder =
+        SpawnStrategyRegistry.builder()
+            .registerStrategy(local, "local")
+            .registerStrategy(sandbox, "sandbox")
+            .setDefaultStrategies(ImmutableList.of("local", "sandbox"))
+            .setRemoteLocalFallbackStrategyIdentifier("local")
+            .addExecPlatformFilter(
+                PlatformInfo.EMPTY_PLATFORM_INFO.label(), ImmutableList.of("sandbox"));
+
+    assertThat(builder.build().getRemoteLocalFallbackStrategy(spawn, remoteRunner, context))
+        .isSameInstanceAs(sandbox);
+    when(sandbox.getSpawnRunner().canExec(spawn)).thenReturn(false);
+    assertThat(builder.build().getRemoteLocalFallbackStrategy(spawn, remoteRunner, context))
+        .isNull();
+  }
+
+  @Test
+  public void remoteFallbackHonorsMnemonicRestrictions() throws Exception {
+    Spawn spawn = createSpawnWithMnemonicAndDescription("special", "");
+    NoopAbstractStrategy local = new NoopAbstractStrategy("local");
+    NoopAbstractStrategy worker = new NoopAbstractStrategy("worker");
+    NoopAbstractStrategy sandbox = new NoopAbstractStrategy("sandbox");
+    when(local.getSpawnRunner().canExec(spawn)).thenReturn(false);
+    SpawnStrategyRegistry registry =
+        SpawnStrategyRegistry.builder()
+            .registerStrategy(local, "local")
+            .registerStrategy(worker, "worker")
+            .registerStrategy(sandbox, "sandbox")
+            .setDefaultStrategies(ImmutableList.of("sandbox", "worker", "local"))
+            .addMnemonicFilter("special", ImmutableList.of("worker"))
+            .setRemoteLocalFallbackStrategyIdentifier("local")
+            .build();
+
+    assertThat(registry.getRemoteLocalFallbackStrategy(spawn, remoteRunner, context))
+        .isSameInstanceAs(worker);
+  }
+
+  @Test
+  public void remoteFallbackHonorsRegexRestrictions() throws Exception {
+    Spawn spawn = createSpawnWithMnemonicAndDescription("special", "hello");
+    NoopAbstractStrategy local = new NoopAbstractStrategy("local");
+    NoopAbstractStrategy worker = new NoopAbstractStrategy("worker");
+    NoopAbstractStrategy sandbox = new NoopAbstractStrategy("sandbox");
+    when(local.getSpawnRunner().canExec(spawn)).thenReturn(false);
+    SpawnStrategyRegistry registry =
+        SpawnStrategyRegistry.builder()
+            .registerStrategy(local, "local")
+            .registerStrategy(worker, "worker")
+            .registerStrategy(sandbox, "sandbox")
+            .setDefaultStrategies(ImmutableList.of("local"))
+            .addMnemonicFilter("special", ImmutableList.of("worker"))
+            .addDescriptionFilter(ELLO_MATCHER, ImmutableList.of("sandbox"))
+            .setRemoteLocalFallbackStrategyIdentifier("local")
+            .build();
+
+    assertThat(registry.getRemoteLocalFallbackStrategy(spawn, remoteRunner, context))
+        .isSameInstanceAs(sandbox);
   }
 
   @Test
@@ -606,7 +767,7 @@ public class SpawnStrategyRegistryTest {
 
     assertThat(
             strategyRegistry.getRemoteLocalFallbackStrategy(
-                createSpawnWithMnemonicAndDescription("", "")))
+                createSpawnWithMnemonicAndDescription("", ""), remoteRunner, context))
         .isNull();
   }
 
@@ -759,7 +920,12 @@ public class SpawnStrategyRegistryTest {
     private int usedCalled = 0;
 
     NoopAbstractStrategy(String name) {
-      super(null, null);
+      this(name, mock(SpawnRunner.class));
+      when(getSpawnRunner().canExec(any())).thenReturn(true);
+    }
+
+    NoopAbstractStrategy(String name, SpawnRunner runner) {
+      super(runner, new ExecutionOptions());
       this.name = name;
     }
 

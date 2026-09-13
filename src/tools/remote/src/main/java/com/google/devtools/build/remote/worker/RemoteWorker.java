@@ -160,6 +160,8 @@ public final class RemoteWorker {
     public <ReqT, RespT> Listener<ReqT> interceptCall(
         ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
       if (!call.getMethodDescriptor().getServiceName().contains("Capabilities")) {
+        logger.atInfo().log(
+            "Returning UNAVAILABLE for %s", call.getMethodDescriptor().getFullMethodName());
         call.close(Status.UNAVAILABLE, new Metadata());
         return new ServerCall.Listener<ReqT>() {};
       }
