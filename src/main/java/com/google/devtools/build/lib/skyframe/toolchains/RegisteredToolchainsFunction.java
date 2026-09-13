@@ -382,7 +382,7 @@ public class RegisteredToolchainsFunction implements SkyFunction {
       PackageValue value =
           (PackageValue)
               packages.getOrThrow(label.getPackageIdentifier(), NoSuchPackageException.class);
-      return value == null ? null : value.getPackage().getTargets().get(label.getName());
+      return value == null ? null : value.getPackage().getTargetOrNull(label.getName());
     } catch (NoSuchPackageException e) {
       // Let configured target analysis report the invalid declaration with its usual context.
       return null;
