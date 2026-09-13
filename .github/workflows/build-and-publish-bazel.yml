@@ -1,237 +1,34 @@
-name: Build and publish Bazel 9.3
+name: Diagnose native Darwin BCR access
 
 on:
-  push:
+  pull_request:
     branches:
-      - codex/bazel-9.3-buildbuddy-release
       - codex/bazel-9.3-jvm-buildbuddy-release
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: Bazelisk-compatible release tag (for example, 9.3.0-dzbarsky123)
-        required: false
-        type: string
 
 permissions:
   contents: read
 
-defaults:
-  run:
-    shell: bash
-
 concurrency:
-  group: bazel-9.3-release
+  group: bazel-native-network-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
-  prepare:
-    name: Select release tag
-    runs-on: ubuntu-24.04
-    outputs:
-      release_tag: ${{ steps.release_tag.outputs.release_tag }}
+  diagnose:
+    runs-on: macos-15
+    timeout-minutes: 20
     steps:
-      - name: Check out Bazel
-        uses: actions/checkout@v4
-
-      - name: Test immutable release publication
-        run: bash .github/scripts/publish-bazel-release-test.sh
-
-      - name: Select release tag
-        id: release_tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          set -euo pipefail
-          if [[ -n "${INPUT_RELEASE_TAG}" ]]; then
-            release_tag="${INPUT_RELEASE_TAG}"
-          else
-            published_tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[] | select(.draft == false) | .tag_name')"
-            max_release_number=0
-            while IFS= read -r published_tag; do
-              if [[ "${published_tag}" =~ ^9\.3\.0-dzbarsky([0-9]+)$ ]]; then
-                release_number=$((10#${BASH_REMATCH[1]}))
-                if (( release_number > max_release_number )); then
-                  max_release_number="${release_number}"
-                fi
-              fi
-            done <<< "${published_tags}"
-            release_tag="9.3.0-dzbarsky$((max_release_number + 1))"
-          fi
-          if [[ ! "${release_tag}" =~ ^9\.3\.0-[A-Za-z0-9]+$ ]]; then
-            echo "Invalid Bazelisk release tag: ${release_tag}" >&2
-            exit 1
-          fi
-          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
-
-  build:
-    name: Build ${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
-    needs: prepare
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
-    container:
-      image: ${{ matrix.container }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            container: oraclelinux:8
-            bazelisk_os: linux
-            bazelisk_arch: amd64
-            artifact_os: linux
-            artifact_arch: x86_64
-          - runner: ubuntu-24.04-arm
-            container: oraclelinux:8
-            bazelisk_os: linux
-            bazelisk_arch: arm64
-            artifact_os: linux
-            artifact_arch: arm64
-          - runner: macos-15-intel
-            bazelisk_os: darwin
-            bazelisk_arch: amd64
-            artifact_os: darwin
-            artifact_arch: x86_64
-          - runner: macos-15
-            bazelisk_os: darwin
-            bazelisk_arch: arm64
-            artifact_os: darwin
-            artifact_arch: arm64
-    env:
-      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-    steps:
-      - name: Install Linux build tools
-        if: runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          dnf install -y \
-            curl \
-            gcc-c++ \
-            git \
-            java-21-openjdk \
-            python3 \
-            unzip \
-            which \
-            zip
-
-      - name: Check out Bazel
-        uses: actions/checkout@v4
-
-      - name: Install Bazelisk
-        env:
-          BAZELISK_OS: ${{ matrix.bazelisk_os }}
-          BAZELISK_ARCH: ${{ matrix.bazelisk_arch }}
-        run: |
-          set -euo pipefail
-          curl --fail --location --retry 3 \
-            --output bazelisk \
-            "https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-${BAZELISK_OS}-${BAZELISK_ARCH}"
-          chmod +x bazelisk
-
-      - name: Build Bazel
-        run: |
-          set -euo pipefail
-          if [[ -z "${BUILDBUDDY_API_KEY}" ]]; then
-            echo 'Missing the BUILDBUDDY_API_KEY Actions secret.' >&2
-            exit 1
-          fi
-          ./bazelisk --batch --nohome_rc --nosystem_rc build \
-            --config=buildbuddy-cache \
-            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
-            --verbose_failures \
-            --compilation_mode=opt \
-            --jobs=2 \
-            --stamp \
-            "--embed_label=${RELEASE_TAG}" \
-            //src:bazel
-
-      - name: Verify and package Bazel
-        env:
-          ARTIFACT_OS: ${{ matrix.artifact_os }}
-          ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
-        run: |
-          set -euo pipefail
-          asset_name="bazel-${RELEASE_TAG}-${ARTIFACT_OS}-${ARTIFACT_ARCH}"
-          mkdir -p artifacts
-          cp bazel-bin/src/bazel "artifacts/${asset_name}"
-          chmod +x "artifacts/${asset_name}"
-          "artifacts/${asset_name}" --batch --ignore_all_rc_files version | tee bazel-version.txt
-          grep -Fq "Build label: ${RELEASE_TAG}" bazel-version.txt
-          if command -v sha256sum > /dev/null; then
-            (cd artifacts && sha256sum "${asset_name}" > "${asset_name}.sha256")
-          else
-            (cd artifacts && shasum -a 256 "${asset_name}" > "${asset_name}.sha256")
-          fi
-
-      - name: Upload Bazel artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: bazel-${{ needs.prepare.outputs.release_tag }}-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
-          path: artifacts/*
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Diagnose native network
+        run: python3 .github/scripts/native-network/diagnose.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-network-darwin-arm64
+          path: native-network-results/**
           if-no-files-found: error
           retention-days: 7
-
-  publish:
-    name: Publish GitHub release
-    needs:
-      - prepare
-      - build
-    runs-on: ubuntu-24.04
-    permissions:
-      attestations: write
-      contents: write
-      id-token: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-    steps:
-      - name: Check out Bazel
-        uses: actions/checkout@v4
-
-      - name: Download Bazel artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: bazel-*
-          path: artifacts
-          merge-multiple: true
-
-      - name: Verify Bazel artifacts
-        run: |
-          set -euo pipefail
-          for artifact_os in linux darwin; do
-            for artifact_arch in x86_64 arm64; do
-              asset_name="bazel-${RELEASE_TAG}-${artifact_os}-${artifact_arch}"
-              test -f "artifacts/${asset_name}"
-              test -f "artifacts/${asset_name}.sha256"
-              (cd artifacts && sha256sum --check "${asset_name}.sha256")
-            done
-          done
-
-      - name: Attest Bazel artifacts
-        id: attest_bazel
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
-        with:
-          subject-path: |
-            artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-linux-x86_64
-            artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-linux-arm64
-            artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-darwin-x86_64
-            artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-darwin-arm64
-
-      - name: Write Bazel artifact attestations
-        env:
-          ATTESTATION_BUNDLE: ${{ steps.attest_bazel.outputs.bundle-path }}
-        run: |
-          set -euo pipefail
-          test -s "${ATTESTATION_BUNDLE}"
-          for artifact_os in linux darwin; do
-            for artifact_arch in x86_64 arm64; do
-              asset_name="bazel-${RELEASE_TAG}-${artifact_os}-${artifact_arch}"
-              jq --compact-output . "${ATTESTATION_BUNDLE}" \
-                > "artifacts/${asset_name}.intoto.jsonl"
-              test -s "artifacts/${asset_name}.intoto.jsonl"
-            done
-          done
-
-      - name: Publish immutable GitHub release
-        run: bash .github/scripts/publish-bazel-release.sh artifacts

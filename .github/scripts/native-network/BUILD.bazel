@@ -1,0 +1,7 @@
+load(":network_test.bzl", "network_test")
+
+network_test(
+    name = "bcr_network_test",
+    size = "large",
+    tags = ["requires-network"],
+)
