@@ -1314,6 +1314,27 @@ public class RemoteSpawnRunnerTest {
   }
 
   @Test
+  public void requireCachedCacheErrorDoesNotFallBackLocally() throws Exception {
+    remoteOptions.remoteRequireCached = true;
+    remoteOptions.remoteLocalFallback = true;
+    RemoteSpawnRunner runner = newSpawnRunner();
+    when(cache.downloadActionResult(
+            any(RemoteActionExecutionContext.class),
+            any(ActionKey.class),
+            /* inlineOutErr= */ eq(false),
+            /* inlineOutputFiles= */ eq(ImmutableSet.of())))
+        .thenThrow(new IOException("cache unavailable"));
+    Spawn spawn = newSimpleSpawn();
+
+    SpawnResult result = runner.exec(spawn, getSpawnContext(spawn));
+
+    assertThat(result.status()).isEqualTo(Status.EXECUTION_FAILED);
+    assertThat(result.getFailureMessage()).contains("cache unavailable");
+    verify(localRunner, never()).exec(any(), any());
+    verify(executor, never()).executeRemotely(any(), any(), any());
+  }
+
+  @Test
   public void testExitCode_remoteMessage() throws Exception {
     remoteOptions.remoteLocalFallback = false;
 

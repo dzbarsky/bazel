@@ -37,6 +37,7 @@ import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.exec.SpawnCache.CacheHandle;
 import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionContext;
 import com.google.devtools.build.lib.exec.util.SpawnBuilder;
+import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn.Code;
@@ -46,6 +47,7 @@ import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
+import com.google.devtools.common.options.OptionsParser;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -69,7 +71,11 @@ public class AbstractSpawnStrategyTest {
 
   private static class TestedSpawnStrategy extends AbstractSpawnStrategy {
     TestedSpawnStrategy(SpawnRunner spawnRunner) {
-      super(spawnRunner, new ExecutionOptions());
+      this(spawnRunner, new ExecutionOptions());
+    }
+
+    TestedSpawnStrategy(SpawnRunner spawnRunner, ExecutionOptions options) {
+      super(spawnRunner, options);
     }
   }
 
@@ -200,6 +206,87 @@ public class AbstractSpawnStrategyTest {
     // Must only be called exactly once.
     verify(spawnRunner).exec(any(Spawn.class), any(SpawnExecutionContext.class));
     verify(entry).store(eq(spawnResult));
+  }
+
+  private TestedSpawnStrategy cacheOnlyStrategy() {
+    ExecutionOptions options = new ExecutionOptions();
+    options.requireCached = true;
+    return new TestedSpawnStrategy(spawnRunner, options);
+  }
+
+  @Test
+  public void requireCachedImpliesRemoteCacheOnly() throws Exception {
+    OptionsParser parser =
+        OptionsParser.builder().optionsClasses(ExecutionOptions.class, RemoteOptions.class).build();
+    parser.parse("--experimental_require_cached");
+
+    assertThat(parser.getOptions(ExecutionOptions.class).requireCached).isTrue();
+    assertThat(parser.getOptions(RemoteOptions.class).remoteRequireCached).isTrue();
+  }
+
+  @Test
+  public void requireCachedAllowsCacheHit() throws Exception {
+    SpawnCache cache = mock(SpawnCache.class);
+    SpawnResult result =
+        new SpawnResult.Builder().setStatus(Status.SUCCESS).setRunnerName("cache").build();
+    when(cache.lookup(any(), any())).thenReturn(SpawnCache.success(result));
+    when(actionExecutionContext.getContext(SpawnCache.class)).thenReturn(cache);
+
+    assertThat(cacheOnlyStrategy().exec(SIMPLE_SPAWN, actionExecutionContext))
+        .containsExactly(result);
+    verify(spawnRunner, never()).exec(any(), any());
+  }
+
+  @Test
+  public void requireCachedDeniesMissAndClosesCacheHandle() throws Exception {
+    SpawnCache cache = mock(SpawnCache.class);
+    CacheHandle handle = mock(CacheHandle.class);
+    when(cache.lookup(any(), any())).thenReturn(handle);
+    when(actionExecutionContext.getContext(SpawnCache.class)).thenReturn(cache);
+    when(actionExecutionContext.getExecRoot()).thenReturn(execRoot);
+    when(spawnRunner.getName()).thenReturn("local");
+
+    SpawnExecException error =
+        assertThrows(
+            SpawnExecException.class,
+            () -> cacheOnlyStrategy().exec(SIMPLE_SPAWN, actionExecutionContext));
+
+    assertThat(error.getSpawnResult().status()).isEqualTo(Status.EXECUTION_DENIED);
+    assertThat(error.getSpawnResult().failureDetail().getSpawn().getCode())
+        .isEqualTo(Code.EXECUTION_DENIED);
+    verify(spawnRunner, never()).exec(any(), any());
+    verify(handle).hasResult();
+    verify(handle).close();
+    verifyNoMoreInteractions(handle);
+    assertThat(eventHandler.getPosts()).isEmpty();
+  }
+
+  @Test
+  public void requireCachedDeniesUncacheableSpawn() throws Exception {
+    when(actionExecutionContext.getContext(SpawnCache.class)).thenReturn(SpawnCache.NO_CACHE);
+    when(actionExecutionContext.getExecRoot()).thenReturn(execRoot);
+    when(spawnRunner.getName()).thenReturn("local");
+
+    SpawnExecException error =
+        assertThrows(
+            SpawnExecException.class,
+            () -> cacheOnlyStrategy().exec(SIMPLE_SPAWN, actionExecutionContext));
+
+    assertThat(error.getSpawnResult().status()).isEqualTo(Status.EXECUTION_DENIED);
+    verify(spawnRunner, never()).exec(any(), any());
+  }
+
+  @Test
+  public void requireCachedDelegatesToCachingRunner() throws Exception {
+    when(spawnRunner.handlesCaching()).thenReturn(true);
+    when(actionExecutionContext.getExecRoot()).thenReturn(execRoot);
+    SpawnResult result =
+        new SpawnResult.Builder().setStatus(Status.SUCCESS).setRunnerName("remote").build();
+    when(spawnRunner.exec(any(), any())).thenReturn(result);
+
+    assertThat(cacheOnlyStrategy().exec(SIMPLE_SPAWN, actionExecutionContext))
+        .containsExactly(result);
+    verify(spawnRunner).exec(any(), any());
   }
 
   @Test
