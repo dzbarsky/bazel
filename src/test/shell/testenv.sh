@@ -353,12 +353,13 @@ EOF
   fi
 }
 
-# Returns 0 on macOS if an IPv6 default route is present according to netstat.
+# Interface-scoped routes (I) cannot serve sockets not bound to an interface.
 function has_ipv6_default_route() {
   if ! is_darwin; then
     return 1
   fi
-  if netstat -rn -f inet6 2>/dev/null | grep -q '^default'; then
+  if netstat -rn -f inet6 2>/dev/null |
+      awk '$1 == "default" && $3 !~ /I/ { found = 1 } END { exit !found }'; then
     return 0
   fi
   return 1

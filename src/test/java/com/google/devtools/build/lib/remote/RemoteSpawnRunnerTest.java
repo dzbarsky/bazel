@@ -72,6 +72,7 @@ import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnMetrics;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
+import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.clock.JavaClock;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
@@ -100,6 +101,7 @@ import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.options.RemoteOutputsMode;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.FakeSpawnExecutionContext;
+import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.ExitCode;
@@ -268,7 +270,8 @@ public class RemoteSpawnRunnerTest {
         new AbstractSpawnStrategy(localRunner, new ExecutionOptions()) {};
     ClassToInstanceMap<ActionContext> actionContextRegistry =
         ImmutableClassToInstanceMap.of(
-            RemoteLocalFallbackRegistry.class, (spawnInput) -> fakeLocalStrategy);
+            RemoteLocalFallbackRegistry.class,
+            (spawnInput, remoteRunner, context) -> fakeLocalStrategy);
 
     var actionInputFetcher =
         new RemoteActionInputFetcher(
@@ -578,6 +581,29 @@ public class RemoteSpawnRunnerTest {
     // second attempt forcibly re-executes the action.
     verify(service).executeRemotely(any(), eq(true), any());
     verify(service).executeRemotely(any(), eq(false), any());
+  }
+
+  @Test
+  public void noCompatibleFallbackReportsExecutionFailure() throws Exception {
+    remoteOptions.remoteLocalFallback = true;
+    RemoteSpawnRunner runner = newSpawnRunner();
+    when(executor.executeRemotely(
+            any(RemoteActionExecutionContext.class),
+            any(ExecuteRequest.class),
+            any(OperationObserver.class)))
+        .thenThrow(new IOException("remote unavailable"));
+    Spawn spawn = simpleSpawnWithExecutionInfo(NO_CACHE);
+    SpawnExecutionContext context = spy(getSpawnContext(spawn));
+    RemoteLocalFallbackRegistry registry = (input, remoteRunner, actionContext) -> null;
+    doReturn(registry).when(context).getContext(RemoteLocalFallbackRegistry.class);
+
+    UserExecException error =
+        assertThrows(UserExecException.class, () -> runner.exec(spawn, context));
+
+    assertThat(error.getFailureDetail().getSpawn().getCode())
+        .isEqualTo(FailureDetails.Spawn.Code.NO_USABLE_STRATEGY_FOUND);
+    assertThat(error).hasMessageThat().contains("No compatible local fallback strategy");
+    verify(localRunner, never()).exec(any(), any());
   }
 
   @Test

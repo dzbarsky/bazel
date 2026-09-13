@@ -27,8 +27,11 @@ public interface RemoteLocalFallbackRegistry extends ActionContext {
    * Returns the resolved strategy implementation to use for falling back from remote to local
    * execution.
    *
-   * @return remote fallback strategy or {@code null} if none was registered
+   * @param remoteRunner the remote runner to exclude from local fallback selection
+   * @param context the registry used to check strategy eligibility
+   * @return a compatible local strategy or {@code null} if no fallback is registered or available
    */
   @Nullable
-  AbstractSpawnStrategy getRemoteLocalFallbackStrategy(Spawn spawn);
+  AbstractSpawnStrategy getRemoteLocalFallbackStrategy(
+      Spawn spawn, SpawnRunner remoteRunner, ActionContextRegistry context);
 }

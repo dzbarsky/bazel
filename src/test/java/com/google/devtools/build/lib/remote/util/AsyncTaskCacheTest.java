@@ -313,39 +313,40 @@ public class AsyncTaskCacheTest {
     int taskCount = 1000;
     int maxKey = 20;
     Random random = new Random();
-    ExecutorService executorService = Executors.newFixedThreadPool(taskCount);
-    AsyncTaskCache.NoResult<String> cache = AsyncTaskCache.NoResult.create();
-    AtomicReference<Throwable> error = new AtomicReference<>(null);
-    Semaphore semaphore = new Semaphore(0);
+    try (ExecutorService executorService = Executors.newFixedThreadPool(taskCount)) {
+      AsyncTaskCache.NoResult<String> cache = AsyncTaskCache.NoResult.create();
+      AtomicReference<Throwable> error = new AtomicReference<>(null);
+      Semaphore semaphore = new Semaphore(0);
 
-    for (int i = 0; i < taskCount; ++i) {
-      executorService.execute(
-          () -> {
-            try {
-              Completable task =
-                  cache.execute("key" + random.nextInt(maxKey), newTask(executorService), true);
-              TestObserver<Void> observer = task.test();
-              observer.assertNoErrors();
-              if (random.nextBoolean()) {
-                observer.dispose();
-              } else {
-                observer.await();
+      for (int i = 0; i < taskCount; ++i) {
+        executorService.execute(
+            () -> {
+              try {
+                Completable task =
+                    cache.execute("key" + random.nextInt(maxKey), newTask(executorService), true);
+                TestObserver<Void> observer = task.test();
                 observer.assertNoErrors();
+                if (random.nextBoolean()) {
+                  observer.dispose();
+                } else {
+                  observer.await();
+                  observer.assertNoErrors();
+                }
+              } catch (Throwable e) {
+                if (e instanceof InterruptedException) {
+                  Thread.currentThread().interrupt();
+                }
+                error.set(e);
+              } finally {
+                semaphore.release();
               }
-            } catch (Throwable e) {
-              if (e instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-              }
-              error.set(e);
-            } finally {
-              semaphore.release();
-            }
-          });
-    }
-    semaphore.acquire(taskCount);
+            });
+      }
+      semaphore.acquire(taskCount);
 
-    if (error.get() != null) {
-      throw error.get();
+      if (error.get() != null) {
+        throw error.get();
+      }
     }
   }
 
@@ -354,37 +355,38 @@ public class AsyncTaskCacheTest {
     int taskCount = 1000;
     int maxKey = 20;
     Random random = new Random();
-    ExecutorService executorService = Executors.newFixedThreadPool(taskCount);
-    AsyncTaskCache.NoResult<String> cache = AsyncTaskCache.NoResult.create();
-    AtomicReference<Throwable> error = new AtomicReference<>(null);
-    Semaphore semaphore = new Semaphore(0);
+    try (ExecutorService executorService = Executors.newFixedThreadPool(taskCount)) {
+      AsyncTaskCache.NoResult<String> cache = AsyncTaskCache.NoResult.create();
+      AtomicReference<Throwable> error = new AtomicReference<>(null);
+      Semaphore semaphore = new Semaphore(0);
 
-    for (int i = 0; i < taskCount; ++i) {
-      executorService.execute(
-          () -> {
-            try {
-              Completable download =
-                  cache.execute("key" + random.nextInt(maxKey), newTask(executorService), true);
-              Future<Void> future = RxFutures.toListenableFuture(download);
-              if (!future.isDone() && random.nextBoolean()) {
-                future.cancel(true);
-              } else {
-                future.get();
+      for (int i = 0; i < taskCount; ++i) {
+        executorService.execute(
+            () -> {
+              try {
+                Completable download =
+                    cache.execute("key" + random.nextInt(maxKey), newTask(executorService), true);
+                Future<Void> future = RxFutures.toListenableFuture(download);
+                if (!future.isDone() && random.nextBoolean()) {
+                  future.cancel(true);
+                } else {
+                  future.get();
+                }
+              } catch (Throwable e) {
+                if (e instanceof InterruptedException) {
+                  Thread.currentThread().interrupt();
+                }
+                error.set(e);
+              } finally {
+                semaphore.release();
               }
-            } catch (Throwable e) {
-              if (e instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-              }
-              error.set(e);
-            } finally {
-              semaphore.release();
-            }
-          });
-    }
-    semaphore.acquire(taskCount);
+            });
+      }
+      semaphore.acquire(taskCount);
 
-    if (error.get() != null) {
-      throw error.get();
+      if (error.get() != null) {
+        throw error.get();
+      }
     }
   }
 

@@ -40,6 +40,7 @@ import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnMetrics;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
+import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.authandtls.credentialhelper.CredentialHelperException;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.clock.BlazeClock.MillisSinceEpochToNanosConverter;
@@ -549,16 +550,23 @@ public class RemoteSpawnRunner implements SpawnRunner {
     }
   }
 
-  private static SpawnResult execLocally(Spawn spawn, SpawnExecutionContext context)
+  private SpawnResult execLocally(Spawn spawn, SpawnExecutionContext context)
       throws ExecException, InterruptedException, IOException {
     RemoteLocalFallbackRegistry localFallbackRegistry =
         context.getContext(RemoteLocalFallbackRegistry.class);
     checkNotNull(localFallbackRegistry, "Expected a RemoteLocalFallbackRegistry to be registered");
     AbstractSpawnStrategy remoteLocalFallbackStrategy =
-        localFallbackRegistry.getRemoteLocalFallbackStrategy(spawn);
-    checkNotNull(
-        remoteLocalFallbackStrategy,
-        "A remote local fallback strategy must be set if using remote fallback.");
+        localFallbackRegistry.getRemoteLocalFallbackStrategy(spawn, this, context);
+    if (remoteLocalFallbackStrategy == null) {
+      throw new UserExecException(
+          FailureDetail.newBuilder()
+              .setMessage(
+                  "No compatible local fallback strategy is available for " + spawn.getMnemonic())
+              .setSpawn(
+                  FailureDetails.Spawn.newBuilder()
+                      .setCode(FailureDetails.Spawn.Code.NO_USABLE_STRATEGY_FOUND))
+              .build());
+    }
     return remoteLocalFallbackStrategy.getSpawnRunner().exec(spawn, context);
   }
 

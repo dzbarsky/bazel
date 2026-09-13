@@ -5,6 +5,10 @@ on:
     branches:
       - codex/bazel-9.3-buildbuddy-release
       - codex/bazel-9.3-jvm-buildbuddy-release
+  pull_request:
+    branches:
+      - codex/bazel-9.3-buildbuddy-release
+      - codex/bazel-9.3-jvm-buildbuddy-release
   workflow_dispatch:
     inputs:
       release_tag:
@@ -20,8 +24,11 @@ defaults:
     shell: bash
 
 concurrency:
-  group: bazel-9.3-release
+  group: ${{ github.event_name == 'pull_request' && format('bazel-9.3-pr-{0}', github.event.pull_request.number) || 'bazel-9.3-release' }}
   cancel-in-progress: false
+
+env:
+  SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   prepare:
@@ -32,6 +39,8 @@ jobs:
     steps:
       - name: Check out Bazel
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Test immutable release publication
         run: bash .github/scripts/publish-bazel-release-test.sh
@@ -43,7 +52,9 @@ jobs:
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          if [[ -n "${INPUT_RELEASE_TAG}" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == pull_request ]]; then
+            release_tag="9.3.0-pr${{ github.event.pull_request.number }}g${SOURCE_SHA:0:12}"
+          elif [[ -n "${INPUT_RELEASE_TAG}" ]]; then
             release_tag="${INPUT_RELEASE_TAG}"
           else
             published_tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[] | select(.draft == false) | .tag_name')"
@@ -99,7 +110,7 @@ jobs:
             artifact_arch: arm64
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+      BUILDBUDDY_API_KEY: ${{ github.event_name != 'pull_request' && secrets.BUILDBUDDY_API_KEY || '' }}
     steps:
       - name: Install Linux build tools
         if: runner.os == 'Linux'
@@ -117,6 +128,8 @@ jobs:
 
       - name: Check out Bazel
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Install Bazelisk
         env:
@@ -129,22 +142,44 @@ jobs:
             "https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-${BAZELISK_OS}-${BAZELISK_ARCH}"
           chmod +x bazelisk
 
-      - name: Build Bazel
+      - name: Build Bazel and run fallback regressions
         run: |
           set -euo pipefail
-          if [[ -z "${BUILDBUDDY_API_KEY}" ]]; then
-            echo 'Missing the BUILDBUDDY_API_KEY Actions secret.' >&2
-            exit 1
+          uname -sm
+          cache_flags=(--noremote_upload_local_results)
+          if [[ "${GITHUB_EVENT_NAME}" != pull_request ]]; then
+            if [[ -z "${BUILDBUDDY_API_KEY}" ]]; then
+              echo 'Missing the BUILDBUDDY_API_KEY Actions secret.' >&2
+              exit 1
+            fi
+            cache_flags=(--config=buildbuddy-cache "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}")
           fi
-          ./bazelisk --batch --nohome_rc --nosystem_rc build \
-            --config=buildbuddy-cache \
-            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
-            --verbose_failures \
-            --compilation_mode=opt \
-            --jobs=2 \
-            --stamp \
-            "--embed_label=${RELEASE_TAG}" \
-            //src:bazel
+          run_bazel() {
+            ./bazelisk --batch --nohome_rc --nosystem_rc --host_jvm_args=-Xmx4g "$@" \
+              "${cache_flags[@]}" \
+              --verbose_failures --compilation_mode=opt --jobs=2 \
+              --stamp "--embed_label=${RELEASE_TAG}"
+          }
+          run_bazel build --build_event_json_file=build.bep.json //src:bazel
+          run_bazel test --build_event_json_file=java-tests.bep.json --nocache_test_results --test_output=errors --local_test_jobs=1 \
+            //src/test/java/com/google/devtools/build/lib/exec:ExecTests \
+            //src/test/java/com/google/devtools/build/lib/remote:RemoteTests
+          run_bazel test --build_event_json_file=fallback-tests.bep.json --nocache_test_results --test_output=errors --local_test_jobs=1 \
+            --test_sharding_strategy=disabled \
+            --test_filter='test_ipv6_default_route_detection:test_local_fallback_exec_unavailable*' \
+            //src/test/shell/bazel:bazel_test_test \
+            //src/test/shell/bazel/remote:remote_execution_test
+
+      - name: Upload regression results
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: regressions-${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
+          path: |
+            bazel-testlogs/**
+            *.bep.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Verify and package Bazel
         env:
@@ -173,6 +208,7 @@ jobs:
           retention-days: 7
 
   publish:
+    if: github.repository == 'dzbarsky/bazel' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     name: Publish GitHub release
     needs:
       - prepare
@@ -188,6 +224,8 @@ jobs:
     steps:
       - name: Check out Bazel
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Download Bazel artifacts
         uses: actions/download-artifact@v4
