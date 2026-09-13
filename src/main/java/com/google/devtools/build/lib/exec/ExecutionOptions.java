@@ -206,6 +206,18 @@ public class ExecutionOptions extends OptionsBase {
   public boolean checkUpToDate;
 
   @Option(
+      name = "experimental_require_cached",
+      defaultValue = "false",
+      implicitRequirements = {"--experimental_remote_require_cached"},
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "Require cache hits for all spawns, including local-only and worker actions. "
+              + "Uncacheable spawns fail instead of executing. Bazel's internal actions still run. "
+              + "Implies --experimental_remote_require_cached.")
+  public boolean requireCached;
+
+  @Option(
       name = "check_tests_up_to_date",
       defaultValue = "false",
       implicitRequirements = {"--check_up_to_date"},

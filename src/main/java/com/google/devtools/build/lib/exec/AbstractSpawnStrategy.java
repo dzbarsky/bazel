@@ -141,6 +141,20 @@ public abstract class AbstractSpawnStrategy implements SandboxedSpawnStrategy {
     try (CacheHandle cacheHandle = cache.lookup(spawn, context)) {
       if (cacheHandle.hasResult()) {
         spawnResult = Preconditions.checkNotNull(cacheHandle.getResult());
+      } else if (executionOptions.requireCached && !spawnRunner.handlesCaching()) {
+        // Runners that own their cache lookup enforce the implied remote cache-only flag.
+        spawnResult =
+            new SpawnResult.Builder()
+                .setStatus(Status.EXECUTION_DENIED)
+                .setExitCode(1)
+                .setFailureMessage(
+                    "Action must be cached due to --experimental_require_cached but it is not")
+                .setFailureDetail(
+                    FailureDetail.newBuilder()
+                        .setSpawn(FailureDetails.Spawn.newBuilder().setCode(Code.EXECUTION_DENIED))
+                        .build())
+                .setRunnerName(spawnRunner.getName())
+                .build();
       } else {
         Instant startTime =
             Instant.ofEpochMilli(actionExecutionContext.getClock().currentTimeMillis());

@@ -579,7 +579,9 @@ public class RemoteSpawnRunner implements SpawnRunner {
     if (cause instanceof BulkTransferException e) {
       e.getLostArtifacts(context.getInputMetadataProvider()::getInput).throwIfNotEmpty();
     }
-    if (remoteOptions.remoteLocalFallback && !RemoteRetrierUtils.causedByExecTimeout(cause)) {
+    if (remoteOptions.remoteLocalFallback
+        && !remoteOptions.remoteRequireCached
+        && !RemoteRetrierUtils.causedByExecTimeout(cause)) {
       return execLocallyAndUpload(action, spawn, context, uploadLocalResults);
     }
     return handleError(action, cause, context);

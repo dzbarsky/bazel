@@ -1268,6 +1268,88 @@ EOF
   expect_not_log "remote cache hit"
 }
 
+function test_require_cached_all_spawns_hits_and_misses() {
+  mkdir -p a
+  cat > a/BUILD <<'EOF'
+[genrule(
+    name = name,
+    srcs = ["input"],
+    outs = [name + ".out"],
+    cmd = "cp \"$<\" \"$@\"",
+    tags = tags,
+) for name, tags in [("remote", []), ("local", ["no-remote-exec"])]]
+EOF
+  echo first > a/input
+  bazel build --spawn_strategy=remote,local \
+    --remote_executor=grpc://localhost:${worker_port} \
+    //a:all >& $TEST_log || fail "Failed to seed the remote cache"
+  bazel clean
+
+  bazel build --spawn_strategy=remote,local \
+    --remote_executor=grpc://localhost:${worker_port} \
+    --experimental_require_cached \
+    //a:all >& $TEST_log || fail "Cache hits should succeed for both strategies"
+  expect_log "2 remote cache hit"
+  expect_not_log "1 local"
+
+  echo second > a/input
+  if bazel build --spawn_strategy=remote,local --keep_going \
+    --remote_executor=grpc://localhost:${worker_port} \
+    --experimental_require_cached \
+    //a:all >& $TEST_log; then
+    fail "Cache misses should fail for both strategies"
+  fi
+  expect_log "Action must be cached due to --experimental_remote_require_cached"
+  expect_log "Action must be cached due to --experimental_require_cached"
+}
+
+function test_require_cached_all_spawns_uncacheable() {
+  mkdir -p a
+  cat > a/BUILD <<'EOF'
+[genrule(
+    name = tag,
+    outs = [tag + ".out"],
+    cmd = "echo ran > \"$@\"",
+    tags = [tag],
+) for tag in ["local", "no-remote", "no-cache"]]
+EOF
+  if bazel build --spawn_strategy=remote,local --keep_going \
+    --remote_executor=grpc://localhost:${worker_port} \
+    --experimental_require_cached \
+    //a:all >& $TEST_log; then
+    fail "Uncacheable spawns should fail instead of executing"
+  fi
+  expect_log "Action must be cached due to --experimental_require_cached"
+  for tag in local no-remote no-cache; do
+    [[ ! -e "bazel-bin/a/${tag}.out" ]] || fail "${tag} executed"
+  done
+}
+
+function test_require_cached_all_spawns_local_test() {
+  add_rules_shell "MODULE.bazel"
+  mkdir -p a
+  cat > a/BUILD <<'EOF'
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+sh_test(
+    name = "local_test",
+    srcs = ["test.sh"],
+    tags = ["local"],
+)
+EOF
+  cat > a/test.sh <<EOF
+#!/usr/bin/env bash
+touch "${TEST_TMPDIR}/cache_only_test_executed"
+EOF
+  chmod +x a/test.sh
+  if bazel test --remote_executor=grpc://localhost:${worker_port} \
+    --experimental_require_cached \
+    //a:local_test >& $TEST_log; then
+    fail "A local test must not run in cache-only mode"
+  fi
+  expect_log "Action must be cached due to --experimental_require_cached"
+  [[ ! -e "${TEST_TMPDIR}/cache_only_test_executed" ]] || fail "Local test executed"
+}
+
 function test_nobuild_runfile_links() {
   mkdir data && echo "hello" > data/hello && echo "world" > data/world
   add_rules_shell "MODULE.bazel"
