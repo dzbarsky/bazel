@@ -17,9 +17,11 @@ package com.google.devtools.build.lib.packages;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
-import java.util.Arrays;
+import com.google.common.collect.Interner;
+import com.google.devtools.build.lib.concurrent.BlazeInterners;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import java.util.Collections;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.Compactable;
@@ -34,10 +36,35 @@ import net.starlark.java.syntax.TokenKind;
  * schema.
  */
 public class StarlarkInfoNoSchema extends StarlarkInfo {
-  private final Provider provider;
+  // Keep names shared when structs are deserialized as well as when they are created.
+  @AutoCodec
+  static final class FieldNames {
+    private static final Interner<FieldNames> interner = BlazeInterners.newWeakInterner();
+    private final ImmutableList<String> names;
 
-  // For a n-element info, the table contains n key strings, sorted,
-  // followed by the n corresponding legal Starlark values.
+    private FieldNames(ImmutableList<String> names) {
+      this.names = names;
+    }
+
+    @AutoCodec.Interner
+    static FieldNames intern(FieldNames fields) {
+      return interner.intern(fields);
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+      return obj instanceof FieldNames other && names.equals(other.names);
+    }
+
+    @Override
+    public int hashCode() {
+      return names.hashCode();
+    }
+  }
+
+  private final Provider provider;
+  private final FieldNames fieldNames;
+  // Values in the same order as the sorted field names.
   private final Object[] table;
 
   // TODO(adonovan): restrict type of provider to StarlarkProvider?
@@ -49,16 +76,23 @@ public class StarlarkInfoNoSchema extends StarlarkInfo {
   // The efficient table algorithms would be a nice addition to the Starlark
   // interpreter, to allow other clients to define their own fast structs
   // (or to define a standard one). See also comments at Info about upcoming clean-ups.
-  private StarlarkInfoNoSchema(Provider provider, Object[] table, @Nullable Location loc) {
+  private StarlarkInfoNoSchema(
+      Provider provider, ImmutableList<String> fieldNames, Object[] table, @Nullable Location loc) {
     super(loc);
     this.provider = provider;
+    this.fieldNames = FieldNames.intern(new FieldNames(fieldNames));
     this.table = table;
   }
 
   StarlarkInfoNoSchema(Provider provider, Map<String, Object> values, @Nullable Location loc) {
     super(loc);
     this.provider = provider;
-    this.table = toTable(values);
+    ImmutableList<String> keys = ImmutableList.sortedCopyOf(values.keySet());
+    this.fieldNames = FieldNames.intern(new FieldNames(keys));
+    this.table = new Object[keys.size()];
+    for (int i = 0; i < table.length; i++) {
+      table[i] = Starlark.checkValid(values.get(keys.get(i)));
+    }
   }
 
   @Override
@@ -81,28 +115,6 @@ public class StarlarkInfoNoSchema extends StarlarkInfo {
         !(provider instanceof StarlarkProvider)
             || ((StarlarkProvider) provider).getFields() == null);
     return new StarlarkInfoNoSchema(provider, values, loc);
-  }
-
-  // Converts a map to a table of sorted keys followed by corresponding values.
-  private static Object[] toTable(Map<String, Object> values) {
-    int n = values.size();
-    Object[] table = new Object[n + n];
-    int i = 0;
-    // TODO(b/380824219): Once fastcall and thus createFromNamedArgs is removed, consider whether
-    // we can wrap values.entrySet() in a SortedSet and avoid and remove sortPairs().
-    // Maybe an overloaded constructor StarlarkInfoNoSchema(Provider, SortedMap<>, Location)
-    // could also be useful in this context. Connection with b/380824219: StarlarkInfoFactory
-    // assembles values into a TreeMap and calls StarlarkInfoNoSchema(Provider, Map<>, Location).
-    for (Map.Entry<String, Object> e : values.entrySet()) {
-      table[i] = e.getKey();
-      table[n + i] = Starlark.checkValid(e.getValue());
-      i++;
-    }
-    // Sort keys, permuting values in parallel.
-    if (n > 1) {
-      sortPairs(table, 0, n - 1);
-    }
-    return table;
   }
 
   static StarlarkProvider.StarlarkInfoFactory newStarlarkInfoFactory(
@@ -147,50 +159,9 @@ public class StarlarkInfoNoSchema extends StarlarkInfo {
     }
   }
 
-  // Sorts non-empty slice a[lo:hi] (inclusive) in place.
-  // Elements a[n:2n) are permuted the same way as a[0:n),
-  // where n = a.length / 2. The lower half must be strings.
-  // Precondition: 0 <= lo <= hi < n.
-  static void sortPairs(Object[] a, int lo, int hi) {
-    String pivot = (String) a[lo + (hi - lo) / 2];
-
-    int i = lo;
-    int j = hi;
-    while (i <= j) {
-      while (((String) a[i]).compareTo(pivot) < 0) {
-        i++;
-      }
-      while (((String) a[j]).compareTo(pivot) > 0) {
-        j--;
-      }
-      if (i <= j) {
-        int n = a.length >> 1;
-        swap(a, i, j);
-        swap(a, i + n, j + n);
-        i++;
-        j--;
-      }
-    }
-    if (lo < j) {
-      sortPairs(a, lo, j);
-    }
-    if (i < hi) {
-      sortPairs(a, i, hi);
-    }
-  }
-
-  private static void swap(Object[] a, int i, int j) {
-    Object tmp = a[i];
-    a[i] = a[j];
-    a[j] = tmp;
-  }
-
   @Override
   public ImmutableCollection<String> getFieldNames() {
-    // TODO(adonovan): opt: can we avoid allocating three objects?
-    @SuppressWarnings("unchecked")
-    List<String> keys = (List<String>) (List<?>) Arrays.asList(table).subList(0, table.length / 2);
-    return ImmutableList.copyOf(keys);
+    return fieldNames.names;
   }
 
   @Override
@@ -199,7 +170,7 @@ public class StarlarkInfoNoSchema extends StarlarkInfo {
     if (!provider.isExported()) {
       return false;
     }
-    for (int i = table.length / 2; i < table.length; i++) {
+    for (int i = 0; i < table.length; i++) {
       if (!Starlark.isImmutable(table[i])) {
         return false;
       }
@@ -210,12 +181,8 @@ public class StarlarkInfoNoSchema extends StarlarkInfo {
   @Nullable
   @Override
   public Object getValue(String name) {
-    int n = table.length / 2;
-    int i = Arrays.binarySearch(table, 0, n, name);
-    if (i < 0) {
-      return null;
-    }
-    return table[n + i];
+    int i = Collections.binarySearch(fieldNames.names, name);
+    return i < 0 ? null : table[i];
   }
 
   @Nullable
@@ -238,25 +205,25 @@ public class StarlarkInfoNoSchema extends StarlarkInfo {
 
   private static StarlarkInfo plus(StarlarkInfoNoSchema x, StarlarkInfoNoSchema y)
       throws EvalException {
-    // ztable = merge(x.table, y.table)
-    int xsize = x.table.length / 2;
-    int ysize = y.table.length / 2;
+    int xsize = x.table.length;
+    int ysize = y.table.length;
     int zsize = xsize + ysize;
-    Object[] ztable = new Object[zsize + zsize];
+    ImmutableList.Builder<String> fields = ImmutableList.builderWithExpectedSize(zsize);
+    Object[] ztable = new Object[zsize];
     int xi = 0;
     int yi = 0;
     int zi = 0;
     while (xi < xsize && yi < ysize) {
-      String xk = (String) x.table[xi];
-      String yk = (String) y.table[yi];
+      String xk = x.fieldNames.names.get(xi);
+      String yk = y.fieldNames.names.get(yi);
       int cmp = xk.compareTo(yk);
       if (cmp < 0) {
-        ztable[zi] = xk;
-        ztable[zi + zsize] = x.table[xi + xsize];
+        fields.add(xk);
+        ztable[zi] = x.table[xi];
         xi++;
       } else if (cmp > 0) {
-        ztable[zi] = yk;
-        ztable[zi + zsize] = y.table[yi + ysize];
+        fields.add(yk);
+        ztable[zi] = y.table[yi];
         yi++;
       } else {
         throw Starlark.errorf("cannot add struct instances with common field '%s'", xk);
@@ -264,24 +231,24 @@ public class StarlarkInfoNoSchema extends StarlarkInfo {
       zi++;
     }
     while (xi < xsize) {
+      fields.add(x.fieldNames.names.get(xi));
       ztable[zi] = x.table[xi];
-      ztable[zi + zsize] = x.table[xi + xsize];
       xi++;
       zi++;
     }
     while (yi < ysize) {
+      fields.add(y.fieldNames.names.get(yi));
       ztable[zi] = y.table[yi];
-      ztable[zi + zsize] = y.table[yi + ysize];
       yi++;
       zi++;
     }
 
-    return new StarlarkInfoNoSchema(x.provider, ztable, Location.BUILTIN);
+    return new StarlarkInfoNoSchema(x.provider, fields.build(), ztable, Location.BUILTIN);
   }
 
   @Override
   public StarlarkInfoNoSchema unsafeOptimizeMemoryLayout() {
-    for (int i = table.length / 2; i < table.length; i++) {
+    for (int i = 0; i < table.length; i++) {
       if (table[i] instanceof Compactable compactable) {
         table[i] = compactable.unsafeOptimizeMemoryLayout();
       }
