@@ -1076,6 +1076,8 @@ java_test(
     srcs = ["TransitiveInfoProviderMapImplCodecTest.java"],
     deps = [
         "//src/main/java/com/google/devtools/build/lib/analysis:transitive_info_provider_map_impl",
+        "//src/main/java/com/google/devtools/build/lib/analysis/config:config_matching_provider",
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/testutils",
         "//third_party:guava",
         "//third_party:junit4",
