@@ -137,6 +137,8 @@ public final class StarlarkInfoCodecTest extends BuildViewTestCase {
     assertThat(deserialized.getFieldNames())
         .containsExactlyElementsIn(original.getFieldNames())
         .inOrder();
+    // Deserialization must preserve the shared field layout across records.
+    assertThat(deserialized.getFieldNames()).isSameInstanceAs(original.getFieldNames());
   }
 
   /** Returns an exported, schemaless provider. */
