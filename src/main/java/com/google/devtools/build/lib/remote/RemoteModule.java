@@ -549,8 +549,11 @@ public final class RemoteModule extends BlazeModule {
 
     // TODO(bazel-team): Consider adding a warning or more validation if the remoteDownloadRegex is
     // used without Build without the Bytes.
+    boolean cacheProbe = executionOptions != null && executionOptions.getCacheProbeOutput() != null;
+    RemoteOutputsMode outputsMode =
+        cacheProbe ? RemoteOutputsMode.MINIMAL : remoteOptions.getRemoteOutputsMode();
     ImmutableList<RegexPatternOption> downloadRegexes =
-        remoteOptions.getRemoteOutputsMode() != RemoteOutputsMode.ALL
+        !cacheProbe && outputsMode != RemoteOutputsMode.ALL
             ? ImmutableList.copyOf(remoteOptions.getRemoteDownloadRegex())
             : ImmutableList.of();
 
@@ -558,7 +561,7 @@ public final class RemoteModule extends BlazeModule {
     remoteOutputChecker =
         new RemoteOutputChecker(
             env.getCommandName(),
-            remoteOptions.getRemoteOutputsMode(),
+            outputsMode,
             downloadRegexes,
             executes ? lastRemoteOutputChecker : null);
     if (executes) {
@@ -1451,6 +1454,11 @@ public final class RemoteModule extends BlazeModule {
   @VisibleForTesting
   ThreadPoolExecutor getExecutorService() {
     return executorService;
+  }
+
+  @VisibleForTesting
+  RemoteOutputChecker getRemoteOutputChecker() {
+    return remoteOutputChecker;
   }
 
   @VisibleForTesting

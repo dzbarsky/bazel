@@ -71,6 +71,11 @@ public class TargetCompletionValue implements SkyValue {
       return false;
     }
 
+    @Override
+    public final boolean supportsPartialReevaluation() {
+      return topLevelArtifactContext().cacheProbe();
+    }
+
     abstract boolean willTest();
   }
 }
