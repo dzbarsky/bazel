@@ -70,7 +70,11 @@ public class AbstractSpawnStrategyTest {
 
   private static class TestedSpawnStrategy extends AbstractSpawnStrategy {
     TestedSpawnStrategy(SpawnRunner spawnRunner) {
-      super(spawnRunner, Options.getDefaults(ExecutionOptions.class));
+      this(spawnRunner, Options.getDefaults(ExecutionOptions.class));
+    }
+
+    TestedSpawnStrategy(SpawnRunner spawnRunner, ExecutionOptions options) {
+      super(spawnRunner, options);
     }
   }
 
@@ -90,6 +94,55 @@ public class AbstractSpawnStrategyTest {
     eventHandler = new StoredEventHandler();
     when(actionExecutionContext.getEventHandler()).thenReturn(eventHandler);
     when(actionExecutionContext.getClock()).thenReturn(clock);
+  }
+
+  private static ExecutionOptions cacheProbeOptions() {
+    ExecutionOptions options = Options.getDefaults(ExecutionOptions.class);
+    options.setCacheProbeOutput(PathFragment.create("probe.json"));
+    return options;
+  }
+
+  @Test
+  public void cacheProbeBypassesConfiguredStrategiesAndAcceptsCachedSuccess() throws Exception {
+    SpawnCache cache = mock(SpawnCache.class);
+    SpawnResult result =
+        new SpawnResult.Builder().setStatus(Status.SUCCESS).setRunnerName("cache").build();
+    when(cache.lookup(any(), any())).thenReturn(SpawnCache.success(result));
+    when(actionExecutionContext.getContext(SpawnCache.class)).thenReturn(cache);
+
+    assertThat(
+            new SpawnStrategyResolver(cacheProbeOptions())
+                .exec(SIMPLE_SPAWN, actionExecutionContext))
+        .containsExactly(result);
+
+    verify(actionExecutionContext, never()).getContext(SpawnStrategyRegistry.class);
+    verifyNoInteractions(spawnRunner);
+    assertThat(eventHandler.getPosts()).isEmpty();
+  }
+
+  @Test
+  public void cacheProbeMissIsTypedAndDoesNotDispatchOrStore() throws Exception {
+    SpawnCache cache = mock(SpawnCache.class);
+    CacheHandle handle = mock(CacheHandle.class);
+    when(cache.lookup(any(), any())).thenReturn(handle);
+    when(actionExecutionContext.getContext(SpawnCache.class)).thenReturn(cache);
+    when(actionExecutionContext.getExecRoot()).thenReturn(execRoot);
+
+    SpawnExecException error =
+        assertThrows(
+            SpawnExecException.class,
+            () ->
+                new SpawnStrategyResolver(cacheProbeOptions())
+                    .exec(SIMPLE_SPAWN, actionExecutionContext));
+
+    assertThat(error.getSpawnResult().failureDetail().getSpawn().getCode())
+        .isEqualTo(Code.CACHE_PROBE_MISS);
+    verify(actionExecutionContext, never()).getContext(SpawnStrategyRegistry.class);
+    verify(handle).hasResult();
+    verify(handle).close();
+    verifyNoMoreInteractions(handle);
+    verifyNoInteractions(spawnRunner);
+    assertThat(eventHandler.getPosts()).isEmpty();
   }
 
   @Test

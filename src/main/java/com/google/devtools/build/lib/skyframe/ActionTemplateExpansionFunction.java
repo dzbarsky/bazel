@@ -38,6 +38,8 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSetOwnerScope;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.skyframe.ActionTemplateExpansionValue.ActionTemplateExpansionKey;
+import com.google.devtools.build.lib.skyframe.ArtifactFunction.SourceArtifactException;
+import com.google.devtools.build.lib.skyframe.ArtifactNestedSetFunction.ArtifactNestedSetEvalException;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -89,36 +91,63 @@ public class ActionTemplateExpansionFunction implements SkyFunction {
     // of the NestedSet as direct Artifact(s) and transitive NestedSet(s).
     ArtifactNestedSetKey.visitDirectDeps(
         actionTemplate.getInputs(),
-        leaf -> otherInputKeysBuilder.add(Artifact.key(leaf)),
+        leaf -> {
+          if (!leaf.isTreeArtifact() || !inputTreeArtifacts.contains(leaf)) {
+            otherInputKeysBuilder.add(Artifact.key(leaf));
+          }
+        },
         otherInputKeysBuilder::add);
-    ImmutableList<SkyKey> otherInputKeys = otherInputKeysBuilder.build();
-
-    SkyframeLookupResult result =
-        env.getValuesAndExceptions(Iterables.concat(inputTreeArtifacts, otherInputKeys));
+    Iterable<SkyKey> inputKeys = Iterables.concat(inputTreeArtifacts, otherInputKeysBuilder.build());
+    SkyframeLookupResult result = env.getValuesAndExceptions(inputKeys);
 
     if (env.valuesMissing()) {
       return null;
     }
-    
+
     ImmutableList<ActionAnalysisMetadata> actions;
     try {
       ImmutableList.Builder<TreeFileArtifact> inputTreeFileArtifacts = ImmutableList.builder();
-      for (TreeArtifact inputTreeArtifact : inputTreeArtifacts) {
-        TreeArtifactValue treeArtifactValue =
-            (TreeArtifactValue)
-                result.getOrThrow(inputTreeArtifact, ActionExecutionException.class);
-        // b/507424770#comment10: To handle the case of a wrongly bubbled up exception causing a
-        // null value, we return null here so that we don't crash with an NPE.
-        if (treeArtifactValue == null) {
-          return null;
+      ActionExecutionException firstCacheProbeMiss = null;
+      // Check all inputs for errors, including inputs that are only used by the expanded actions.
+      for (SkyKey inputKey : inputKeys) {
+        try {
+          SkyValue inputValue =
+              result.getOrThrow(
+                  inputKey,
+                  ActionExecutionException.class,
+                  ArtifactNestedSetEvalException.class,
+                  SourceArtifactException.class);
+          if (inputValue == null) {
+            return null;
+          }
+          if (inputValue instanceof TreeArtifactValue treeValue
+              && inputTreeArtifacts.contains(inputKey)) {
+            inputTreeFileArtifacts.addAll(treeValue.getChildren());
+          }
+        } catch (ActionExecutionException e) {
+          if (!e.isCacheProbeMiss()) {
+            throw e;
+          }
+          if (firstCacheProbeMiss == null) {
+            firstCacheProbeMiss = e;
+          }
+        } catch (ArtifactNestedSetEvalException e) {
+          ActionExecutionException cacheProbeMiss = e.getCacheProbeMiss();
+          if (cacheProbeMiss == null
+              || !e.getNestedExceptions().isEmpty()
+              || e.hasMissingInputs()
+              || e.isCatastrophic()) {
+            throw new ActionTemplateExpansionFunctionException(e);
+          }
+          if (firstCacheProbeMiss == null) {
+            firstCacheProbeMiss = cacheProbeMiss;
+          }
+        } catch (SourceArtifactException e) {
+          throw new ActionTemplateExpansionFunctionException(e);
         }
-        inputTreeFileArtifacts.addAll(treeArtifactValue.getChildren());
       }
-      // Check other inputs for errors to avoid propagating both a value and an error (b/580921749).
-      for (SkyKey depKey : otherInputKeys) {
-        if (result.get(depKey) == null) {
-          return null;
-        }
+      if (firstCacheProbeMiss != null) {
+        throw firstCacheProbeMiss;
       }
       // Expand the action template using the list of expanded input TreeFileArtifacts.
       // TODO(rduan): Add a check to verify the inputs of expanded actions are subsets of inputs
@@ -129,11 +158,13 @@ public class ActionTemplateExpansionFunction implements SkyFunction {
                 actionTemplate, inputTreeFileArtifacts.build(), key, env.getListener());
       }
     } catch (ActionExecutionException e) {
-      env.getListener()
-          .handle(
-              Event.error(
-                  actionTemplate.getOwner().getLocation(),
-                  actionTemplate.describe() + " failed: " + e.getMessage()));
+      if (!e.isCacheProbeMiss()) {
+        env.getListener()
+            .handle(
+                Event.error(
+                    actionTemplate.getOwner().getLocation(),
+                    actionTemplate.describe() + " failed: " + e.getMessage()));
+      }
       throw new ActionTemplateExpansionFunctionException(
           new AlreadyReportedActionExecutionException(e));
     } catch (ActionConflictException e) {
@@ -162,12 +193,13 @@ public class ActionTemplateExpansionFunction implements SkyFunction {
 
   /** Exception thrown by {@link ActionTemplateExpansionFunction}. */
   private static final class ActionTemplateExpansionFunctionException extends SkyFunctionException {
-    ActionTemplateExpansionFunctionException(ActionConflictException e) {
+    ActionTemplateExpansionFunctionException(Exception e) {
       super(e, Transience.PERSISTENT);
     }
 
-    ActionTemplateExpansionFunctionException(ActionExecutionException e) {
-      super(e, Transience.PERSISTENT);
+    @Override
+    public boolean isCatastrophic() {
+      return getCause() instanceof ArtifactNestedSetEvalException e && e.isCatastrophic();
     }
   }
 
