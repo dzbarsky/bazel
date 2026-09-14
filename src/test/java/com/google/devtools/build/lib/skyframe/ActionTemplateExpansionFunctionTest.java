@@ -26,6 +26,7 @@ import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.ActionConflictException;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
+import com.google.devtools.build.lib.actions.ActionExecutionException;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
@@ -53,10 +54,15 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.NullEventHandler;
+import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
+import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.server.FailureDetails.Spawn;
 import com.google.devtools.build.lib.skyframe.ActionTemplateExpansionValue.ActionTemplateExpansionKey;
 import com.google.devtools.build.lib.testutil.FoundationTestCase;
+import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
@@ -74,11 +80,9 @@ import com.google.devtools.build.skyframe.SkyValue;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import javax.annotation.Nullable;
 import org.junit.Before;
@@ -90,13 +94,13 @@ import org.junit.runner.RunWith;
 public final class ActionTemplateExpansionFunctionTest extends FoundationTestCase {
 
   private final Map<Artifact, TreeArtifactValue> artifactValueMap = new LinkedHashMap<>();
-  private final Set<Artifact> failingArtifacts = new HashSet<>();
+  private final Map<Artifact, Exception> artifactFailureMap = new LinkedHashMap<>();
   private final SequencedRecordingDifferencer differencer = new SequencedRecordingDifferencer();
   private final MemoizingEvaluator evaluator =
       new InMemoryMemoizingEvaluator(
           ImmutableMap.of(
               Artifact.ARTIFACT,
-              new DummyArtifactFunction(artifactValueMap, failingArtifacts),
+              new DummyArtifactFunction(artifactValueMap, artifactFailureMap),
               SkyFunctions.ACTION_TEMPLATE_EXPANSION,
               new ActionTemplateExpansionFunction(new ActionKeyContext())),
           differencer);
@@ -385,9 +389,11 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
   @Test
   public void failingExpandedActionInput_isErrorWithoutValue(@TestParameter boolean keepGoing)
       throws Exception {
-    ActionTemplate<DummyAction> template = createTemplateWithFailingExpandedActionInput();
+    ActionTemplate<DummyAction> template =
+        createTemplateWithFailingExpandedActionInput(/* treeCacheMiss= */ false);
 
-    EvaluationResult<ActionTemplateExpansionValue> result = evaluateToResult(template, keepGoing);
+    EvaluationResult<ActionTemplateExpansionValue> result =
+        evaluateToResult(template, keepGoing, NullEventHandler.INSTANCE);
 
     ActionTemplateExpansionKey templateKey = ActionTemplateExpansionValue.key(CTKEY, 0);
     assertThat(result.hasError()).isTrue();
@@ -396,19 +402,41 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
         .isInstanceOf(DummyArtifactException.class);
   }
 
+  @Test
+  public void cacheProbeMissDoesNotHideExpandedActionInputError() throws Exception {
+    ActionTemplate<DummyAction> template =
+        createTemplateWithFailingExpandedActionInput(/* treeCacheMiss= */ true);
+    var events = new StoredEventHandler();
+
+    ActionExecutionException failure =
+        assertThrows(
+            ActionExecutionException.class,
+            () -> evaluate(template, /* keepGoing= */ true, events));
+
+    assertThat(failure.getDetailedExitCode().getFailureDetail().getSpawn().getCode())
+        .isEqualTo(Spawn.Code.EXEC_IO_EXCEPTION);
+    assertThat(events.hasErrors()).isTrue();
+  }
+
   /**
    * Creates a template whose {@link ActionTemplate#getInputs} contains, in addition to the input
    * tree, a non-tree input that fails to build. The function does not need the value of such
    * inputs, but it must still surface their errors.
    */
-  private ActionTemplate<DummyAction> createTemplateWithFailingExpandedActionInput()
+  private ActionTemplate<DummyAction> createTemplateWithFailingExpandedActionInput(
+      boolean treeCacheMiss)
       throws Exception {
     TreeArtifact inputTree = createAndPopulateTreeArtifact("input", "child");
     TreeArtifact outputTree = createTreeArtifact("output");
     Artifact failingInput =
         ActionsTestUtil.createArtifact(
             ArtifactRoot.asSourceRoot(Root.fromPath(rootDirectory)), "failing_input");
-    failingArtifacts.add(failingInput);
+    if (treeCacheMiss) {
+      artifactFailureMap.put(inputTree, inputFailure(Spawn.Code.CACHE_PROBE_MISS));
+      artifactFailureMap.put(failingInput, inputFailure(Spawn.Code.EXEC_IO_EXCEPTION));
+    } else {
+      artifactFailureMap.put(failingInput, new DummyArtifactException(failingInput));
+    }
 
     return new TestActionTemplate(inputTree, outputTree) {
       @Override
@@ -431,12 +459,74 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
     };
   }
 
+  @Test
+  public void cacheProbeMissDoesNotReportOrdinaryError() throws Exception {
+    SpecialArtifact input = createAndPopulateTreeArtifact("missing", "child");
+    SpecialArtifact output = createTreeArtifact("output");
+    artifactFailureMap.put(input, inputFailure(Spawn.Code.CACHE_PROBE_MISS));
+    SpawnActionTemplate template = ActionsTestUtil.createDummySpawnActionTemplate(input, output);
+    StoredEventHandler events = new StoredEventHandler();
+
+    ActionExecutionException failure =
+        assertThrows(
+            ActionExecutionException.class,
+            () -> evaluate(template, /* keepGoing= */ true, events));
+
+    assertThat(failure.isCacheProbeMiss()).isTrue();
+    assertThat(events.hasErrors()).isFalse();
+  }
+
+  @Test
+  public void cacheProbeMissDoesNotHideAnotherInputTreeError() throws Exception {
+    SpecialArtifact missing = createAndPopulateTreeArtifact("missing", "child");
+    SpecialArtifact broken = createAndPopulateTreeArtifact("broken", "child");
+    SpecialArtifact output = createTreeArtifact("output");
+    artifactFailureMap.put(missing, inputFailure(Spawn.Code.CACHE_PROBE_MISS));
+    artifactFailureMap.put(broken, inputFailure(Spawn.Code.EXEC_IO_EXCEPTION));
+    ActionTemplate<DummyAction> template =
+        new TestActionTemplate(ImmutableList.of(missing, broken), output) {
+          @Override
+          public ImmutableList<DummyAction> generateActionsForInputArtifacts(
+              ImmutableList<TreeFileArtifact> inputs,
+              ActionLookupKey owner,
+              EventHandler eventHandler) {
+            throw new AssertionError("Cannot expand a template with unavailable input trees");
+          }
+        };
+    StoredEventHandler events = new StoredEventHandler();
+
+    ActionExecutionException failure =
+        assertThrows(
+            ActionExecutionException.class,
+            () -> evaluate(template, /* keepGoing= */ true, events));
+
+    assertThat(failure.isCacheProbeMiss()).isFalse();
+    assertThat(failure.getDetailedExitCode().getFailureDetail().getSpawn().getCode())
+        .isEqualTo(Spawn.Code.EXEC_IO_EXCEPTION);
+    assertThat(events.hasErrors()).isTrue();
+  }
+
+  private static ActionExecutionException inputFailure(Spawn.Code code) {
+    return new ActionExecutionException(
+        code.toString(),
+        /* action= */ null,
+        /* catastrophe= */ false,
+        DetailedExitCode.of(
+            FailureDetail.newBuilder().setSpawn(Spawn.newBuilder().setCode(code)).build()));
+  }
+
   private static final ActionLookupKey CTKEY = new InjectedActionLookupKey("key");
 
   private ImmutableList<Action> evaluate(ActionTemplate<?> actionTemplate) throws Exception {
+    return evaluate(actionTemplate, /* keepGoing= */ false, NullEventHandler.INSTANCE);
+  }
+
+  private ImmutableList<Action> evaluate(
+      ActionTemplate<?> actionTemplate, boolean keepGoing, ExtendedEventHandler eventHandler)
+      throws Exception {
     ActionTemplateExpansionKey templateKey = ActionTemplateExpansionValue.key(CTKEY, 0);
     EvaluationResult<ActionTemplateExpansionValue> result =
-        evaluateToResult(actionTemplate, /* keepGoing= */ false);
+        evaluateToResult(actionTemplate, keepGoing, eventHandler);
     if (result.hasError()) {
       throw result.getError().getException();
     }
@@ -449,7 +539,8 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
   }
 
   private EvaluationResult<ActionTemplateExpansionValue> evaluateToResult(
-      ActionTemplate<?> actionTemplate, boolean keepGoing) throws Exception {
+      ActionTemplate<?> actionTemplate, boolean keepGoing, ExtendedEventHandler eventHandler)
+      throws Exception {
     ActionLookupValue ctValue = createActionLookupValue(actionTemplate);
 
     differencer.inject(CTKEY, Delta.justNew(ctValue));
@@ -458,7 +549,7 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
         EvaluationContext.newBuilder()
             .setKeepGoing(keepGoing)
             .setParallelism(SkyframeExecutor.DEFAULT_THREAD_COUNT)
-            .setEventHandler(NullEventHandler.INSTANCE)
+            .setEventHandler(eventHandler)
             .build();
     return evaluator.evaluate(ImmutableList.of(templateKey), evaluationContext);
   }
@@ -500,18 +591,20 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
   /** Dummy ArtifactFunction that just returns injected values or throws for failing artifacts. */
   private static final class DummyArtifactFunction implements SkyFunction {
     private final Map<Artifact, TreeArtifactValue> artifactValueMap;
-    private final Set<Artifact> failingArtifacts;
+    private final Map<Artifact, Exception> artifactFailureMap;
 
     DummyArtifactFunction(
-        Map<Artifact, TreeArtifactValue> artifactValueMap, Set<Artifact> failingArtifacts) {
+        Map<Artifact, TreeArtifactValue> artifactValueMap,
+        Map<Artifact, Exception> artifactFailureMap) {
       this.artifactValueMap = artifactValueMap;
-      this.failingArtifacts = failingArtifacts;
+      this.artifactFailureMap = artifactFailureMap;
     }
 
     @Override
-    public SkyValue compute(SkyKey skyKey, Environment env) throws DummyArtifactFunctionException {
-      if (failingArtifacts.contains(skyKey)) {
-        throw new DummyArtifactFunctionException(new DummyArtifactException((Artifact) skyKey));
+    public SkyValue compute(SkyKey skyKey, Environment env) throws SkyFunctionException {
+      Exception failure = artifactFailureMap.get(skyKey);
+      if (failure != null) {
+        throw new DummyArtifactFunctionException(failure);
       }
       return Preconditions.checkNotNull(artifactValueMap.get(skyKey));
     }
@@ -524,8 +617,10 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
   }
 
   private static final class DummyArtifactFunctionException extends SkyFunctionException {
-    DummyArtifactFunctionException(DummyArtifactException cause) {
-      super(cause, Transience.PERSISTENT);
+    DummyArtifactFunctionException(Exception cause) {
+      super(
+          cause,
+          cause instanceof ActionExecutionException ? Transience.TRANSIENT : Transience.PERSISTENT);
     }
   }
 

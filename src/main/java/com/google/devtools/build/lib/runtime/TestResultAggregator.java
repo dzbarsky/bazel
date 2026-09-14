@@ -58,6 +58,10 @@ final class TestResultAggregator {
   private int remainingRuns;
   private boolean summaryPosted = false;
 
+  synchronized int remainingRuns() {
+    return remainingRuns;
+  }
+
   TestResultAggregator(
       ConfiguredTarget target,
       BuildConfigurationValue configuration,
