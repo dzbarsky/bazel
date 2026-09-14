@@ -41,6 +41,7 @@ import net.starlark.java.eval.StarlarkThread;
 import net.starlark.java.eval.SymbolGenerator;
 import net.starlark.java.eval.Tuple;
 import net.starlark.java.syntax.Location;
+import net.starlark.java.syntax.TokenKind;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -623,6 +624,60 @@ public final class StarlarkProviderTest {
         .inOrder();
     assertThat((Map<?, ?>) dict).containsExactly("z", "first", "a", "second").inOrder();
     assertThrows(EvalException.class, () -> dict.putEntry("new", "value"));
+  }
+
+  @Test
+  public void schemafulProvider_allLayoutsPreserveValues() throws Exception {
+    // Cover each specialized size and the first size that keeps an array.
+    for (int size = 0; size <= 6; size++) {
+      ImmutableList.Builder<String> names = ImmutableList.builder();
+      for (int i = 0; i < size; i++) {
+        names.add("field" + i);
+      }
+      ImmutableList<String> fields = names.build();
+      StarlarkProvider provider =
+          StarlarkProvider.builder(Location.BUILTIN)
+              .setSchema(fields)
+              .buildExported(
+                  new StarlarkProvider.Key(
+                      keyForBuild(Label.parseCanonical("//foo:bar.bzl")), "schema" + size));
+      StarlarkInfo full;
+      StarlarkInfo left;
+      StarlarkInfo right;
+      try (Mutability mu = Mutability.create()) {
+        StarlarkThread thread = StarlarkThread.createTransient(mu, StarlarkSemantics.DEFAULT);
+        ImmutableMap.Builder<String, Object> values = ImmutableMap.builder();
+        ImmutableMap.Builder<String, Object> evens = ImmutableMap.builder();
+        ImmutableMap.Builder<String, Object> odds = ImmutableMap.builder();
+        for (int i = 0; i < size; i++) {
+          String field = fields.get(i);
+          StarlarkList<String> value = StarlarkList.of(mu, field);
+          values.put(field, value);
+          (i % 2 == 0 ? evens : odds).put(field, value);
+        }
+        full =
+            (StarlarkInfo)
+                Starlark.call(thread, provider, ImmutableList.of(), values.buildOrThrow());
+        left =
+            (StarlarkInfo)
+                Starlark.call(thread, provider, ImmutableList.of(), evens.buildOrThrow());
+        right =
+            (StarlarkInfo)
+                Starlark.call(thread, provider, ImmutableList.of(), odds.buildOrThrow());
+      }
+      full = full.unsafeOptimizeMemoryLayout();
+      left = left.unsafeOptimizeMemoryLayout();
+      right = right.unsafeOptimizeMemoryLayout();
+      assertThat(full.isImmutable()).isTrue();
+      assertThat(full.getFieldNames()).containsExactlyElementsIn(fields).inOrder();
+      for (int i = 0; i < size; i++) {
+        String field = fields.get(i);
+        assertThat((Iterable<?>) full.getValue(field)).containsExactly(field);
+        assertThat((i % 2 == 0 ? right : left).getValue(field)).isNull();
+      }
+      assertThat(full.getValue("absent")).isNull();
+      assertThat(left.binaryOp(TokenKind.PLUS, right, true)).isEqualTo(full);
+    }
   }
 
   @Test
