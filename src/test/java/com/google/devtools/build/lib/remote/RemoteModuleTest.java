@@ -72,6 +72,7 @@ import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.devtools.common.options.Options;
 import com.google.devtools.common.options.OptionsParser;
@@ -727,6 +728,37 @@ public final class RemoteModuleTest {
 
     assertThat(remoteModule.getRepositoryRemoteHelpersFactoryDelegate().createRepoContentsCache())
         .isNotNull();
+  }
+
+  @Test
+  public void cacheProbeDoesNotEagerlyDownloadAllOutputs() throws Exception {
+    assertProbeUsesMinimalDownloads("all");
+  }
+
+  @Test
+  public void cacheProbeIgnoresEagerDownloadRegex() throws Exception {
+    assertProbeUsesMinimalDownloads("minimal");
+  }
+
+  private void assertProbeUsesMinimalDownloads(String configuredMode) throws Exception {
+    remoteOptions =
+        parseRemoteOptions(
+            "--remote_download_outputs=" + configuredMode, "--remote_download_regex=.*");
+    remoteOptions.diskCache = TestUtils.createUniqueTmpDir(null).asFragment();
+    var configuredOutputsMode = remoteOptions.remoteOutputsMode;
+    var env = createTestCommandEnvironment(remoteModule, remoteOptions, scratch -> {});
+    env.getOptions().getOptions(ExecutionOptions.class).cacheProbeOutput =
+        PathFragment.create("probe.json");
+
+    remoteModule.beforeCommand(env);
+    env.throwPendingException();
+
+    assertThat(
+            remoteModule
+                .getRemoteOutputChecker()
+                .shouldDownloadOutput(PathFragment.create("out/image.tar"), null))
+        .isFalse();
+    assertThat(remoteOptions.remoteOutputsMode).isEqualTo(configuredOutputsMode);
   }
 
   @CanIgnoreReturnValue

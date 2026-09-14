@@ -18,6 +18,7 @@ import static com.google.common.collect.ImmutableSetMultimap.flatteningToImmutab
 import static java.util.Objects.requireNonNull;
 
 import com.google.common.base.Preconditions;
+import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -27,6 +28,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets;
@@ -35,10 +37,14 @@ import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
+import com.google.devtools.build.lib.packages.AggregatingAttributeMapper;
+import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.NonconfigurableAttributeMapper;
+import com.google.devtools.build.lib.packages.OutputFile;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.packages.TargetUtils;
+import com.google.devtools.build.lib.packages.TestTargetUtils;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.pkgcache.AbstractRecursivePackageProvider.MissingDepException;
 import com.google.devtools.build.lib.pkgcache.CompileOneDependencyTransformer;
@@ -47,15 +53,17 @@ import com.google.devtools.build.lib.pkgcache.FilteringPolicy;
 import com.google.devtools.build.lib.pkgcache.LoadingPhaseCompleteEvent;
 import com.google.devtools.build.lib.pkgcache.ParsingFailedEvent;
 import com.google.devtools.build.lib.pkgcache.TargetParsingCompleteEvent;
-import com.google.devtools.build.lib.pkgcache.TestFilter;
+import com.google.devtools.build.lib.server.FailureDetails.TargetPatterns;
 import com.google.devtools.build.lib.skyframe.TargetPatternPhaseValue.TargetPatternPhaseKey;
 import com.google.devtools.build.lib.skyframe.TargetPatternValue.TargetPatternKey;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -81,21 +89,50 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       return null;
     }
 
+    ProbeDependencyState probeState =
+        options.isCacheProbe() && !options.getExcludedDependencyPackages().isEmpty()
+            ? env.getState(ProbeDependencyState::new)
+            : null;
     // Determine targets to build:
     List<String> failedPatterns = new ArrayList<>();
-    List<ExpandedPattern> expandedPatterns =
-        getTargetsToBuild(env, options, repositoryMappingValue.repositoryMapping(), failedPatterns);
-    ResolvedTargets<Target> targets =
-        env.valuesMissing()
-            ? null
-            : mergeAll(expandedPatterns, !failedPatterns.isEmpty(), env, options);
+    List<ExpandedPattern> expandedPatterns;
+    ResolvedTargets<Target> targets;
+    if (probeState != null && probeState.selection != null) {
+      expandedPatterns = probeState.selection.expandedPatterns();
+      targets = probeState.selection.selectedTargets();
+    } else {
+      expandedPatterns =
+          getTargetsToBuild(
+              env, options, repositoryMappingValue.repositoryMapping(), failedPatterns);
+      if (env.valuesMissing()) {
+        return null;
+      }
+      targets = mergeAll(expandedPatterns, !failedPatterns.isEmpty(), env, options);
+      if (targets == null) {
+        return null;
+      }
+      // Local parsing errors must be replayed after a Skyframe restart.
+      if (probeState != null
+          && failedPatterns.isEmpty()
+          && !targets.hasError()
+          && !options.getCompileOneDependency()) {
+        probeState.selection = new ProbeSelection(ImmutableList.copyOf(expandedPatterns), targets);
+      }
+    }
+    ImmutableSet<Label> probeExcluded =
+        probeState == null
+            ? ImmutableSet.of()
+            : excludedProbeDependencies(
+                env, targets.getTargets(), expandedPatterns, options, probeState);
+    if (probeExcluded == null) {
+      return null;
+    }
+    targets = filterProbeTargets(targets, options, probeExcluded);
 
     // Record labels before they're expanded. For example, if the build requests a test_suite //foo,
     // record //foo here instead of the tests the suite expands to.
     ImmutableSet<Label> nonExpandedLabels =
-        targets == null
-            ? ImmutableSet.of()
-            : targets.getTargets().stream().map(Target::getLabel).collect(toImmutableSet());
+        targets.getTargets().stream().map(Target::getLabel).collect(toImmutableSet());
 
     // If the --build_tests_only option was specified or we want to run tests, we need to determine
     // the list of targets to test. For that, we remove manual tests and apply the command-line
@@ -103,24 +140,40 @@ final class TargetPatternPhaseFunction implements SkyFunction {
     // set as build list as well.
     ResolvedTargets<Target> testTargets = null;
     if (options.getDetermineTests() || options.getBuildTestsOnly()) {
-      testTargets =
-          determineTests(
-              env,
-              options.getTargetPatterns(),
-              options.getOffset(),
-              repositoryMappingValue.repositoryMapping(),
-              options.getTestFilter());
+      // Dropping an excluded negative suite would leave its eligible members selected; expanding
+      // it instead would load the excluded packages. Fail rather than publish an incorrect probe.
+      Target excludedNegativeSuite =
+          options.isCacheProbe()
+              ? expandedPatterns.stream()
+                  .filter(pattern -> pattern.pattern().isNegative())
+                  .flatMap(pattern -> pattern.resolvedTargets().getTargets().stream())
+                  .filter(
+                      target ->
+                          TargetUtils.isTestSuiteRule(target)
+                              && probeExcluded.contains(target.getLabel()))
+                  .findFirst()
+                  .orElse(null)
+              : null;
+      if (excludedNegativeSuite != null) {
+        env.getListener()
+            .handle(
+                Event.error(
+                    "Cannot subtract excluded test suite " + excludedNegativeSuite.getLabel()));
+        testTargets = ResolvedTargets.failed();
+      } else {
+        testTargets =
+            determineTests(
+                env, repositoryMappingValue.repositoryMapping(), options, probeExcluded);
+      }
       Preconditions.checkState(env.valuesMissing() || (testTargets != null));
     }
 
     Map<Label, SkyKey> testExpansionKeys = new LinkedHashMap<>();
-    if (targets != null) {
-      for (Target target : targets.getTargets()) {
-        if (TargetUtils.isTestSuiteRule(target) && options.isExpandTestSuites()) {
-          Label label = target.getLabel();
-          SkyKey testExpansionKey = TestsForTargetPatternValue.key(ImmutableSet.of(label));
-          testExpansionKeys.put(label, testExpansionKey);
-        }
+    for (Target target : targets.getTargets()) {
+      if (TargetUtils.isTestSuiteRule(target) && options.isExpandTestSuites()) {
+        Label label = target.getLabel();
+        SkyKey testExpansionKey = TestsForTargetPatternValue.key(ImmutableSet.of(label));
+        testExpansionKeys.put(label, testExpansionKey);
       }
     }
     SkyframeLookupResult expandedTests = env.getValuesAndExceptions(testExpansionKeys.values());
@@ -213,6 +266,22 @@ final class TargetPatternPhaseFunction implements SkyFunction {
     ResolvedTargets<Target> expandedTargets =
         TestsForTargetPatternFunction.labelsToTargets(
             env, targetLabels.getTargets(), targetLabels.hasError());
+    if (expandedTargets == null) {
+      return null;
+    }
+    expandedTargets = filterProbeTargets(expandedTargets, options, probeExcluded);
+    if (options.isCacheProbe()) {
+      filteredTargets =
+          ImmutableSet.<Target>builder()
+              .addAll(filteredTargets)
+              .addAll(expandedTargets.getFilteredTargets())
+              .build();
+      targetLabels =
+          ResolvedTargets.<Label>builder()
+              .addAll(expandedTargets.getTargets().stream().map(Target::getLabel).toList())
+              .mergeError(expandedTargets.hasError())
+              .build();
+    }
     Set<Target> testSuiteTargets =
         Sets.difference(targets.getTargets(), expandedTargets.getTargets());
     ImmutableSet<Label> testsToRunLabels = null;
@@ -242,7 +311,10 @@ final class TargetPatternPhaseFunction implements SkyFunction {
                 expandedTargets.getTargets(),
                 ImmutableList.copyOf(failedPatterns),
                 mapOriginalPatternsToLabels(expandedPatterns, targets.getTargets()),
-                testSuiteExpansions.buildOrThrow()));
+                options.isCacheProbe()
+                    ? filterSuiteExpansions(
+                        testSuiteExpansions.buildOrThrow(), targetLabels.getTargets())
+                    : testSuiteExpansions.buildOrThrow()));
     env.getListener()
         .post(
             new LoadingPhaseCompleteEvent(
@@ -290,15 +362,20 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       throws InterruptedException {
     TargetPattern.Parser parser =
         new TargetPattern.Parser(options.getOffset(), RepositoryName.MAIN, repoMapping);
+    // Keep manually tagged wildcard targets available for the probe's excluded-target manifest.
     FilteringPolicy policy =
         options.getBuildManualTests()
+                || (options.isCacheProbe() && options.getBuildTargetFilter().contains("-manual"))
             ? FilteringPolicies.NO_FILTER
             : FilteringPolicies.FILTER_MANUAL;
     List<TargetPatternKey> patternSkyKeys = new ArrayList<>(options.getTargetPatterns().size());
     for (String pattern : options.getTargetPatterns()) {
       try {
-        patternSkyKeys.add(
-            TargetPatternValue.key(SignedTargetPattern.parse(pattern, parser), policy));
+        TargetPatternKey patternKey =
+            probePatternKey(env, SignedTargetPattern.parse(pattern, parser), policy, options);
+        if (patternKey != null) {
+          patternSkyKeys.add(patternKey);
+        }
       } catch (TargetParsingException e) {
         failedPatterns.add(pattern);
         // We post a PatternExpandingError here - the pattern could not be parsed, so we don't even
@@ -344,7 +421,7 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       if (asTargets == null) {
         continue;
       }
-      expandedPatterns.add(ExpandedPattern.of(pattern, asTargets));
+      expandedPatterns.add(new ExpandedPattern(pattern, asTargets));
     }
 
     return expandedPatterns;
@@ -369,8 +446,7 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       }
     }
 
-    ResolvedTargets<Target> result =
-        builder.filter(TargetUtils.tagFilter(options.getBuildTargetFilter())).build();
+    ResolvedTargets<Target> result = builder.filter(buildTagFilter(options)).build();
     if (options.getCompileOneDependency()) {
       EnvironmentBackedRecursivePackageProvider environmentBackedRecursivePackageProvider =
           new EnvironmentBackedRecursivePackageProvider(env);
@@ -400,26 +476,29 @@ final class TargetPatternPhaseFunction implements SkyFunction {
    * Interpret test target labels from the command-line arguments and return the corresponding set
    * of targets, handling the filter flags, and expanding test suites.
    *
-   * @param targetPatterns the list of command-line target patterns specified by the user
    * @param repoMapping the repository mapping to apply to repos in the patterns
-   * @param testFilter the test filter
    */
   @Nullable
   private static ResolvedTargets<Target> determineTests(
       Environment env,
-      List<String> targetPatterns,
-      PathFragment offset,
       RepositoryMapping repoMapping,
-      TestFilter testFilter)
+      TargetPatternPhaseKey options,
+      ImmutableSet<Label> probeExcluded)
       throws InterruptedException {
     TargetPattern.Parser parser =
-        new TargetPattern.Parser(offset, RepositoryName.MAIN, repoMapping);
+        new TargetPattern.Parser(options.getOffset(), RepositoryName.MAIN, repoMapping);
     List<TargetPatternKey> patternSkyKeys = new ArrayList<>();
-    for (String pattern : targetPatterns) {
+    for (String pattern : options.getTargetPatterns()) {
       try {
-        patternSkyKeys.add(
-            TargetPatternValue.key(
-                SignedTargetPattern.parse(pattern, parser), FilteringPolicies.FILTER_TESTS));
+        TargetPatternKey patternKey =
+            probePatternKey(
+                env,
+                SignedTargetPattern.parse(pattern, parser),
+                FilteringPolicies.FILTER_TESTS,
+                options);
+        if (patternKey != null) {
+          patternSkyKeys.add(patternKey);
+        }
       } catch (TargetParsingException e) {
         // Skip.
       }
@@ -444,7 +523,25 @@ final class TargetPatternPhaseFunction implements SkyFunction {
         // Skip.
         continue;
       }
-      expandedSuiteKeys.add(TestsForTargetPatternValue.key(value.getTargets().getTargets()));
+      ImmutableSet<Label> labels = value.getTargets().getTargets();
+      if (options.isCacheProbe() && !key.isNegative()) {
+        ResolvedTargets<Target> positiveTargets =
+            TestsForTargetPatternFunction.labelsToTargets(
+                env, labels, value.getTargets().hasError());
+        if (positiveTargets == null) {
+          return null;
+        }
+        labels =
+            filterProbeTargets(positiveTargets, options, probeExcluded).getTargets().stream()
+                .map(Target::getLabel)
+                .collect(toImmutableSet());
+      } else {
+        labels =
+            labels.stream()
+                .filter(label -> !probeExcluded.contains(label))
+                .collect(toImmutableSet());
+      }
+      expandedSuiteKeys.add(TestsForTargetPatternValue.key(labels));
     }
     SkyframeLookupResult expandedSuites = env.getValuesAndExceptions(expandedSuiteKeys);
     if (env.valuesMissing()) {
@@ -494,8 +591,293 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       }
     }
 
-    testTargetsBuilder.filter(testFilter);
-    return testTargetsBuilder.build();
+    testTargetsBuilder.filter(options.getTestFilter());
+    return filterProbeTargets(testTargetsBuilder.build(), options, probeExcluded);
+  }
+
+  private static ImmutableMap<Label, ImmutableSet<Label>> filterSuiteExpansions(
+      ImmutableMap<Label, ImmutableSet<Label>> expansions, ImmutableSet<Label> included) {
+    ImmutableMap.Builder<Label, ImmutableSet<Label>> result = ImmutableMap.builder();
+    expansions.forEach(
+        (suite, members) ->
+            result.put(suite, members.stream().filter(included::contains).collect(toImmutableSet())));
+    return result.buildOrThrow();
+  }
+
+  private static Predicate<Target> buildTagFilter(TargetPatternPhaseKey options) {
+    Predicate<Target> filter = TargetUtils.tagFilter(options.getBuildTargetFilter());
+    if (options.isCacheProbe() && options.getBuildTargetFilter().contains("-manual")) {
+      // Native configuration rules' non-taggable "manual" defaults bypass the regular tag filter.
+      return Predicates.and(target -> !TargetUtils.hasManualTag(target), filter);
+    }
+    return filter;
+  }
+
+  private static ResolvedTargets<Target> filterProbeTargets(
+      ResolvedTargets<Target> targets,
+      TargetPatternPhaseKey options,
+      ImmutableSet<Label> excluded) {
+    if (!options.isCacheProbe()
+        || (excluded.isEmpty() && options.getBuildTargetFilter().isEmpty())) {
+      return targets;
+    }
+    Predicate<Target> tagFilter = buildTagFilter(options);
+    return ResolvedTargets.<Target>builder()
+        .merge(targets)
+        .filter(target -> !excluded.contains(target.getLabel()) && tagFilter.apply(target))
+        .build();
+  }
+
+  private static boolean excludedPackage(
+      PackageIdentifier pkg, ImmutableList<PackageIdentifier> prefixes) {
+    for (PackageIdentifier prefix : prefixes) {
+      if (prefix.getRepository().equals(pkg.getRepository())
+          && pkg.getPackageFragment().startsWith(prefix.getPackageFragment())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  @Nullable
+  private static TargetPatternKey probePatternKey(
+      Environment env,
+      SignedTargetPattern pattern,
+      FilteringPolicy policy,
+      TargetPatternPhaseKey options)
+      throws InterruptedException, TargetParsingException {
+    var prefixes = options.getExcludedDependencyPackages();
+    if (prefixes.isEmpty()) {
+      return TargetPatternValue.key(pattern, policy);
+    }
+    TargetPattern parsed = pattern.pattern();
+    PackageIdentifier directory =
+        parsed.getType() == TargetPattern.Type.PATH_AS_TARGET
+            ? PackageIdentifier.createInMainRepo(parsed.getPathForPathAsTarget())
+            : parsed.getDirectory();
+    if (parsed.getType() == TargetPattern.Type.PATH_AS_TARGET
+        && excludedPackage(directory, prefixes)) {
+      // A file path below an excluded directory may belong to an included ancestor package.
+      ContainingPackageLookupValue containingPackage =
+          (ContainingPackageLookupValue) env.getValue(ContainingPackageLookupValue.key(directory));
+      if (containingPackage == null) {
+        return null;
+      }
+      if (!containingPackage.hasContainingPackage()) {
+        // Preserve the ordinary invalid-path diagnostic.
+        return TargetPatternValue.key(pattern, policy);
+      }
+      directory = containingPackage.getContainingPackageName();
+    }
+    if (excludedPackage(directory, prefixes)) {
+      // Keep subtree exclusions such as -//personal/... without loading that tree. A named
+      // negative may be a suite that subtracts tests outside it, so rejecting it is necessary.
+      if (pattern.sign() == SignedTargetPattern.Sign.NEGATIVE
+          && (options.getDetermineTests() || options.getBuildTestsOnly())
+          && parsed.getType() != TargetPattern.Type.TARGETS_BELOW_DIRECTORY) {
+        throw new TargetParsingException(
+            "Cannot subtract excluded target pattern -" + parsed.getOriginalPattern(),
+            TargetPatterns.Code.NEGATIVE_TARGET_PATTERN_NOT_ALLOWED);
+      }
+      return null;
+    }
+    ImmutableSet<PathFragment> excludedDirectories =
+        prefixes.stream()
+            .filter(prefix -> prefix.getRepository().equals(parsed.getRepository()))
+            .map(PackageIdentifier::getPackageFragment)
+            .collect(toImmutableSet());
+    return TargetPatternValue.key(pattern, policy, excludedDirectories);
+  }
+
+  @Nullable
+  private static ImmutableSet<Label> excludedProbeDependencies(
+      Environment env,
+      Collection<Target> targets,
+      List<ExpandedPattern> patterns,
+      TargetPatternPhaseKey options,
+      ProbeDependencyState state)
+      throws InterruptedException {
+    var prefixes = options.getExcludedDependencyPackages();
+    state.initialize(targets, patterns, options);
+    if (state.result != null) {
+      return state.result;
+    }
+    var tagFilter = buildTagFilter(options);
+    while (!state.pendingLabels.isEmpty()) {
+      Map<PackageIdentifier, List<Label>> labelsByPackage = new HashMap<>();
+      for (Label label : state.pendingLabels) {
+        labelsByPackage
+            .computeIfAbsent(label.getPackageIdentifier(), unused -> new ArrayList<>())
+            .add(label);
+      }
+      SkyframeLookupResult packages = env.getValuesAndExceptions(labelsByPackage.keySet());
+      if (env.valuesMissing()) {
+        return null;
+      }
+      Map<PackageIdentifier, PackageValue> availablePackages = new HashMap<>();
+      for (PackageIdentifier packageIdentifier : labelsByPackage.keySet()) {
+        PackageValue value;
+        try {
+          value =
+              (PackageValue) packages.getOrThrow(packageIdentifier, NoSuchPackageException.class);
+        } catch (NoSuchPackageException e) {
+          // Analysis reports a missing non-excluded dependency if its root survives filtering.
+          continue;
+        }
+        if (value == null) {
+          return null;
+        }
+        availablePackages.put(packageIdentifier, value);
+      }
+      Set<Label> nextLabels = new HashSet<>();
+      for (var entry : labelsByPackage.entrySet()) {
+        PackageValue value = availablePackages.get(entry.getKey());
+        if (value == null) {
+          continue;
+        }
+        for (Label label : entry.getValue()) {
+          Target target = value.getPackage().getTargetOrNull(label.getName());
+          boolean dependency = state.requiredLabels.remove(label);
+          boolean expandedSuite = state.expandedSuiteLabels.remove(label);
+          boolean required = dependency || expandedSuite;
+          List<Rule> suites = state.suiteMemberships.remove(label);
+          if (suites != null && target != null) {
+            for (Rule suite : suites) {
+              if (TargetUtils.isTestRule(target)) {
+                if (!tagFilter.apply(target)) {
+                  continue;
+                }
+                Set<Target> member = new HashSet<>();
+                member.add(target);
+                TestTargetUtils.filterTests(suite, member);
+                if (member.isEmpty()) {
+                  continue;
+                }
+              }
+              state.reverse.computeIfAbsent(label, unused -> new ArrayList<>()).add(suite.getLabel());
+              required = true;
+            }
+          }
+          // A suite reached later through a non-suite dependency must be traversed in full.
+          boolean requiredSuite = dependency && state.filteredSuites.remove(label);
+          if (!required || (!state.visitedLabels.add(label) && !requiredSuite)) {
+            continue;
+          }
+          if (target instanceof OutputFile output) {
+            Label generator = output.getGeneratingRuleLabel();
+            state.reverse.computeIfAbsent(generator, unused -> new ArrayList<>()).add(label);
+            if (!state.visitedLabels.contains(generator)) {
+              state.requiredLabels.add(generator);
+              nextLabels.add(generator);
+            }
+            continue;
+          }
+          if (!(target instanceof Rule rule)) {
+            continue;
+          }
+          boolean filterSuiteMembers = TargetUtils.isTestSuiteRule(rule) && !dependency;
+          if (filterSuiteMembers) {
+            state.filteredSuites.add(label);
+          }
+          // Visit selectors directly, not their Cartesian product of possible attribute values.
+          AggregatingAttributeMapper.of(rule)
+              .visitAllLabels(
+                  (attribute, prerequisite) -> {
+                    PackageIdentifier dependencyPackage = prerequisite.getPackageIdentifier();
+                    // Suite membership selects roots, unlike an ordinary required dependency.
+                    // Filter members before traversing them or propagating their exclusions.
+                    if (filterSuiteMembers
+                        && (attribute.getName().equals("tests")
+                            || attribute.getName().equals("$implicit_tests"))
+                        && !excludedPackage(dependencyPackage, prefixes)) {
+                      state.suiteMemberships
+                          .computeIfAbsent(prerequisite, unused -> new ArrayList<>())
+                          .add(rule);
+                      nextLabels.add(prerequisite);
+                      return;
+                    }
+                    state
+                        .reverse
+                        .computeIfAbsent(prerequisite, unused -> new ArrayList<>())
+                        .add(rule.getLabel());
+                    if (excludedPackage(dependencyPackage, prefixes)) {
+                      state.excluded.add(prerequisite);
+                    } else if (!state.visitedLabels.contains(prerequisite)
+                        || state.filteredSuites.contains(prerequisite)) {
+                      state.requiredLabels.add(prerequisite);
+                      nextLabels.add(prerequisite);
+                    }
+                  });
+        }
+      }
+      state.pendingLabels = nextLabels;
+    }
+    // Exclusion is conservative per label: a suite required in full by another root can also
+    // exclude that suite's independently requested filtered expansion.
+    ArrayDeque<Label> frontier = new ArrayDeque<>(state.excluded);
+    while (!frontier.isEmpty()) {
+      for (Label dependent : state.reverse.getOrDefault(frontier.removeFirst(), List.of())) {
+        if (state.excluded.add(dependent)) {
+          frontier.addLast(dependent);
+        }
+      }
+    }
+    state.result = ImmutableSet.copyOf(state.excluded);
+    state.visitedLabels.clear();
+    state.requiredLabels.clear();
+    state.expandedSuiteLabels.clear();
+    state.filteredSuites.clear();
+    state.suiteMemberships.clear();
+    state.reverse.clear();
+    state.excluded.clear();
+    return state.result;
+  }
+
+  private record ProbeSelection(
+      ImmutableList<ExpandedPattern> expandedPatterns, ResolvedTargets<Target> selectedTargets) {}
+
+  private static final class ProbeDependencyState implements Environment.SkyKeyComputeState {
+    @Nullable ProbeSelection selection;
+    Set<Label> pendingLabels = new HashSet<>();
+    final Set<Label> requiredLabels = new HashSet<>();
+    final Set<Label> expandedSuiteLabels = new HashSet<>();
+    final Set<Label> filteredSuites = new HashSet<>();
+    final Map<Label, List<Rule>> suiteMemberships = new HashMap<>();
+    final Set<Label> visitedLabels = new HashSet<>();
+    final Map<Label, List<Label>> reverse = new HashMap<>();
+    final Set<Label> excluded = new HashSet<>();
+    @Nullable ImmutableSet<Label> result;
+    boolean initialized;
+
+    void initialize(
+        Collection<Target> targets, List<ExpandedPattern> patterns, TargetPatternPhaseKey options) {
+      if (initialized) {
+        return;
+      }
+      for (Target target : targets) {
+        pendingLabels.add(target.getLabel());
+        if (TargetUtils.isTestSuiteRule(target) && options.isExpandTestSuites()) {
+          expandedSuiteLabels.add(target.getLabel());
+        } else {
+          requiredLabels.add(target.getLabel());
+        }
+      }
+      if (options.getDetermineTests() || options.getBuildTestsOnly()) {
+        var tagFilter = buildTagFilter(options);
+        // Negative suites still expand even when their tags exclude them as build roots: their
+        // members must be subtracted. Their excluded dependencies must stay unloaded.
+        for (ExpandedPattern pattern : patterns) {
+          for (Target target : pattern.resolvedTargets().getTargets()) {
+            if (TargetUtils.isTestSuiteRule(target)
+                && (pattern.pattern().isNegative() || tagFilter.apply(target))) {
+              pendingLabels.add(target.getLabel());
+              expandedSuiteLabels.add(target.getLabel());
+            }
+          }
+        }
+      }
+      initialized = true;
+    }
   }
 
   private static ImmutableSetMultimap<String, Label> mapOriginalPatternsToLabels(
@@ -517,10 +899,5 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       requireNonNull(pattern, "pattern");
       requireNonNull(resolvedTargets, "resolvedTargets");
     }
-
-    static ExpandedPattern of(TargetPatternKey pattern, ResolvedTargets<Target> resolvedTargets) {
-      return new ExpandedPattern(pattern, resolvedTargets);
-    }
-
   }
 }
