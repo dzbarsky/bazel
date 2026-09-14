@@ -80,6 +80,7 @@ import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.query2.aquery.ActionGraphProtoOutputFormatterCallback;
 import com.google.devtools.build.lib.runtime.BlazeOptionHandler.SkyframeExecutorTargetLoader;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
+import com.google.devtools.build.lib.runtime.CacheProbe;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.CommandLineEvent;
 import com.google.devtools.build.lib.runtime.CommandLineEvent.CanonicalCommandLineEvent;
@@ -280,6 +281,7 @@ public class BuildTool {
                 request.getLoadingOptions(),
                 request.getLoadingPhaseThreadCount(),
                 request.shouldRunTests(),
+                request.getExecutionOptions().getCacheProbeOutput() != null,
                 validator);
       }
 
@@ -299,6 +301,7 @@ public class BuildTool {
                   request.getLoadingOptions(),
                   request.getLoadingPhaseThreadCount(),
                   request.shouldRunTests(),
+                  request.getExecutionOptions().getCacheProbeOutput() != null,
                   validator);
 
       ImmutableSet<OptionDefinition> optionDefinitions =
@@ -514,6 +517,7 @@ public class BuildTool {
       LoadingOptions loadingOptions,
       int loadingPhaseThreadCount,
       boolean shouldRunTests,
+      boolean cacheProbe,
       final TargetValidator validator)
       throws LoadingFailedException, TargetParsingException, InterruptedException {
     TargetPatternPhaseValue result =
@@ -524,7 +528,8 @@ public class BuildTool {
             loadingOptions,
             loadingPhaseThreadCount,
             keepGoing,
-            shouldRunTests);
+            shouldRunTests,
+            cacheProbe);
     if (validator != null) {
       ImmutableSet<Target> targetLabels =
           result.getTargets(reporter, skyframeExecutor.getPackageManager());
@@ -973,10 +978,17 @@ public class BuildTool {
     maybeSetStopOnFirstFailure(request, result);
     Throwable crash = null;
     DetailedExitCode detailedExitCode = null;
+    CacheProbe cacheProbe = null;
     try {
+      if (request.getExecutionOptions().getCacheProbeOutput() != null) {
+        cacheProbe = new CacheProbe(env, request);
+      }
       detailedExitCode =
           processRequestHandleCheckedExceptions(
               request, result, validator, options, targetsForProjectResolution, postBuildCallback);
+    } catch (IOException e) {
+      detailedExitCode = CacheProbe.error(e.getMessage());
+      reportExceptionError(e);
     } catch (Throwable throwable) {
       crash = throwable;
       detailedExitCode = CrashFailureDetails.detailedExitCodeForThrowable(crash);
@@ -999,8 +1011,23 @@ public class BuildTool {
             CrashFailureDetails.detailedExitCodeForThrowable(
                 new IllegalStateException("Unspecified DetailedExitCode"));
       }
-      try (SilentCloseable c = Profiler.instance().profile("stopRequest")) {
-        stopRequest(result, crash, detailedExitCode);
+      try {
+        if (cacheProbe != null && crash == null) {
+          detailedExitCode = cacheProbe.finish(result, detailedExitCode);
+        }
+        try (SilentCloseable c = Profiler.instance().profile("stopRequest")) {
+          stopRequest(result, crash, detailedExitCode);
+        }
+      } finally {
+        if (cacheProbe != null) {
+          try {
+            if (!result.getSuccess()) {
+              cacheProbe.discardManifest();
+            }
+          } finally {
+            cacheProbe.close();
+          }
+        }
       }
     }
 
