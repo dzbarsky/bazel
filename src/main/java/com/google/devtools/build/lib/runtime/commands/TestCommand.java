@@ -121,7 +121,9 @@ public class TestCommand implements BlazeCommand {
             options.getOptions(ExecutionOptions.class),
             env.getEventBus());
 
-    env.getEventBus().register(testListener);
+    if (options.getOptions(ExecutionOptions.class).getCacheProbeOutput() == null) {
+      env.getEventBus().register(testListener);
+    }
     return doTest(env, options, testListener, printer);
   }
 
@@ -170,6 +172,14 @@ public class TestCommand implements BlazeCommand {
     BuildRequest request = builder.build();
 
     BuildResult buildResult = new BuildTool(env).processRequest(request, null, options);
+
+    if (request.getExecutionOptions().getCacheProbeOutput() != null) {
+      env.getEventBus()
+          .post(
+              new TestingCompleteEvent(
+                  buildResult.getDetailedExitCode().getExitCode(), buildResult.getStopTime()));
+      return BlazeCommandResult.detailedExitCode(buildResult.getDetailedExitCode());
+    }
 
     if (!request.getBuildOptions().getPerformAnalysisPhase()) {
       String message = "Couldn't start the build. Unable to run tests";
