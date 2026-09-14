@@ -115,6 +115,10 @@ public final class TargetParsingCompleteEvent implements BuildEventWithOrderCons
     return targets;
   }
 
+  public ImmutableMap<Label, ImmutableSet<Label>> getTestSuiteExpansions() {
+    return testSuiteExpansions;
+  }
+
   public Iterable<Label> getLabels() {
     return Iterables.transform(targets, ThinTarget::getLabel);
   }
