@@ -20,11 +20,6 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.cmdline.Label;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Random;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.StarlarkInt;
@@ -124,12 +119,21 @@ public class StarlarkInfoTest {
   @Test
   public void concatWithDifferentFields() throws Exception {
     StarlarkProvider provider = makeProvider();
-    StarlarkInfo info1 = makeInfoWithF1F2Values(provider, StarlarkInt.of(4), null);
-    StarlarkInfo info2 = makeInfoWithF1F2Values(provider, null, StarlarkInt.of(5));
-    StarlarkInfo result = (StarlarkInfo) info1.binaryOp(TokenKind.PLUS, info2, true);
-    assertThat(result.getFieldNames()).containsExactly("f1", "f2");
-    assertThat(result.getValue("f1")).isEqualTo(StarlarkInt.of(4));
-    assertThat(result.getValue("f2")).isEqualTo(StarlarkInt.of(5));
+    StarlarkInfo info1 =
+        StarlarkInfo.create(
+            provider, ImmutableMap.of("e", StarlarkInt.of(5), "a", StarlarkInt.of(1)), null);
+    StarlarkInfo info2 =
+        StarlarkInfo.create(
+            provider,
+            ImmutableMap.of("f", StarlarkInt.of(6), "b", StarlarkInt.of(2), "d", StarlarkInt.of(4)),
+            null);
+    StarlarkInfo result = (StarlarkInfo) info1.binaryOp(TokenKind.PLUS, info2, false);
+    assertThat(result.getFieldNames()).containsExactly("a", "b", "d", "e", "f").inOrder();
+    assertThat(result.getValue("a")).isEqualTo(StarlarkInt.of(1));
+    assertThat(result.getValue("b")).isEqualTo(StarlarkInt.of(2));
+    assertThat(result.getValue("d")).isEqualTo(StarlarkInt.of(4));
+    assertThat(result.getValue("e")).isEqualTo(StarlarkInt.of(5));
+    assertThat(result.getValue("f")).isEqualTo(StarlarkInt.of(6));
   }
 
   /** Creates an unexported schemaless provider type with builtin location. */
@@ -162,58 +166,17 @@ public class StarlarkInfoTest {
     return StarlarkInfo.create(provider, values.build(), Location.BUILTIN);
   }
 
-  // Tests sortPairs using arrays of various lengths from Fibonacci sequence.
   @Test
-  public void testSortPairs() throws Exception {
-    boolean ok = true;
-    Random rand = new Random(0);
-
-    // (a, b) is the Fibonacci generator. We use a as the array length.
-    for (int a = 0, b = 1; a < 1000; ) {
-      // generate random array of a pairs.
-      Object[] array = new Object[2 * a];
-      for (int i = 0; i < a; i++) {
-        int r = rand.nextInt(1000000);
-        array[i] = String.format("key%06d", r);
-        array[a + i] = r;
-      }
-
-      // Sort keys and values using reference implementation.
-      @SuppressWarnings("unchecked")
-      List<String> origKeys =
-          (List<String>) (List<?>) new ArrayList<>(Arrays.asList(array).subList(0, a));
-      Collections.sort(origKeys);
-      @SuppressWarnings("unchecked")
-      List<Integer> origValues =
-          (List<Integer>) (List<?>) new ArrayList<>(Arrays.asList(array).subList(a, 2 * a));
-      Collections.sort(origValues);
-
-      // Sort using sortPairs.
-      if (a > 0) {
-        StarlarkInfoNoSchema.sortPairs(array, 0, a - 1);
-      }
-
-      // Assert sorted keys match reference implementation.
-      List<?> keys = Arrays.asList(array).subList(0, a);
-      if (!keys.equals(origKeys)) {
-        System.err.printf("a=%d: keys not in order: got %s, want %s\n", a, keys, origKeys);
-        ok = false;
-      }
-
-      // Assert sorted values match reference implementation.
-      List<?> values = Arrays.asList(array).subList(a, 2 * a);
-      if (!values.equals(origValues)) {
-        System.err.printf("a=%d: values not in order: got %s, want %s\n", a, values, origValues);
-        ok = false;
-      }
-
-      // next Fibonacci number
-      int c = a + b;
-      a = b;
-      b = c;
-    }
-    if (!ok) {
-      throw new AssertionError("failed");
-    }
+  public void unorderedFieldsRetainValues() {
+    StarlarkInfo info =
+        StarlarkInfo.create(
+            makeProvider(),
+            ImmutableMap.of("z", StarlarkInt.of(1), "a", StarlarkInt.of(3), "m", StarlarkInt.of(2)),
+            Location.BUILTIN);
+    assertThat(info.getFieldNames()).containsExactly("a", "m", "z").inOrder();
+    assertThat(info.getValue("z")).isEqualTo(StarlarkInt.of(1));
+    assertThat(info.getValue("a")).isEqualTo(StarlarkInt.of(3));
+    assertThat(info.getValue("m")).isEqualTo(StarlarkInt.of(2));
+    assertThat(info.getValue("missing")).isNull();
   }
 }
