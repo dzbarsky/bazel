@@ -242,6 +242,22 @@ public abstract class ExecutionOptions extends OptionsBase {
   public abstract boolean getCheckUpToDate();
 
   @Option(
+      name = "experimental_cache_probe_output",
+      defaultValue = "null",
+      converter = OptionsUtils.EmptyToNullPathFragmentConverter.class,
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "Probe cached build and test results without executing spawns. Print roots with missing"
+              + " cache results as they are found, then write a JSON manifest when all selected"
+              + " roots are accounted for. Requires --keep_going and --test_keep_going;"
+              + " --build_tests_only is unsupported. Build tag filters also apply to tests and"
+              + " test-suite members. Later derived dependencies may be skipped after a miss.")
+  public abstract PathFragment getCacheProbeOutput();
+
+  public abstract void setCacheProbeOutput(PathFragment value);
+
+  @Option(
       name = "check_tests_up_to_date",
       defaultValue = "false",
       implicitRequirements = {"--check_up_to_date"},
