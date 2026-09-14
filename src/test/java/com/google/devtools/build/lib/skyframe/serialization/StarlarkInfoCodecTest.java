@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.skyframe.serialization;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.fail;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -33,7 +34,11 @@ import com.google.devtools.build.skyframe.state.EnvironmentForUtilities;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.util.concurrent.ExecutionException;
+import net.starlark.java.eval.Mutability;
+import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkInt;
+import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkThread;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -90,6 +95,41 @@ public final class StarlarkInfoCodecTest extends BuildViewTestCase {
                   }
                 }));
     return (StarlarkInfo) Futures.getDone(resultFuture);
+  }
+
+  @Test
+  public void schemafulProvidersRoundTripAllLayouts() throws Exception {
+    scratch.file("test/BUILD");
+    scratch.file(
+        "test/lib.bzl",
+        """
+        Schema0 = provider(fields = [])
+        Schema1 = provider(fields = ["field%d" % i for i in range(1)])
+        Schema2 = provider(fields = ["field%d" % i for i in range(2)])
+        Schema3 = provider(fields = ["field%d" % i for i in range(3)])
+        Schema4 = provider(fields = ["field%d" % i for i in range(4)])
+        Schema5 = provider(fields = ["field%d" % i for i in range(5)])
+        Schema6 = provider(fields = ["field%d" % i for i in range(6)])
+        """);
+    BzlLoadValue.Key key =
+        BzlLoadValue.keyForBuild(Label.parseCanonicalUnchecked("//test:lib.bzl"));
+    BzlLoadValue loadValue = getBzlLoadValue(key);
+    for (int size = 0; size <= 6; size++) {
+      ImmutableMap.Builder<String, Object> values = ImmutableMap.builder();
+      for (int i = 0; i < size; i++) {
+        values.put("field" + i, StarlarkInt.of(i));
+      }
+      StarlarkProvider provider =
+          (StarlarkProvider) loadValue.getModule().getGlobal("Schema" + size);
+      StarlarkInfo instance;
+      try (Mutability mu = Mutability.create()) {
+        StarlarkThread thread = StarlarkThread.createTransient(mu, StarlarkSemantics.DEFAULT);
+        instance =
+            (StarlarkInfo)
+                Starlark.call(thread, provider, ImmutableList.of(), values.buildOrThrow());
+      }
+      verifyRoundTripWithSkyframe(instance);
+    }
   }
 
   private static void verificationFunction(StarlarkInfo original, StarlarkInfo deserialized) {
