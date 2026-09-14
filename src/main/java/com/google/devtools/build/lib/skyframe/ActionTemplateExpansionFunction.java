@@ -101,16 +101,29 @@ public class ActionTemplateExpansionFunction implements SkyFunction {
     ImmutableList<ActionAnalysisMetadata> actions;
     try {
       ImmutableList.Builder<TreeFileArtifact> inputTreeFileArtifacts = ImmutableList.builder();
+      ActionExecutionException firstCacheProbeMiss = null;
       for (TreeArtifact inputTreeArtifact : actionTemplate.getInputTreeArtifacts()) {
-        TreeArtifactValue treeArtifactValue =
-            (TreeArtifactValue)
-                result.getOrThrow(inputTreeArtifact, ActionExecutionException.class);
-        // b/507424770#comment10: To handle the case of a wrongly bubbled up exception causing a
-        // null value, we return null here so that we don't crash with an NPE.
-        if (treeArtifactValue == null) {
-          return null;
+        try {
+          TreeArtifactValue treeArtifactValue =
+              (TreeArtifactValue)
+                  result.getOrThrow(inputTreeArtifact, ActionExecutionException.class);
+          // b/507424770#comment10: A wrongly bubbled exception can leave a null value.
+          if (treeArtifactValue == null) {
+            return null;
+          }
+          inputTreeFileArtifacts.addAll(treeArtifactValue.getChildren());
+        } catch (ActionExecutionException e) {
+          if (!e.isCacheProbeMiss()) {
+            throw e;
+          }
+          // Inspect the other input trees so an expected miss cannot hide a genuine error.
+          if (firstCacheProbeMiss == null) {
+            firstCacheProbeMiss = e;
+          }
         }
-        inputTreeFileArtifacts.addAll(treeArtifactValue.getChildren());
+      }
+      if (firstCacheProbeMiss != null) {
+        throw firstCacheProbeMiss;
       }
       // Expand the action template using the list of expanded input TreeFileArtifacts.
       // TODO(rduan): Add a check to verify the inputs of expanded actions are subsets of inputs
@@ -119,11 +132,13 @@ public class ActionTemplateExpansionFunction implements SkyFunction {
           generateAndValidateActionsFromTemplate(
               actionTemplate, inputTreeFileArtifacts.build(), key, env.getListener());
     } catch (ActionExecutionException e) {
-      env.getListener()
-          .handle(
-              Event.error(
-                  actionTemplate.getOwner().getLocation(),
-                  actionTemplate.describe() + " failed: " + e.getMessage()));
+      if (!e.isCacheProbeMiss()) {
+        env.getListener()
+            .handle(
+                Event.error(
+                    actionTemplate.getOwner().getLocation(),
+                    actionTemplate.describe() + " failed: " + e.getMessage()));
+      }
       throw new ActionTemplateExpansionFunctionException(
           new AlreadyReportedActionExecutionException(e));
     } catch (ActionConflictException e) {

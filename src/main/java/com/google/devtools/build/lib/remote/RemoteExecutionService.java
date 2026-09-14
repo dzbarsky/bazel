@@ -364,7 +364,8 @@ public class RemoteExecutionService {
     }
 
     boolean allowRemoteCache =
-        useRemoteCache()
+        !isCacheProbe()
+            && useRemoteCache()
             && shouldUploadLocalResultsToRemoteCache(remoteOptions, spawn.getExecutionInfo())
             && combinedCache.remoteActionCacheSupportsUpdate();
     boolean allowDiskCache = useDiskCache() && Spawns.mayBeCached(spawn);
@@ -377,6 +378,10 @@ public class RemoteExecutionService {
     return remoteOptions.getRemoteUploadLocalResults()
         && Spawns.mayBeCachedRemotely(executionInfo)
         && !executionInfo.containsKey(ExecutionRequirements.NO_REMOTE_CACHE_UPLOAD);
+  }
+
+  boolean isCacheProbe() {
+    return executionOptions.getCacheProbeOutput() != null;
   }
 
   /** Returns {@code true} if the spawn may be executed remotely. */

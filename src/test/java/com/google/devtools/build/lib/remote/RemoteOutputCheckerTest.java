@@ -202,4 +202,19 @@ public class RemoteOutputCheckerTest {
                 ActionsTestUtil.createArtifact(execRoot, "foo/bar-baz"), remoteMetadata))
         .isFalse();
   }
+
+  @Test
+  public void probeMetadataIsReusableUntilOrdinaryBuildRequestsMaterialization() {
+    var output = ActionsTestUtil.createArtifact(execRoot, "image.tar");
+    var metadata = FileArtifactValue.createForRemoteFile(new byte[] {1, 2, 3}, 100, 1);
+    var nextProbe =
+        new RemoteOutputChecker(
+            "build", RemoteOutputsMode.MINIMAL, ImmutableList.of(), remoteOutputChecker);
+    var nextBuild =
+        new RemoteOutputChecker(
+            "build", RemoteOutputsMode.ALL, ImmutableList.of(), remoteOutputChecker);
+
+    assertThat(nextProbe.shouldTrustMetadata(output, metadata)).isTrue();
+    assertThat(nextBuild.shouldTrustMetadata(output, metadata)).isFalse();
+  }
 }
