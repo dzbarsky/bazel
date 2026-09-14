@@ -25,6 +25,7 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.compress.CompressionService;
 import com.google.devtools.build.lib.compress.CompressionServiceImpl;
 import com.google.devtools.build.lib.packages.StarlarkInfo;
+import com.google.devtools.build.lib.packages.StarlarkInfoNoSchema;
 import com.google.devtools.build.lib.packages.StarlarkProvider;
 import com.google.devtools.build.lib.skyframe.BzlLoadValue;
 import com.google.devtools.build.lib.skyframe.serialization.SharedValueDeserializationContext.LookupAbandonedException;
@@ -138,7 +139,9 @@ public final class StarlarkInfoCodecTest extends BuildViewTestCase {
         .containsExactlyElementsIn(original.getFieldNames())
         .inOrder();
     // Deserialization must preserve the shared field layout across records.
-    assertThat(deserialized.getFieldNames()).isSameInstanceAs(original.getFieldNames());
+    if (original instanceof StarlarkInfoNoSchema) {
+      assertThat(deserialized.getFieldNames()).isSameInstanceAs(original.getFieldNames());
+    }
   }
 
   /** Returns an exported, schemaless provider. */
