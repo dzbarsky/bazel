@@ -72,6 +72,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/exec:spawn_runner",
         "//src/main/java/com/google/devtools/build/lib/exec:spawn_strategy_policy",
         "//src/main/java/com/google/devtools/build/lib/exec:spawn_strategy_registry",
+        "//src/main/java/com/google/devtools/build/lib/exec:spawn_strategy_resolver",
         "//src/main/java/com/google/devtools/build/lib/exec:stable_sort",
         "//src/main/java/com/google/devtools/build/lib/exec:standalone_test_result",
         "//src/main/java/com/google/devtools/build/lib/exec:standalone_test_strategy",

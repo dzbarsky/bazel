@@ -18,6 +18,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
@@ -152,6 +153,34 @@ public final class TargetPatternPhaseValue implements SkyValue {
       boolean expandTestSuites,
       @Nullable TestFilter testFilter,
       boolean keepGoing) {
+    return key(
+        targetPatterns,
+        offset,
+        compileOneDependency,
+        buildTestsOnly,
+        determineTests,
+        buildTargetFilter,
+        buildManualTests,
+        expandTestSuites,
+        testFilter,
+        keepGoing,
+        false,
+        ImmutableList.of());
+  }
+
+  static TargetPatternPhaseKey key(
+      ImmutableList<String> targetPatterns,
+      PathFragment offset,
+      boolean compileOneDependency,
+      boolean buildTestsOnly,
+      boolean determineTests,
+      ImmutableList<String> buildTargetFilter,
+      boolean buildManualTests,
+      boolean expandTestSuites,
+      @Nullable TestFilter testFilter,
+      boolean keepGoing,
+      boolean cacheProbe,
+      ImmutableList<PackageIdentifier> excludedDependencyPackages) {
     return new TargetPatternPhaseKey(
         targetPatterns,
         offset,
@@ -162,7 +191,9 @@ public final class TargetPatternPhaseValue implements SkyValue {
         buildManualTests,
         expandTestSuites,
         testFilter,
-        keepGoing);
+        keepGoing,
+        cacheProbe,
+        excludedDependencyPackages);
   }
 
   /**
@@ -185,7 +216,9 @@ public final class TargetPatternPhaseValue implements SkyValue {
         false,
         false,
         null,
-        keepGoing);
+        keepGoing,
+        false,
+        ImmutableList.of());
   }
 
   /** The configuration needed to run the target pattern evaluation phase. */
@@ -202,6 +235,8 @@ public final class TargetPatternPhaseValue implements SkyValue {
     private final boolean expandTestSuites;
     @Nullable private final TestFilter testFilter;
     private final boolean keepGoing;
+    private final boolean cacheProbe;
+    private final ImmutableList<PackageIdentifier> excludedDependencyPackages;
 
     private TargetPatternPhaseKey(
         ImmutableList<String> targetPatterns,
@@ -213,7 +248,9 @@ public final class TargetPatternPhaseValue implements SkyValue {
         boolean buildManualTests,
         boolean expandTestSuites,
         @Nullable TestFilter testFilter,
-        boolean keepGoing) {
+        boolean keepGoing,
+        boolean cacheProbe,
+        ImmutableList<PackageIdentifier> excludedDependencyPackages) {
       this.targetPatterns = Preconditions.checkNotNull(targetPatterns);
       this.offset = Preconditions.checkNotNull(offset);
       this.compileOneDependency = compileOneDependency;
@@ -224,6 +261,8 @@ public final class TargetPatternPhaseValue implements SkyValue {
       this.expandTestSuites = expandTestSuites;
       this.testFilter = testFilter;
       this.keepGoing = keepGoing;
+      this.cacheProbe = cacheProbe;
+      this.excludedDependencyPackages = excludedDependencyPackages;
       if (buildTestsOnly || determineTests) {
         Preconditions.checkNotNull(testFilter);
       }
@@ -274,6 +313,14 @@ public final class TargetPatternPhaseValue implements SkyValue {
       return keepGoing;
     }
 
+    boolean isCacheProbe() {
+      return cacheProbe;
+    }
+
+    ImmutableList<PackageIdentifier> getExcludedDependencyPackages() {
+      return excludedDependencyPackages;
+    }
+
     @Override
     public String toString() {
       StringBuilder result = new StringBuilder();
@@ -301,7 +348,9 @@ public final class TargetPatternPhaseValue implements SkyValue {
           buildManualTests,
           expandTestSuites,
           testFilter,
-          keepGoing);
+          keepGoing,
+          cacheProbe,
+          excludedDependencyPackages);
     }
 
     @Override
@@ -321,7 +370,9 @@ public final class TargetPatternPhaseValue implements SkyValue {
           && other.buildManualTests == buildManualTests
           && other.expandTestSuites == expandTestSuites
           && Objects.equals(other.testFilter, testFilter)
-          && other.keepGoing == keepGoing;
+          && other.keepGoing == keepGoing
+          && other.cacheProbe == cacheProbe
+          && other.excludedDependencyPackages.equals(excludedDependencyPackages);
     }
   }
 }

@@ -58,5 +58,10 @@ public class AspectCompletionValue implements SkyValue {
     public final boolean valueIsShareable() {
       return false;
     }
+
+    @Override
+    public final boolean supportsPartialReevaluation() {
+      return topLevelArtifactContext().cacheProbe();
+    }
   }
 }
