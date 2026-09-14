@@ -117,7 +117,9 @@ public class TestCommand implements BlazeCommand {
             options.getOptions(ExecutionOptions.class),
             env.getEventBus());
 
-    env.getEventBus().register(testListener);
+    if (options.getOptions(ExecutionOptions.class).cacheProbeOutput == null) {
+      env.getEventBus().register(testListener);
+    }
     return doTest(env, options, testListener, printer);
   }
 
@@ -166,6 +168,14 @@ public class TestCommand implements BlazeCommand {
     BuildRequest request = builder.build();
 
     BuildResult buildResult = new BuildTool(env).processRequest(request, null, options);
+
+    if (request.getExecutionOptions().cacheProbeOutput != null) {
+      env.getEventBus()
+          .post(
+              new TestingCompleteEvent(
+                  buildResult.getDetailedExitCode().getExitCode(), buildResult.getStopTime()));
+      return BlazeCommandResult.detailedExitCode(buildResult.getDetailedExitCode());
+    }
 
     Collection<ConfiguredTarget> testTargets = buildResult.getTestTargets();
     // TODO(bazel-team): don't handle isEmpty here or fix up a bunch of tests

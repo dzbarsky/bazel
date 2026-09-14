@@ -236,6 +236,8 @@ message Spawn {
     // non-experimental.
     REMOTE_CACHE_EVICTED = 14 [(metadata) = { exit_code: 39 }];
     SPAWN_LOG_IO_EXCEPTION = 15 [(metadata) = { exit_code: 36 }];
+    // Expected execution denial while identifying work without a cached success.
+    CACHE_PROBE_MISS = 16 [(metadata) = { exit_code: 1 }];
   }
   Code code = 1;
 

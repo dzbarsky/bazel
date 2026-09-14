@@ -230,7 +230,9 @@ public final class ActionExecutedEvent implements BuildEventWithConfiguration {
       }
     }
     try {
-      if (action instanceof CommandAction commandAction) {
+      // A cache-probe miss did not execute the action, so do not expand its command line for BEP.
+      if (action instanceof CommandAction commandAction
+          && (exception == null || !exception.isCacheProbeMiss())) {
         actionBuilder.addAllCommandLine(commandAction.getArguments());
       }
     } catch (CommandLineExpansionException e) {

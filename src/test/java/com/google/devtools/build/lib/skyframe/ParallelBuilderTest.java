@@ -32,8 +32,10 @@ import com.google.devtools.build.lib.actions.ActionExecutionException;
 import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.BuildFailedException;
+import com.google.devtools.build.lib.actions.FileStateValue;
 import com.google.devtools.build.lib.actions.cache.ActionCache;
 import com.google.devtools.build.lib.actions.util.TestAction;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
@@ -44,6 +46,7 @@ import com.google.devtools.build.lib.events.PrintingEventHandler;
 import com.google.devtools.build.lib.server.FailureDetails.Crash;
 import com.google.devtools.build.lib.server.FailureDetails.Crash.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.server.FailureDetails.Spawn;
 import com.google.devtools.build.lib.testutil.BlazeTestUtils;
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.DetailedExitCode;
@@ -53,6 +56,7 @@ import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -65,6 +69,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Before;
 import org.junit.Test;
@@ -243,6 +248,349 @@ public class ParallelBuilderTest extends TimestampBuilderTestCase {
     assertContainsEvent("building 'foo' is supposed to fail");
     // test that a subsequent build of 'bar' succeeds
     buildArtifacts(bar);
+  }
+
+  @Test
+  public void cacheProbeMissFanoutKeepsOneCause() throws Exception {
+    NestedSetBuilder<Artifact> inputs = NestedSetBuilder.stableOrder();
+    for (int i = 0; i < 128; i++) {
+      Artifact input = createDerivedArtifact("miss-" + i);
+      registerFailingAction(input, Spawn.Code.CACHE_PROBE_MISS);
+      inputs.add(input);
+    }
+    Artifact intermediate = createDerivedArtifact("intermediate");
+    Artifact output = createDerivedArtifact("output");
+    AtomicInteger executions = new AtomicInteger();
+    registerAction(
+        new TestAction(executions::incrementAndGet, inputs.build(), ImmutableSet.of(intermediate)));
+    registerAction(
+        new TestAction(
+            executions::incrementAndGet, asNestedSet(intermediate), ImmutableSet.of(output)));
+
+    ActionExecutionException failure = failureFor(output);
+
+    assertThat(failure.isCacheProbeMiss()).isTrue();
+    assertThat(failure.getRootCauses().toList()).hasSize(1);
+    assertThat(executions.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void cacheProbePrunesDirectInputRequestsAfterMiss() throws Exception {
+    assertCacheProbePrunesInputRequests(/* nestedInputs= */ false);
+  }
+
+  @Test
+  public void cacheProbePrunesNestedInputRequestsAfterMiss() throws Exception {
+    assertCacheProbePrunesInputRequests(/* nestedInputs= */ true);
+  }
+
+  private void assertCacheProbePrunesInputRequests(boolean nestedInputs) throws Exception {
+    options.parse("--experimental_cache_probe_output=probe.json");
+    AtomicInteger checks = new AtomicInteger();
+    AtomicBoolean available = new AtomicBoolean();
+    NestedSet<Artifact> inputs = createProbeInputs(1024, checks, available);
+    if (nestedInputs) {
+      Artifact sibling = createDerivedArtifact("sibling");
+      registerAction(
+          new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(sibling)));
+      inputs = NestedSetBuilder.<Artifact>stableOrder().add(sibling).addTransitive(inputs).build();
+    }
+    Artifact output = createDerivedArtifact("output");
+    registerAction(new TestAction(TestAction.NO_EFFECT, inputs, ImmutableSet.of(output)));
+    reporter.removeHandler(failFastHandler);
+    BuilderWithResult builder = createBuilder(cache, DEFAULT_NUM_JOBS, true);
+
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output));
+
+    assertThat(checks.get()).isEqualTo(32);
+    Exception failure = builder.getLatestResult().getError(Artifact.key(output)).getException();
+    assertThat(failure).isInstanceOf(ActionExecutionException.class);
+    assertThat(((ActionExecutionException) failure).isCacheProbeMiss()).isTrue();
+
+    // A pruned dependency set must not become a successful ordinary-build cache entry.
+    available.set(true);
+    options.parse("--experimental_cache_probe_output=");
+    differencer.invalidateTransientErrors();
+    buildArtifacts(builder, output);
+    assertThat(checks.get()).isEqualTo(32 + 1024);
+    options.parse("--experimental_cache_probe_output=probe.json");
+    buildArtifacts(builder, output);
+    assertThat(checks.get()).isEqualTo(32 + 1024);
+  }
+
+  @Test
+  public void cacheProbeKeepsWorkNeededByAnotherRoot() throws Exception {
+    options.parse("--experimental_cache_probe_output=probe.json");
+    AtomicInteger checks = new AtomicInteger();
+    NestedSet<Artifact> inputs = createProbeInputs(1024, checks, new AtomicBoolean());
+    Artifact output = createDerivedArtifact("output");
+    registerAction(new TestAction(TestAction.NO_EFFECT, inputs, ImmutableSet.of(output)));
+    Artifact otherRoot = inputs.toList().get(1023);
+    reporter.removeHandler(failFastHandler);
+    BuilderWithResult builder = createBuilder(cache, DEFAULT_NUM_JOBS, true);
+
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output, otherRoot));
+
+    assertThat(checks.get()).isEqualTo(33);
+    assertThat(builder.getLatestResult().getError(Artifact.key(output))).isNotNull();
+    assertThat(builder.getLatestResult().getError(Artifact.key(otherRoot))).isNotNull();
+  }
+
+  @Test
+  public void cacheProbeChecksEveryInputBeforeAcceptingSuccess() throws Exception {
+    options.parse("--experimental_cache_probe_output=probe.json");
+    AtomicInteger checks = new AtomicInteger();
+    NestedSet<Artifact> inputs = createProbeInputs(1024, checks, new AtomicBoolean(true));
+    Artifact output = createDerivedArtifact("output");
+    registerAction(new TestAction(TestAction.NO_EFFECT, inputs, ImmutableSet.of(output)));
+    BuilderWithResult builder = createBuilder(cache, DEFAULT_NUM_JOBS, true);
+
+    buildArtifacts(builder, output);
+    assertThat(checks.get()).isEqualTo(1024);
+    buildArtifacts(builder, output);
+    assertThat(checks.get()).isEqualTo(1024);
+  }
+
+  private NestedSet<Artifact> createProbeInputs(
+      int count, AtomicInteger checks, AtomicBoolean available) {
+    NestedSetBuilder<Artifact> inputs = NestedSetBuilder.stableOrder();
+    for (int i = 0; i < count; i++) {
+      Artifact input = createDerivedArtifact("input-" + i);
+      registerAction(
+          new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(input)) {
+            @Override
+            public ActionResult execute(ActionExecutionContext context)
+                throws ActionExecutionException, InterruptedException {
+              checks.incrementAndGet();
+              if (!available.get()) {
+                throw cacheProbeFailure(this, Spawn.Code.CACHE_PROBE_MISS);
+              }
+              return super.execute(context);
+            }
+          });
+      inputs.add(input);
+    }
+    return inputs.build();
+  }
+
+  @Test
+  public void cacheProbeMissDoesNotHideExecutionError() throws Exception {
+    Artifact miss = createDerivedArtifact("miss");
+    Artifact error = createDerivedArtifact("error");
+    registerFailingAction(miss, Spawn.Code.CACHE_PROBE_MISS);
+    registerFailingAction(error, Spawn.Code.EXEC_IO_EXCEPTION);
+    Artifact output = createDerivedArtifact("output");
+    registerAction(
+        new TestAction(TestAction.NO_EFFECT, asNestedSet(miss, error), ImmutableSet.of(output)));
+
+    ActionExecutionException failure = failureFor(output);
+
+    assertThat(failure.isCacheProbeMiss()).isFalse();
+    assertThat(failure.getDetailedExitCode().getFailureDetail().getSpawn().getCode())
+        .isEqualTo(Spawn.Code.EXEC_IO_EXCEPTION);
+    assertThat(failure.getRootCauses().toList()).hasSize(1);
+  }
+
+  @Test
+  public void cacheProbeMissDoesNotHideMissingSource() throws Exception {
+    assertCacheProbeMissDoesNotHideMissingSource(/* nestedInputs= */ false);
+  }
+
+  @Test
+  public void cacheProbeMissDoesNotHideNestedMissingSource() throws Exception {
+    assertCacheProbeMissDoesNotHideMissingSource(/* nestedInputs= */ true);
+  }
+
+  @Test
+  public void cacheProbeMissDoesNotHideSourceAfterFirstBatch() throws Exception {
+    assertCacheProbeMissDoesNotHideSourceAfterFirstBatch(/* nestedInputs= */ false);
+  }
+
+  @Test
+  public void cacheProbeMissDoesNotHideNestedSourceAfterFirstBatch() throws Exception {
+    assertCacheProbeMissDoesNotHideSourceAfterFirstBatch(/* nestedInputs= */ true);
+  }
+
+  private void assertCacheProbeMissDoesNotHideSourceAfterFirstBatch(boolean nestedInputs)
+      throws Exception {
+    options.parse("--experimental_cache_probe_output=probe.json");
+    Artifact miss = createDerivedArtifact("miss");
+    registerFailingAction(miss, Spawn.Code.CACHE_PROBE_MISS);
+    NestedSetBuilder<Artifact> inputs = NestedSetBuilder.stableOrder();
+    inputs.add(miss);
+    for (int i = 0; i < 31; i++) {
+      Artifact filler = createDerivedArtifact("filler-" + i);
+      registerAction(new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(filler)));
+      inputs.add(filler);
+    }
+    Artifact source = createSourceArtifact("missing-after-batch");
+    inputs.add(
+        new Artifact.SourceArtifact(
+            source.getRoot(),
+            source.getExecPath(),
+            () -> Label.parseCanonicalUnchecked("//:missing-after-batch")));
+    AtomicInteger skippedExecutions = new AtomicInteger();
+    Artifact tail = createDerivedArtifact("tail");
+    registerAction(
+        new TestAction(skippedExecutions::incrementAndGet, emptyNestedSet, ImmutableSet.of(tail)));
+    inputs.add(tail);
+    NestedSet<Artifact> actionInputs = inputs.build();
+    if (nestedInputs) {
+      Artifact sibling = createDerivedArtifact("sibling");
+      registerAction(
+          new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(sibling)));
+      actionInputs =
+          NestedSetBuilder.<Artifact>stableOrder().add(sibling).addTransitive(actionInputs).build();
+    }
+    Artifact output = createDerivedArtifact("output");
+    registerAction(new TestAction(TestAction.NO_EFFECT, actionInputs, ImmutableSet.of(output)));
+
+    ActionExecutionException failure = failureFor(output);
+
+    assertThat(failure.isCacheProbeMiss()).isFalse();
+    assertThat(failure.getRootCauses().toList()).hasSize(1);
+    assertThat(failure.getRootCauses().toList().get(0).getLabel())
+        .isEqualTo(Label.parseCanonicalUnchecked("//:missing-after-batch"));
+    assertThat(skippedExecutions.get()).isEqualTo(0);
+  }
+
+  private void assertCacheProbeMissDoesNotHideMissingSource(boolean nestedInputs) throws Exception {
+    Artifact miss = createDerivedArtifact("miss");
+    registerFailingAction(miss, Spawn.Code.CACHE_PROBE_MISS);
+    Artifact source = createSourceArtifact("missing-source");
+    Artifact missingSource =
+        new Artifact.SourceArtifact(
+            source.getRoot(),
+            source.getExecPath(),
+            () -> Label.parseCanonicalUnchecked("//:missing-source"));
+    NestedSet<Artifact> inputs = asNestedSet(miss, missingSource);
+    if (nestedInputs) {
+      for (int depth = 0; depth < 2; depth++) {
+        Artifact sibling = createDerivedArtifact("sibling-" + depth);
+        registerAction(
+            new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(sibling)));
+        inputs =
+            NestedSetBuilder.<Artifact>stableOrder().add(sibling).addTransitive(inputs).build();
+      }
+    }
+    Artifact output = createDerivedArtifact("output");
+    registerAction(new TestAction(TestAction.NO_EFFECT, inputs, ImmutableSet.of(output)));
+
+    ActionExecutionException failure = failureFor(output);
+
+    assertThat(failure.isCacheProbeMiss()).isFalse();
+    assertThat(failure.getDetailedExitCode().getFailureDetail().hasExecution()).isTrue();
+    assertThat(failure.getRootCauses().toList()).hasSize(1);
+  }
+
+  @Test
+  public void cacheProbeDoesNotReportStaleMissingSourceFromSkippedBatch() throws Exception {
+    Artifact oldSource = createSourceArtifact("previously-missing");
+    oldSource.getPath().getParentDirectory().createDirectoryAndParents();
+    Artifact skippedSource =
+        new Artifact.SourceArtifact(
+            oldSource.getRoot(),
+            oldSource.getExecPath(),
+            () -> Label.parseCanonicalUnchecked("//:previously-missing"));
+    Artifact warmup = createDerivedArtifact("warmup");
+    registerAction(
+        new TestAction(TestAction.NO_EFFECT, asNestedSet(skippedSource), ImmutableSet.of(warmup)));
+    Artifact missingSource = createSourceArtifact("missing-source");
+    Artifact requestedSource =
+        new Artifact.SourceArtifact(
+            missingSource.getRoot(),
+            missingSource.getExecPath(),
+            () -> Label.parseCanonicalUnchecked("//:missing-source"));
+    Artifact miss = createDerivedArtifact("miss");
+    registerFailingAction(miss, Spawn.Code.CACHE_PROBE_MISS);
+    NestedSetBuilder<Artifact> inputs =
+        NestedSetBuilder.<Artifact>stableOrder().add(miss).add(requestedSource);
+    for (int i = 0; i < 30; i++) {
+      Artifact filler = createDerivedArtifact("filler-" + i);
+      registerAction(new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(filler)));
+      inputs.add(filler);
+    }
+    inputs.add(skippedSource);
+    Artifact output = createDerivedArtifact("output");
+    registerAction(new TestAction(TestAction.NO_EFFECT, inputs.build(), ImmutableSet.of(output)));
+    reporter.removeHandler(failFastHandler);
+    BuilderWithResult builder = createBuilder(cache, DEFAULT_NUM_JOBS, true);
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, warmup));
+
+    FileSystemUtils.createEmptyFile(skippedSource.getPath());
+    differencer.invalidate(
+        List.of(
+            FileStateValue.key(
+                RootedPath.toRootedPath(
+                    skippedSource.getRoot().getRoot(), skippedSource.getRootRelativePath()))));
+    options.parse("--experimental_cache_probe_output=probe.json");
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output));
+
+    Exception failure = builder.getLatestResult().getError(Artifact.key(output)).getException();
+    assertThat(failure).isInstanceOf(ActionExecutionException.class);
+    ActionExecutionException actionFailure = (ActionExecutionException) failure;
+    assertThat(actionFailure.isCacheProbeMiss()).isFalse();
+    assertThat(actionFailure.getRootCauses().toList()).hasSize(1);
+    assertThat(actionFailure.getRootCauses().toList().get(0).getLabel())
+        .isEqualTo(Label.parseCanonicalUnchecked("//:missing-source"));
+  }
+
+  @Test
+  public void cacheProbeMissRetriesWithoutDiscardingLaterSuccess() throws Exception {
+    Artifact output = createDerivedArtifact("output");
+    AtomicBoolean available = new AtomicBoolean();
+    AtomicInteger executions = new AtomicInteger();
+    registerAction(
+        new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(output)) {
+          @Override
+          public ActionResult execute(ActionExecutionContext context)
+              throws ActionExecutionException, InterruptedException {
+            executions.incrementAndGet();
+            if (!available.get()) {
+              throw cacheProbeFailure(this, Spawn.Code.CACHE_PROBE_MISS);
+            }
+            return super.execute(context);
+          }
+        });
+    reporter.removeHandler(failFastHandler);
+    BuilderWithResult builder = createBuilder(cache, DEFAULT_NUM_JOBS, true);
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output));
+
+    available.set(true);
+    differencer.invalidateTransientErrors();
+    buildArtifacts(builder, output);
+    buildArtifacts(builder, output);
+
+    assertThat(executions.get()).isEqualTo(2);
+  }
+
+  private void registerFailingAction(Artifact output, Spawn.Code code) {
+    registerAction(
+        new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(output)) {
+          @Override
+          public ActionResult execute(ActionExecutionContext context)
+              throws ActionExecutionException {
+            throw cacheProbeFailure(this, code);
+          }
+        });
+  }
+
+  private static ActionExecutionException cacheProbeFailure(Action action, Spawn.Code code) {
+    return new ActionExecutionException(
+        code.toString(),
+        action,
+        false,
+        DetailedExitCode.of(
+            FailureDetail.newBuilder().setSpawn(Spawn.newBuilder().setCode(code)).build()));
+  }
+
+  private ActionExecutionException failureFor(Artifact output) throws Exception {
+    reporter.removeHandler(failFastHandler);
+    BuilderWithResult builder = createBuilder(cache, DEFAULT_NUM_JOBS, true);
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output));
+    Exception failure = builder.getLatestResult().getError(Artifact.key(output)).getException();
+    assertThat(failure).isInstanceOf(ActionExecutionException.class);
+    return (ActionExecutionException) failure;
   }
 
   @Test

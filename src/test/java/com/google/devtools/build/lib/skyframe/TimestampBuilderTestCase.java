@@ -289,7 +289,9 @@ public abstract class TimestampBuilderTestCase extends FoundationTestCase {
                 .put(
                     SkyFunctions.ACTION_TEMPLATE_EXPANSION,
                     new DelegatingActionTemplateExpansionFunction())
-                .put(SkyFunctions.ARTIFACT_NESTED_SET, new ArtifactNestedSetFunction(() -> null))
+                .put(
+                    SkyFunctions.ARTIFACT_NESTED_SET,
+                    new ArtifactNestedSetFunction(() -> null, skyframeActionExecutor::isCacheProbe))
                 .buildOrThrow(),
             differencer,
             evaluationProgressReceiver,

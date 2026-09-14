@@ -977,6 +977,20 @@ sh_test(
 )
 
 sh_test(
+    name = "cache_probe_test",
+    size = "large",
+    srcs = ["cache_probe_test.sh"],
+    data = [
+        ":test-deps",
+        "//scripts:jq",
+    ],
+    env = {
+        "JQ_RLOCATIONPATH": "$(rlocationpath //scripts:jq)",
+    },
+    tags = ["no_windows"],
+)
+
+sh_test(
     name = "disk_cache_test",
     size = "medium",
     srcs = ["disk_cache_test.sh"],

@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.pkgcache;
 
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.packages.TestSize;
 import com.google.devtools.build.lib.packages.TestTimeout;
 import com.google.devtools.common.options.Converters.CommaSeparatedOptionListConverter;
@@ -68,6 +69,19 @@ public class LoadingOptions extends OptionsBase {
             + "governed by the test filtering options, for example '--test_tag_filters'"
   )
   public List<String> buildTagFilterList;
+
+  @Option(
+      name = "experimental_cache_probe_exclude_deps",
+      converter = PackageOptions.CommaSeparatedPackageNameListConverter.class,
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
+      help =
+          "Package prefixes to omit from a cache probe, together with roots depending on them. "
+              + "Use comma-separated package names such as //personal, not target patterns. "
+              + "Excluded packages are not loaded; dependency filtering conservatively includes "
+              + "all configurable alternatives in the loaded rule graph.")
+  public List<PackageIdentifier> cacheProbeExcludedDependencyPackages;
 
   @Option(
     name = "test_tag_filters",

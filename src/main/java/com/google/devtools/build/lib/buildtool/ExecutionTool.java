@@ -165,7 +165,9 @@ public class ExecutionTool {
         ModuleActionContextRegistry.builder();
     SpawnStrategyRegistry.Builder spawnStrategyRegistryBuilder =
         SpawnStrategyRegistry.builder(env.getInvocationPolicy().getStrategyPolicy());
-    actionContextRegistryBuilder.register(SpawnStrategyResolver.class, new SpawnStrategyResolver());
+    actionContextRegistryBuilder.register(
+        SpawnStrategyResolver.class,
+        new SpawnStrategyResolver(request.getOptions(ExecutionOptions.class)));
 
     for (BlazeModule module : runtime.getBlazeModules()) {
       try (SilentCloseable ignored = Profiler.instance().profile(module + ".executorInit")) {

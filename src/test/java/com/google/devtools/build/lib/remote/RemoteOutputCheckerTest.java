@@ -17,6 +17,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
+import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.remote.options.RemoteOutputsMode;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
@@ -54,5 +55,20 @@ public class RemoteOutputCheckerTest {
     assertThat(
             remoteOutputChecker.shouldDownloadOutput(PathFragment.create("out/foo/bar-baz"), null))
         .isTrue();
+  }
+
+  @Test
+  public void probeMetadataIsReusableUntilOrdinaryBuildRequestsMaterialization() {
+    var output = ActionsTestUtil.createArtifact(execRoot, "image.tar");
+    var metadata = FileArtifactValue.createForRemoteFile(new byte[] {1, 2, 3}, 100, 1);
+    var nextProbe =
+        new RemoteOutputChecker(
+            "build", RemoteOutputsMode.MINIMAL, ImmutableList.of(), remoteOutputChecker);
+    var nextBuild =
+        new RemoteOutputChecker(
+            "build", RemoteOutputsMode.ALL, ImmutableList.of(), remoteOutputChecker);
+
+    assertThat(nextProbe.shouldTrustMetadata(output, metadata)).isTrue();
+    assertThat(nextBuild.shouldTrustMetadata(output, metadata)).isFalse();
   }
 }

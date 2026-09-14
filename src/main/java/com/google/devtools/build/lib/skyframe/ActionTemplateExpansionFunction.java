@@ -101,11 +101,25 @@ public class ActionTemplateExpansionFunction implements SkyFunction {
     ImmutableList<ActionAnalysisMetadata> actions;
     try {
       ImmutableList.Builder<TreeFileArtifact> inputTreeFileArtifacts = ImmutableList.builder();
+      ActionExecutionException firstCacheProbeMiss = null;
       for (SpecialArtifact inputTreeArtifact : actionTemplate.getInputTreeArtifacts()) {
-        TreeArtifactValue treeArtifactValue =
-            (TreeArtifactValue)
-                result.getOrThrow(inputTreeArtifact, ActionExecutionException.class);
-        inputTreeFileArtifacts.addAll(treeArtifactValue.getChildren());
+        try {
+          TreeArtifactValue treeArtifactValue =
+              (TreeArtifactValue)
+                  result.getOrThrow(inputTreeArtifact, ActionExecutionException.class);
+          inputTreeFileArtifacts.addAll(treeArtifactValue.getChildren());
+        } catch (ActionExecutionException e) {
+          if (!e.isCacheProbeMiss()) {
+            throw e;
+          }
+          // Inspect the other input trees so an expected miss cannot hide a genuine error.
+          if (firstCacheProbeMiss == null) {
+            firstCacheProbeMiss = e;
+          }
+        }
+      }
+      if (firstCacheProbeMiss != null) {
+        throw firstCacheProbeMiss;
       }
       // Expand the action template using the list of expanded input TreeFileArtifacts.
       // TODO(rduan): Add a check to verify the inputs of expanded actions are subsets of inputs
@@ -114,11 +128,13 @@ public class ActionTemplateExpansionFunction implements SkyFunction {
           generateAndValidateActionsFromTemplate(
               actionTemplate, inputTreeFileArtifacts.build(), key, env.getListener());
     } catch (ActionExecutionException e) {
-      env.getListener()
-          .handle(
-              Event.error(
-                  actionTemplate.getOwner().getLocation(),
-                  actionTemplate.describe() + " failed: " + e.getMessage()));
+      if (!e.isCacheProbeMiss()) {
+        env.getListener()
+            .handle(
+                Event.error(
+                    actionTemplate.getOwner().getLocation(),
+                    actionTemplate.describe() + " failed: " + e.getMessage()));
+      }
       throw new ActionTemplateExpansionFunctionException(
           new AlreadyReportedActionExecutionException(e));
     } catch (ActionConflictException e) {

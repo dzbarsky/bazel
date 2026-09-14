@@ -414,7 +414,8 @@ public class BuildRequest implements OptionsProvider {
         getOptions(BuildEventProtocolOptions.class).expandFilesets,
         OutputGroupInfo.determineOutputGroups(
             buildOptions.outputGroups, validationMode(), /* shouldRunTests= */ shouldRunTests()),
-        /* forRunCommand= */ commandName.equals("run"));
+        /* forRunCommand= */ commandName.equals("run"),
+        /* cacheProbe= */ getOptions(ExecutionOptions.class).cacheProbeOutput != null);
   }
 
   public ImmutableList<String> getAspects() {

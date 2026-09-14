@@ -151,7 +151,8 @@ public final class CompletionFunction<
   @Nullable
   @Override
   public SkyValue compute(SkyKey skyKey, Environment env)
-      throws CompletionFunctionException, InterruptedException {
+      throws CompletionFunctionException, CacheProbeCompletion.DependencyException,
+          InterruptedException {
     KeyT key = (KeyT) skyKey;
     Pair<ValueT, ArtifactsToBuild> valueAndArtifactsToBuild = getValueAndArtifactsToBuild(key, env);
     if (env.valuesMissing()) {
@@ -159,6 +160,14 @@ public final class CompletionFunction<
     }
     ValueT value = valueAndArtifactsToBuild.first;
     ArtifactsToBuild artifactsToBuild = valueAndArtifactsToBuild.second;
+
+    if (key.topLevelArtifactContext().cacheProbe()
+        && !CacheProbeCompletion.awaitOutputs(
+            env,
+            key.actionLookupKey(),
+            () -> Artifact.keys(artifactsToBuild.getAllArtifacts().toList()))) {
+      return null;
+    }
 
     ImmutableList<Artifact> allArtifacts = artifactsToBuild.getAllArtifacts().toList();
     SkyframeLookupResult inputDeps = env.getValuesAndExceptions(Artifact.keys(allArtifacts));
@@ -182,6 +191,7 @@ public final class CompletionFunction<
     }
 
     ActionExecutionException firstActionExecutionException = null;
+    ActionExecutionException firstCacheProbeMiss = null;
     NestedSetBuilder<Cause> rootCausesBuilder = NestedSetBuilder.stableOrder();
     Set<Artifact> builtArtifacts = new HashSet<>();
     // Don't double-count files due to Skyframe restarts.
@@ -214,6 +224,12 @@ public final class CompletionFunction<
           }
         }
       } catch (ActionExecutionException e) {
+        if (e.isCacheProbeMiss()) {
+          if (firstCacheProbeMiss == null) {
+            firstCacheProbeMiss = e;
+          }
+          continue;
+        }
         if (e.getRootCauses().isEmpty()) {
           BugReport.sendNonFatalBugReport(
               new IllegalStateException(
@@ -240,6 +256,24 @@ public final class CompletionFunction<
             key.topLevelArtifactContext().expandFilesets(), importantInputMap, pathResolverFactory);
 
     NestedSet<Cause> rootCauses = rootCausesBuilder.build();
+    if (rootCauses.isEmpty()
+        && firstActionExecutionException == null
+        && firstCacheProbeMiss != null) {
+      // Normal completion events flatten causes, so retain only one expected miss per root.
+      firstActionExecutionException = firstCacheProbeMiss;
+      rootCauses = firstCacheProbeMiss.getRootCauses();
+    }
+    if (key.topLevelArtifactContext().cacheProbe()
+        && rootCauses.isEmpty()
+        && firstActionExecutionException != null) {
+      rootCauses =
+          NestedSetBuilder.<Cause>stableOrder()
+              .add(
+                  new LabelCause(
+                      key.actionLookupKey().getLabel(),
+                      firstActionExecutionException.getDetailedExitCode()))
+              .build();
+    }
     if (!rootCauses.isEmpty()) {
       RewindPlanResult rewindPlanResult = null;
       if (!builtArtifacts.isEmpty()) {
@@ -362,9 +396,14 @@ public final class CompletionFunction<
   @Nullable
   static <ValueT extends ConfiguredObjectValue>
       Pair<ValueT, ArtifactsToBuild> getValueAndArtifactsToBuild(
-          TopLevelActionLookupKeyWrapper key, Environment env) throws InterruptedException {
+          TopLevelActionLookupKeyWrapper key, Environment env)
+          throws CacheProbeCompletion.DependencyException, InterruptedException {
     @SuppressWarnings("unchecked")
-    ValueT value = (ValueT) env.getValue(key.actionLookupKey());
+    ValueT value =
+        (ValueT)
+            (key.topLevelArtifactContext().cacheProbe()
+                ? CacheProbeCompletion.getValue(env, key.actionLookupKey())
+                : env.getValue(key.actionLookupKey()));
     if (env.valuesMissing()) {
       return null;
     }
