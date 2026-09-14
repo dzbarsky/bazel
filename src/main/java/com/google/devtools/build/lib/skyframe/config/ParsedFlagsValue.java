@@ -15,8 +15,8 @@ package com.google.devtools.build.lib.skyframe.config;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
+import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -116,8 +116,10 @@ public class ParsedFlagsValue implements SkyValue {
 
   private final NativeAndStarlarkFlags flags;
   private final OptionsParsingResult parsingResult;
-  private final LoadingCache<BuildOptions, BuildConfigurationKey> mergeCache =
-      Caffeine.newBuilder().weakKeys().build(this::mergeWithImpl);
+  // Transitions can produce distinct BuildOptions with the same values. Share their
+  // merged result without retaining those source options or unused configurations.
+  private final Cache<String, BuildConfigurationKey> mergeCache =
+      Caffeine.newBuilder().weakValues().build();
 
   private ParsedFlagsValue(NativeAndStarlarkFlags flags, OptionsParsingResult parsingResult) {
     this.parsingResult = checkNotNull(parsingResult);
@@ -159,7 +161,7 @@ public class ParsedFlagsValue implements SkyValue {
    *     parsed flags value to the original options
    */
   public BuildConfigurationKey mergeWith(BuildOptions source) {
-    return mergeCache.get(source);
+    return mergeCache.get(source.checksum(), unused -> mergeWithImpl(source));
   }
 
   private BuildConfigurationKey mergeWithImpl(BuildOptions source) {
