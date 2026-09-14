@@ -992,7 +992,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         new PlatformMappingFunction(ruleClassProvider.getFragmentRegistry().getOptionsClasses()));
     map.put(
         SkyFunctions.ARTIFACT_NESTED_SET,
-        new ArtifactNestedSetFunction(this::getConsumedArtifactsTracker));
+        new ArtifactNestedSetFunction(
+            this::getConsumedArtifactsTracker, skyframeActionExecutor::isCacheProbe));
     BuildDriverFunction buildDriverFunction = newBuildDriverFunction();
     map.put(SkyFunctions.BUILD_DRIVER, buildDriverFunction);
     FlagSetFunction flagSetFunction = new FlagSetFunction();
@@ -3289,6 +3290,21 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       boolean keepGoing,
       boolean determineTests)
       throws TargetParsingException, InterruptedException {
+    return loadTargetPatternsWithFilters(
+        eventHandler, targetPatterns, relativeWorkingDirectory, options, threadCount,
+        keepGoing, determineTests, false);
+  }
+
+  public TargetPatternPhaseValue loadTargetPatternsWithFilters(
+      ExtendedEventHandler eventHandler,
+      List<String> targetPatterns,
+      PathFragment relativeWorkingDirectory,
+      LoadingOptions options,
+      int threadCount,
+      boolean keepGoing,
+      boolean determineTests,
+      boolean cacheProbe)
+      throws TargetParsingException, InterruptedException {
     SkyKey key =
         TargetPatternPhaseValue.key(
             ImmutableList.copyOf(targetPatterns),
@@ -3300,7 +3316,11 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
             options.getBuildManualTests(),
             options.getExpandTestSuites(),
             TestFilter.forOptions(options),
-            keepGoing);
+            keepGoing,
+            cacheProbe,
+            cacheProbe
+                ? ImmutableList.copyOf(options.getCacheProbeExcludedDependencyPackages())
+                : ImmutableList.of());
     return getTargetPatternPhaseValue(eventHandler, targetPatterns, threadCount, keepGoing, key);
   }
 

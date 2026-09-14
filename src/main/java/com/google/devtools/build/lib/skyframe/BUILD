@@ -418,7 +418,10 @@ java_library(
 
 java_library(
     name = "artifact_nested_set_function",
-    srcs = ["ArtifactNestedSetFunction.java"],
+    srcs = [
+        "ArtifactNestedSetFunction.java",
+        "CacheProbeInputBatches.java",
+    ],
     deps = [
         ":artifact_function",
         ":artifact_nested_set_value",
@@ -703,6 +706,21 @@ java_library(
         ":sane_analysis_exception",
         "//src/main/java/com/google/devtools/build/lib/util:detailed_exit_code",
         "//src/main/protobuf:failure_details_java_proto",
+    ],
+)
+
+java_library(
+    name = "cache_probe_completion",
+    srcs = ["CacheProbeCompletion.java"],
+    deps = [
+        ":configured_target_key",
+        "//src/main/java/com/google/devtools/build/lib/actions",
+        "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_key",
+        "//src/main/java/com/google/devtools/build/lib/events",
+        "//src/main/java/com/google/devtools/build/skyframe",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//third_party/java/guava:collect",
+        "//third_party/java/jsr305_annotations",
     ],
 )
 
@@ -3478,6 +3496,7 @@ java_library(
         ":action_input_map_helper",
         ":action_input_metadata_provider",
         ":artifact_function",
+        ":cache_probe_completion",
         ":metadata_consumer_for_metrics",
         ":skyframe_action_executor",
         ":top_level_action_lookup_key_wrapper",
@@ -3787,7 +3806,9 @@ java_library(
     name = "target_pattern_phase_function",
     srcs = ["TargetPatternPhaseFunction.java"],
     deps = [
+        ":containing_package_lookup_value",
         ":environment_backed_recursive_package_provider",
+        ":package_value",
         ":pattern_expanding_error",
         ":repository_mapping_value",
         ":target_pattern_error_function",
@@ -3802,6 +3823,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/pkgcache",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//src/main/protobuf:failure_details_java_proto",
         "//third_party/java/guava:base",
         "//third_party/java/guava:collect",
         "//third_party/java/jsr305_annotations",
@@ -3812,6 +3834,7 @@ java_library(
     name = "test_completion_function",
     srcs = ["TestCompletionFunction.java"],
     deps = [
+        ":cache_probe_completion",
         ":configured_target_key",
         ":target_completion_value",
         ":test_completion_value",
