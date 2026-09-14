@@ -65,6 +65,24 @@ public class TargetPatternUtilTest extends BuildViewTestCase {
     assertThat(result).containsExactlyElementsIn(expectedLabels);
   }
 
+  @Test
+  @TestParameters("{firstPattern: '//foo:foo', secondPattern: '//foo'}")
+  @TestParameters("{firstPattern: '//foo', secondPattern: '//foo:foo'}")
+  public void expansionErrorsPreserveOriginalPattern(String firstPattern, String secondPattern)
+      throws Exception {
+    scratch.file("foo/BUILD", "filegroup(name = 'other')");
+    reporter.removeHandler(failFastHandler);
+    for (String pattern : ImmutableList.of(firstPattern, secondPattern)) {
+      ExpandTargetPatternKey key =
+          new ExpandTargetPatternKey(ImmutableList.of(pattern), FilteringPolicies.NO_FILTER);
+      EvaluationResult<ExpandTargetPatternValue> result = expandTargetPattern(key);
+      assertThat(result.hasError()).isTrue();
+      Exception exception = result.getError(key).getException();
+      assertThat(exception).isInstanceOf(InvalidTargetPatternException.class);
+      assertThat(((InvalidTargetPatternException) exception).getInvalidPattern()).isEqualTo(pattern);
+    }
+  }
+
   // TODO: blaze-configurability-team - Test errors
   // TODO: blaze-configurability-team - Test relative labels
   // TODO: blaze-configurability-team - Test filtering policies

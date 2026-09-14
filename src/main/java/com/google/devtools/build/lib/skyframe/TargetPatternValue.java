@@ -61,8 +61,10 @@ public final class TargetPatternValue implements SkyValue {
    */
   @ThreadSafe
   public static TargetPatternKey key(SignedTargetPattern pattern, FilteringPolicy policy) {
-    return new TargetPatternKey(
-        pattern, pattern.sign() == Sign.POSITIVE ? policy : FilteringPolicies.NO_FILTER);
+    return TargetPatternKey.create(
+        pattern,
+        pattern.sign() == Sign.POSITIVE ? policy : FilteringPolicies.NO_FILTER,
+        ImmutableSet.of());
   }
 
   /**
@@ -114,7 +116,7 @@ public final class TargetPatternValue implements SkyValue {
       policy =
           FilteringPolicies.and(policy, new TargetExcludingFilteringPolicy(excludedSingleTargets));
     }
-    return new TargetPatternKey(original.getSignedParsedPattern(), policy, excludedSubdirectories);
+    return TargetPatternKey.create(original.getSignedParsedPattern(), policy, excludedSubdirectories);
   }
 
   private static class TargetPatternKeyWithExclusionsResult {
@@ -193,6 +195,8 @@ public final class TargetPatternValue implements SkyValue {
    */
   @ThreadSafe
   public static class TargetPatternKey implements SkyKey {
+    private static final SkyKeyInterner<TargetPatternKey> interner = SkyKey.newInterner();
+
     private final SignedTargetPattern signedParsedPattern;
     private final FilteringPolicy policy;
 
@@ -214,6 +218,22 @@ public final class TargetPatternValue implements SkyValue {
       this.signedParsedPattern = Preconditions.checkNotNull(signedParsedPattern);
       this.policy = Preconditions.checkNotNull(policy);
       this.excludedSubdirectories = Preconditions.checkNotNull(excludedSubdirectories);
+    }
+
+    private static TargetPatternKey create(
+        SignedTargetPattern signedParsedPattern,
+        FilteringPolicy policy,
+        ImmutableSet<PathFragment> excludedSubdirectories) {
+      TargetPatternKey key =
+          new TargetPatternKey(signedParsedPattern, policy, excludedSubdirectories);
+      TargetPatternKey interned = interner.intern(key);
+      // Equal keys can have different original spellings used in diagnostics.
+      return interned.getPattern().equals(key.getPattern()) ? interned : key;
+    }
+
+    @Override
+    public SkyKeyInterner<TargetPatternKey> getSkyKeyInterner() {
+      return interner;
     }
 
     @Override
