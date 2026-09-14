@@ -375,12 +375,19 @@ java_library(
 
 java_library(
     name = "spawn_strategy_resolver",
-    srcs = ["SpawnStrategyResolver.java"],
+    srcs = [
+        "CacheProbeSpawnStrategy.java",
+        "SpawnStrategyResolver.java",
+    ],
     deps = [
+        ":abstract_spawn_strategy",
+        ":execution_options",
+        ":spawn_runner",
         ":spawn_strategy_registry",
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/protobuf:failure_details_java_proto",
         "//third_party:guava",
+        "//third_party:jsr305",
     ],
 )
 

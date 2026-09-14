@@ -28,12 +28,26 @@ import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn.Code;
 import java.util.List;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
 
 /**
  * Resolver that looks up the right strategy for a spawn during {@link #exec} (via a {@link
  * SpawnStrategyRegistry}) and uses it to execute the spawn.
  */
 public final class SpawnStrategyResolver implements ActionContext {
+  @Nullable private final CacheProbeSpawnStrategy cacheProbeStrategy;
+
+  public SpawnStrategyResolver() {
+    this(null);
+  }
+
+  public SpawnStrategyResolver(@Nullable ExecutionOptions executionOptions) {
+    cacheProbeStrategy =
+        executionOptions != null && executionOptions.cacheProbeOutput != null
+            ? new CacheProbeSpawnStrategy(executionOptions)
+            : null;
+  }
+
   /**
    * Executes the given spawn with the {@linkplain SpawnStrategyRegistry highest priority strategy}
    * that can be found for it.
@@ -43,6 +57,9 @@ public final class SpawnStrategyResolver implements ActionContext {
    */
   public ImmutableList<SpawnResult> exec(Spawn spawn, ActionExecutionContext actionExecutionContext)
       throws ExecException, InterruptedException {
+    if (cacheProbeStrategy != null) {
+      return cacheProbeStrategy.exec(spawn, actionExecutionContext);
+    }
     return resolveOne(spawn, actionExecutionContext).exec(spawn, actionExecutionContext);
   }
 

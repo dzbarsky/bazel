@@ -292,6 +292,12 @@ public class RemoteSpawnCacheTest {
     return remoteSpawnCacheWithOptions(Options.getDefaults(RemoteOptions.class));
   }
 
+  private RemoteSpawnCache createCacheProbeSpawnCache() {
+    ExecutionOptions executionOptions = Options.getDefaults(ExecutionOptions.class);
+    executionOptions.cacheProbeOutput = PathFragment.create("probe.json");
+    return remoteSpawnCacheWithOptions(Options.getDefaults(RemoteOptions.class), executionOptions);
+  }
+
   private RemoteSpawnCache remoteSpawnCacheWithOptions(RemoteOptions options) {
     return remoteSpawnCacheWithOptions(options, Options.getDefaults(ExecutionOptions.class));
   }
@@ -689,6 +695,73 @@ public class RemoteSpawnCacheTest {
     Event evt = eventHandler.getEvents().get(0);
     assertThat(evt.getKind()).isEqualTo(EventKind.WARNING);
     assertThat(evt.getMessage()).contains("UNAVAILABLE");
+  }
+
+  @Test
+  public void cacheProbePropagatesCacheErrors() throws Exception {
+    RemoteSpawnCache cache = createCacheProbeSpawnCache();
+    IOException failure = new IOException(io.grpc.Status.UNAVAILABLE.asRuntimeException());
+    doThrow(failure)
+        .when(combinedCache)
+        .downloadActionResult(any(), any(), anyBoolean(), any());
+
+    assertThat(assertThrows(IOException.class, () -> cache.lookup(simpleSpawn, simplePolicy)))
+        .isSameInstanceAs(failure);
+    assertThat(eventHandler.getEvents()).isEmpty();
+  }
+
+  @Test
+  public void cacheProbeMissDoesNotOfferToStore() throws Exception {
+    RemoteSpawnCache cache = createCacheProbeSpawnCache();
+
+    try (CacheHandle entry = cache.lookup(simpleSpawn, simplePolicy)) {
+      assertThat(entry.hasResult()).isFalse();
+      assertThat(entry.willStore()).isFalse();
+    }
+    assertThat(cache.getInFlightExecutionsSize()).isEqualTo(0);
+  }
+
+  @Test
+  public void cacheProbeMissingOutputBlobIsMiss() throws Exception {
+    RemoteSpawnCache cache = createCacheProbeSpawnCache();
+    when(combinedCache.downloadActionResult(any(), any(), anyBoolean(), any()))
+        .thenReturn(CachedActionResult.remote(successfulResult));
+    doThrow(new CacheNotFoundException(digestUtil.computeAsUtf8("missing")))
+        .when(cache.getRemoteExecutionService())
+        .downloadOutputs(any(), any());
+
+    try (CacheHandle entry = cache.lookup(simpleSpawn, simplePolicy)) {
+      assertThat(entry.hasResult()).isFalse();
+      assertThat(entry.willStore()).isFalse();
+    }
+    assertThat(eventHandler.getEvents()).isEmpty();
+  }
+
+  @Test
+  public void cacheProbeAcceptsDiskCacheHitWithoutOfferingToStore() throws Exception {
+    RemoteSpawnCache cache = createCacheProbeSpawnCache();
+    when(combinedCache.downloadActionResult(any(), any(), anyBoolean(), any()))
+        .thenReturn(CachedActionResult.disk(successfulResult));
+    doReturn(null).when(cache.getRemoteExecutionService()).downloadOutputs(any(), any());
+
+    try (CacheHandle entry = cache.lookup(simpleSpawn, simplePolicy)) {
+      assertThat(entry.hasResult()).isTrue();
+      assertThat(entry.getResult().isCacheHit()).isTrue();
+      assertThat(entry.getResult().exitCode()).isEqualTo(0);
+      assertThat(entry.willStore()).isFalse();
+    }
+    assertThat(cache.getInFlightExecutionsSize()).isEqualTo(0);
+  }
+
+  @Test
+  public void cacheProbeKeepsCacheReadsAndDiskReadThroughButDisablesRemoteWrites() {
+    when(combinedCache.hasDiskCache()).thenReturn(true);
+    RemoteExecutionService service = createCacheProbeSpawnCache().getRemoteExecutionService();
+
+    assertThat(service.getReadCachePolicy(simpleSpawn).allowDiskCache()).isTrue();
+    assertThat(service.getReadCachePolicy(simpleSpawn).allowRemoteCache()).isTrue();
+    assertThat(service.getWriteCachePolicy(simpleSpawn).allowDiskCache()).isTrue();
+    assertThat(service.getWriteCachePolicy(simpleSpawn).allowRemoteCache()).isFalse();
   }
 
   @Test

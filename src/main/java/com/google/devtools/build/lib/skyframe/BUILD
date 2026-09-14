@@ -31,6 +31,7 @@ java_library(
         "AspectFunction.java",
         "BazelSkyframeExecutorConstants.java",
         "BzlLoadFunction.java",
+        "CacheProbeCompletion.java",
         "CompletionFunction.java",
         "ConfiguredTargetEvaluationExceptions.java",
         "ConfiguredTargetFunction.java",
@@ -761,7 +762,10 @@ java_library(
 
 java_library(
     name = "artifact_nested_set_function",
-    srcs = ["ArtifactNestedSetFunction.java"],
+    srcs = [
+        "ArtifactNestedSetFunction.java",
+        "CacheProbeInputBatches.java",
+    ],
     deps = [
         ":artifact_function",
         ":artifact_nested_set_value",

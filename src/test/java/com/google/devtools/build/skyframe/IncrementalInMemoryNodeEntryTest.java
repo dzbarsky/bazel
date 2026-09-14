@@ -94,6 +94,40 @@ public class IncrementalInMemoryNodeEntryTest extends InMemoryNodeEntryTest<IntV
   }
 
   @Test
+  public void dirtyDependencyGroupMustSettleBeforeAdvancing(@TestParameter boolean firstChildChanged)
+      throws InterruptedException {
+    InMemoryNodeEntry entry = createEntry();
+    entry.addReverseDepAndCheckIfDone(null);
+    entry.markRebuilding();
+    SkyKey first = key("first");
+    SkyKey second = key("second");
+    ImmutableList<SkyKey> group = ImmutableList.of(first, second);
+    entry.addTemporaryDirectDepGroup(group);
+    entry.signalDep(initialVersion, first);
+    entry.signalDep(initialVersion, second);
+    setValue(entry, new IntegerValue(1), /* errorInfo= */ null, initialVersion);
+
+    entry.markDirty(DirtyType.DIRTY);
+    entry.addReverseDepAndCheckIfDone(null);
+    assertThat(entry.getNextDirtyDirectDeps()).containsExactlyElementsIn(group);
+    entry.addTemporaryDirectDepGroup(group);
+    assertThat(entry.isReadyToEvaluate()).isFalse();
+
+    entry.signalDep(firstChildChanged ? incrementalVersion : initialVersion, first);
+    assertThat(entry.hasUnsignaledDeps()).isTrue();
+    assertThat(entry.getLifecycleState())
+        .isEqualTo(
+            firstChildChanged ? LifecycleState.NEEDS_REBUILDING : LifecycleState.CHECK_DEPENDENCIES);
+    assertThat(entry.isReadyToEvaluate()).isEqualTo(firstChildChanged && isPartialReevaluation);
+
+    entry.signalDep(initialVersion, second);
+    assertThat(entry.hasUnsignaledDeps()).isFalse();
+    assertThat(entry.isReadyToEvaluate()).isTrue();
+    assertThat(entry.getLifecycleState())
+        .isEqualTo(firstChildChanged ? LifecycleState.NEEDS_REBUILDING : LifecycleState.VERIFIED_CLEAN);
+  }
+
+  @Test
   public void changedLifecycle() throws InterruptedException {
     InMemoryNodeEntry entry = createEntry();
     entry.addReverseDepAndCheckIfDone(null); // Start evaluation.

@@ -737,6 +737,37 @@ public final class RemoteModuleTest {
         .isNotNull();
   }
 
+  @Test
+  public void cacheProbeDoesNotEagerlyDownloadAllOutputs() throws Exception {
+    assertProbeUsesMinimalDownloads("all");
+  }
+
+  @Test
+  public void cacheProbeIgnoresEagerDownloadRegex() throws Exception {
+    assertProbeUsesMinimalDownloads("minimal");
+  }
+
+  private void assertProbeUsesMinimalDownloads(String configuredMode) throws Exception {
+    remoteOptions =
+        parseRemoteOptions(
+            "--remote_download_outputs=" + configuredMode, "--remote_download_regex=.*");
+    remoteOptions.diskCache = TestUtils.createUniqueTmpDir(null).asFragment();
+    var configuredOutputsMode = remoteOptions.remoteOutputsMode;
+    var env = createTestCommandEnvironment(remoteModule, remoteOptions, scratch -> {});
+    env.getOptions().getOptions(ExecutionOptions.class).cacheProbeOutput =
+        PathFragment.create("probe.json");
+
+    remoteModule.beforeCommand(env);
+    env.throwPendingException();
+
+    assertThat(
+            remoteModule
+                .getRemoteOutputChecker()
+                .shouldDownloadOutput(PathFragment.create("out/image.tar"), null))
+        .isFalse();
+    assertThat(remoteOptions.remoteOutputsMode).isEqualTo(configuredOutputsMode);
+  }
+
   @CanIgnoreReturnValue
   private CommandEnvironment beforeCommand() throws IOException, AbruptExitException {
     return beforeCommand(scratch -> {});

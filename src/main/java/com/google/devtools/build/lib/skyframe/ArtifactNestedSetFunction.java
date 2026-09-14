@@ -26,6 +26,7 @@ import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
@@ -47,9 +48,13 @@ import javax.annotation.Nullable;
 final class ArtifactNestedSetFunction implements SkyFunction {
 
   private final Supplier<ConsumedArtifactsTracker> consumedArtifactsTrackerSupplier;
+  private final BooleanSupplier cacheProbe;
 
-  ArtifactNestedSetFunction(Supplier<ConsumedArtifactsTracker> consumedArtifactsTrackerSupplier) {
+  ArtifactNestedSetFunction(
+      Supplier<ConsumedArtifactsTracker> consumedArtifactsTrackerSupplier,
+      BooleanSupplier cacheProbe) {
     this.consumedArtifactsTrackerSupplier = consumedArtifactsTrackerSupplier;
+    this.cacheProbe = cacheProbe;
   }
 
   @Override
@@ -62,11 +67,18 @@ final class ArtifactNestedSetFunction implements SkyFunction {
           (x) -> consumedArtifactsTrackerSupplier.get().registerConsumedArtifact(x));
     }
     ImmutableList<SkyKey> depKeys = artifactNestedSetKey.getDirectDepKeys();
+    if (cacheProbe.getAsBoolean()) {
+      depKeys = env.getState(CacheProbeInputBatches::new).request(env, depKeys);
+      if (depKeys == null) {
+        return null;
+      }
+    }
     SkyframeLookupResult depsEvalResult = env.getValuesAndExceptions(depKeys);
 
     NestedSetBuilder<Pair<SkyKey, Exception>> transitiveExceptionsBuilder =
         NestedSetBuilder.stableOrder();
     boolean catastrophic = false;
+    Pair<SkyKey, ActionExecutionException> cacheProbeMiss = null;
     ArtifactNestedSetValue result = ArtifactNestedSetValue.ALL_PRESENT;
 
     // Throw a SkyFunctionException when a dep evaluation results in an exception.
@@ -97,18 +109,31 @@ final class ArtifactNestedSetFunction implements SkyFunction {
         // SourceArtifactException is never catastrophic.
         transitiveExceptionsBuilder.add(Pair.of(key, e));
       } catch (ActionExecutionException e) {
-        transitiveExceptionsBuilder.add(Pair.of(key, e));
+        if (e.isCacheProbeMiss()) {
+          if (cacheProbeMiss == null) {
+            cacheProbeMiss = Pair.of(key, e);
+          }
+        } else {
+          transitiveExceptionsBuilder.add(Pair.of(key, e));
+        }
         catastrophic |= e.isCatastrophe();
       } catch (ArtifactNestedSetEvalException e) {
         catastrophic |= e.isCatastrophic();
-        transitiveExceptionsBuilder.addTransitive(e.getNestedExceptions());
+        if (e.hasMissingInputs()) {
+          result = ArtifactNestedSetValue.SOME_MISSING;
+        }
+        transitiveExceptionsBuilder.addTransitive(e.nestedExceptions);
+        if (cacheProbeMiss == null) {
+          cacheProbeMiss = e.cacheProbeMiss;
+        }
       }
     }
 
-    if (!transitiveExceptionsBuilder.isEmpty()) {
+    if (!transitiveExceptionsBuilder.isEmpty() || cacheProbeMiss != null) {
       NestedSet<Pair<SkyKey, Exception>> transitiveExceptions = transitiveExceptionsBuilder.build();
       // The NestedSet of exceptions is usually small, hence flattening won't be too costly.
-      Pair<SkyKey, Exception> firstSkyKeyAndException = transitiveExceptions.toList().get(0);
+      Pair<SkyKey, ? extends Exception> firstSkyKeyAndException =
+          transitiveExceptions.isEmpty() ? cacheProbeMiss : transitiveExceptions.toList().get(0);
       throw new ArtifactNestedSetFunctionException(
           new ArtifactNestedSetEvalException(
               "Error evaluating artifact nested set. First exception: "
@@ -116,7 +141,9 @@ final class ArtifactNestedSetFunction implements SkyFunction {
                   + ", SkyKey: "
                   + firstSkyKeyAndException.getFirst(),
               transitiveExceptions,
-              catastrophic));
+              catastrophic,
+              result == ArtifactNestedSetValue.SOME_MISSING,
+              cacheProbeMiss));
     }
 
     // This should only happen when all error handling is done.
@@ -147,21 +174,42 @@ final class ArtifactNestedSetFunction implements SkyFunction {
 
     private final NestedSet<Pair<SkyKey, Exception>> nestedExceptions;
     private final boolean catastrophic;
+    private final boolean hasMissingInputs;
+    @Nullable private final Pair<SkyKey, ActionExecutionException> cacheProbeMiss;
 
     ArtifactNestedSetEvalException(
-        String message, NestedSet<Pair<SkyKey, Exception>> nestedExceptions, boolean catastrophic) {
+        String message,
+        NestedSet<Pair<SkyKey, Exception>> nestedExceptions,
+        boolean catastrophic,
+        boolean hasMissingInputs,
+        @Nullable Pair<SkyKey, ActionExecutionException> cacheProbeMiss) {
       super(message);
       this.nestedExceptions = nestedExceptions;
       this.catastrophic = catastrophic;
+      this.hasMissingInputs = hasMissingInputs;
+      this.cacheProbeMiss = cacheProbeMiss;
     }
 
     NestedSet<Pair<SkyKey, Exception>> getNestedExceptions() {
       return nestedExceptions;
     }
 
+    @Nullable
+    ActionExecutionException getCacheProbeMiss() {
+      return cacheProbeMiss == null ? null : cacheProbeMiss.getSecond();
+    }
+
+    boolean hasCacheProbeMiss() {
+      return cacheProbeMiss != null;
+    }
+
     // Should be true if at least one child exception is catastrophic.
     boolean isCatastrophic() {
       return catastrophic;
+    }
+
+    boolean hasMissingInputs() {
+      return hasMissingInputs;
     }
   }
 }

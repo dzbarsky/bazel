@@ -194,6 +194,7 @@ public final class SkyframeActionExecutor {
   private Reporter reporter;
   private ImmutableMap<String, String> clientEnv = ImmutableMap.of();
   private Executor executorEngine;
+  private boolean cacheProbe;
   private ExtendedEventHandler progressSuppressingEventHandler;
   private ActionLogBufferPathGenerator actionLogBufferPathGenerator;
   private ActionCacheChecker actionCacheChecker;
@@ -347,6 +348,7 @@ public final class SkyframeActionExecutor {
     this.rewindingEnabled = buildRequestOptions.rewindLostInputs;
     this.invocationRetriesEnabled =
         options.getOptions(ExecutionOptions.class).remoteRetryOnTransientCacheError > 0;
+    this.cacheProbe = options.getOptions(ExecutionOptions.class).cacheProbeOutput != null;
     this.outputService = checkNotNull(outputService);
     this.outputDirectoryHelper = outputDirectoryHelper;
 
@@ -369,6 +371,10 @@ public final class SkyframeActionExecutor {
             : minActiveAction;
     this.actionConcurrencyMeter =
         new ActionConcurrencyMeter(minActiveAction, max(minActiveAction, maxActiveAction));
+  }
+
+  boolean isCacheProbe() {
+    return cacheProbe;
   }
 
   public void setActionLogBufferPathGenerator(
@@ -1506,7 +1512,7 @@ public final class SkyframeActionExecutor {
     // so that we do not print it again in upper levels.
     // Note that we need to report it here since we want immediate feedback of the errors
     // and in some cases the upper-level printing mechanism only prints one of the errors.
-    return printError(e.getMessage(), e.getAction(), outErrBuffer)
+    return e.showError() && printError(e.getMessage(), e.getAction(), outErrBuffer)
         ? new AlreadyReportedActionExecutionException(e)
         : e;
   }

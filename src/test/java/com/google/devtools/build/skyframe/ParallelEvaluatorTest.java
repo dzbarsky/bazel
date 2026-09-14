@@ -3514,6 +3514,69 @@ public class ParallelEvaluatorTest {
   }
 
   @Test
+  public void partialReevaluationWaitsForDirtyDependencyGroup() throws InterruptedException {
+    PartialReevaluationKey parent = new PartialReevaluationKey("parent");
+    SkyKey first = skyKey("first");
+    SkyKey second = skyKey("second");
+    AtomicBoolean warm = new AtomicBoolean();
+    AtomicInteger computations = new AtomicInteger();
+    CountDownLatch partialSignalObserved = new CountDownLatch(1);
+    InMemoryGraph baseGraph = new InMemoryGraphImpl();
+    graph =
+        NotifyingHelper.makeNotifyingTransformer(
+                (key, type, order, context) -> {
+                  if (!warm.get() || !key.equals(parent) || type != EventType.IS_READY) {
+                    return;
+                  }
+                  NodeEntry entry = baseGraph.get(null, QueryableGraph.Reason.OTHER, parent);
+                  if (entry.getLifecycleState() == NodeEntry.LifecycleState.CHECK_DEPENDENCIES
+                      && entry.hasUnsignaledDeps()) {
+                    try {
+                      assertThat(entry.isReadyToEvaluate()).isFalse();
+                    } finally {
+                      partialSignalObserved.countDown();
+                    }
+                  }
+                })
+            .transform(baseGraph);
+    tester.putSkyFunction(
+        PartialReevaluationKey.FUNCTION_NAME,
+        (key, env) -> {
+          PartialReevaluationMailbox.from(env.getState(ClassToInstanceMapSkyKeyComputeState::new))
+              .getMail();
+          computations.incrementAndGet();
+          SkyframeLookupResult values = env.getValuesAndExceptions(ImmutableList.of(first, second));
+          if (values.get(first) == null || values.get(second) == null) {
+            return null;
+          }
+          return StringValue.of("parent");
+        });
+    tester.getOrCreate(first).setConstantValue(StringValue.of("first"));
+    tester
+        .getOrCreate(second)
+        .setBuilder(
+            (key, env) -> {
+              if (warm.get()) {
+                assertThat(
+                        partialSignalObserved.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                    .isTrue();
+              }
+              return StringValue.of("second");
+            });
+
+    assertThat(eval(/* keepGoing= */ true, parent)).isEqualTo(StringValue.of("parent"));
+    int coldComputations = computations.get();
+    baseGraph.get(null, QueryableGraph.Reason.OTHER, parent).markDirty(NodeEntry.DirtyType.DIRTY);
+    baseGraph.get(null, QueryableGraph.Reason.OTHER, first).markDirty(NodeEntry.DirtyType.CHANGE);
+    baseGraph.get(null, QueryableGraph.Reason.OTHER, second).markDirty(NodeEntry.DirtyType.CHANGE);
+    warm.set(true);
+
+    assertThat(eval(/* keepGoing= */ true, parent)).isEqualTo(StringValue.of("parent"));
+    assertThat(partialSignalObserved.getCount()).isEqualTo(0);
+    assertThat(computations.get()).isEqualTo(coldComputations);
+  }
+
+  @Test
   public void partialReevaluationOneDuringAReevaluation(
       @TestParameter({
             "key2,key3,key4",

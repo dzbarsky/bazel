@@ -22,10 +22,23 @@ import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
  *
  * @param runTestsExclusively whether to run tests in exclusive mode
  * @param outputGroups value of the --output_groups flag
+ * @param cacheProbe whether completion nodes report provisional cache misses as outputs settle
  */
 @AutoCodec
 public record TopLevelArtifactContext(
     boolean runTestsExclusively,
     boolean expandFilesets,
     ImmutableSortedSet<String> outputGroups,
-    boolean forRunCommand) {}
+    boolean forRunCommand,
+    boolean cacheProbe) {
+  @AutoCodec.Instantiator
+  public TopLevelArtifactContext {}
+
+  public TopLevelArtifactContext(
+      boolean runTestsExclusively,
+      boolean expandFilesets,
+      ImmutableSortedSet<String> outputGroups,
+      boolean forRunCommand) {
+    this(runTestsExclusively, expandFilesets, outputGroups, forRunCommand, /* cacheProbe= */ false);
+  }
+}
