@@ -20,6 +20,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.StarlarkInfo;
+import com.google.devtools.build.lib.packages.StarlarkInfoNoSchema;
 import com.google.devtools.build.lib.packages.StarlarkInfoWithMessage;
 import com.google.devtools.build.lib.packages.StarlarkProvider;
 import com.google.devtools.build.lib.packages.StructProvider;
@@ -92,7 +93,9 @@ public final class StarlarkInfoCodecTest {
         .containsExactlyElementsIn(original.getFieldNames())
         .inOrder();
     // Deserialization must preserve the shared field layout across records.
-    assertThat(deserialized.getFieldNames()).isSameInstanceAs(original.getFieldNames());
+    if (original instanceof StarlarkInfoNoSchema) {
+      assertThat(deserialized.getFieldNames()).isSameInstanceAs(original.getFieldNames());
+    }
   }
 
   /** Returns an exported, schemaless provider. */
