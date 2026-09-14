@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.skyframe.serialization;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuild;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.StarlarkInfo;
@@ -23,7 +24,11 @@ import com.google.devtools.build.lib.packages.StarlarkInfoWithMessage;
 import com.google.devtools.build.lib.packages.StarlarkProvider;
 import com.google.devtools.build.lib.packages.StructProvider;
 import com.google.devtools.build.lib.skyframe.serialization.testutils.SerializationTester;
+import net.starlark.java.eval.Mutability;
+import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkInt;
+import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkThread;
 import net.starlark.java.syntax.Location;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -49,6 +54,36 @@ public final class StarlarkInfoCodecTest {
         .makeMemoizing()
         .setVerificationFunction(StarlarkInfoCodecTest::verificationFunction)
         .runTests();
+  }
+
+  @Test
+  public void schemafulProvidersRoundTripAllLayouts() throws Exception {
+    for (int size = 0; size <= 6; size++) {
+      ImmutableList.Builder<String> fields = ImmutableList.builder();
+      ImmutableMap.Builder<String, Object> values = ImmutableMap.builder();
+      for (int i = 0; i < size; i++) {
+        fields.add("field" + i);
+        values.put("field" + i, StarlarkInt.of(i));
+      }
+      StarlarkProvider provider =
+          StarlarkProvider.builder(Location.BUILTIN)
+              .setSchema(fields.build())
+              .buildExported(
+                  new StarlarkProvider.Key(
+                      keyForBuild(Label.parseCanonicalUnchecked("//foo:bar.bzl")),
+                      "schema" + size));
+      StarlarkInfo instance;
+      try (Mutability mu = Mutability.create()) {
+        StarlarkThread thread = StarlarkThread.createTransient(mu, StarlarkSemantics.DEFAULT);
+        instance =
+            (StarlarkInfo)
+                Starlark.call(thread, provider, ImmutableList.of(), values.buildOrThrow());
+      }
+      new SerializationTester(instance)
+          .makeMemoizing()
+          .setVerificationFunction(StarlarkInfoCodecTest::verificationFunction)
+          .runTests();
+    }
   }
 
   private static void verificationFunction(StarlarkInfo original, StarlarkInfo deserialized) {
