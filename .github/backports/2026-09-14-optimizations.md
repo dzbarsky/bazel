@@ -73,3 +73,18 @@ glob/ignored-directory tests for #24, and provider/codec/Starlark rule tests
 for #23. Changed upstream Java lines were formatted with google-java-format
 1.36.1. No combined performance measurement was run; individual PR benchmark
 results must not be added together.
+
+## Release 26 rebase validation
+
+Rebased onto upstream `release-9.3.0` at
+`f8093718b95cf777244533c898cc657fd30fc7d3`. All 14 targets listed above,
+`//src/test/java/com/google/devtools/build/lib/remote:RemoteTests`, and
+`//src/test/java/com/google/devtools/build/lib/sandbox:SmallTests` passed
+on the rebased source (16 complete targets). The publication script passed
+all 21 mocked checks. Repository release immutability was verified enabled.
+
+`git range-diff` confirms identical patches for all 11 requested PRs and
+the provider-codec test adaptation. The stale-repository regression keeps
+its explicit SkyKey dependency alongside upstream dependencies. Older
+sandbox and remote-output fixes already supplied by upstream were removed.
+Release 25 notes from the previous merge commit are preserved.
