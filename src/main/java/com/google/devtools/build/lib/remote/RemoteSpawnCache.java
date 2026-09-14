@@ -86,7 +86,8 @@ final class RemoteSpawnCache implements SpawnCache {
     boolean shouldAcceptCachedResult =
         !context.bustCaches() && remoteExecutionService.getReadCachePolicy(spawn).allowAnyCache();
     boolean shouldUploadLocalResults =
-        remoteExecutionService.getWriteCachePolicy(spawn).allowAnyCache();
+        !remoteExecutionService.isCacheProbe()
+            && remoteExecutionService.getWriteCachePolicy(spawn).allowAnyCache();
     if (!shouldAcceptCachedResult && !shouldUploadLocalResults) {
       return SpawnCache.NO_RESULT_NO_STORE;
     }
@@ -122,9 +123,11 @@ final class RemoteSpawnCache implements SpawnCache {
       // first one.
       LocalExecution previousExecution = null;
       try {
-        thisExecution =
-            LocalExecution.createIfDeduplicatable(
-                action, () -> inFlightExecutions.remove(action.getActionKey()));
+        if (shouldUploadLocalResults) {
+          thisExecution =
+              LocalExecution.createIfDeduplicatable(
+                  action, () -> inFlightExecutions.remove(action.getActionKey()));
+        }
         if (shouldUploadLocalResults && thisExecution != null) {
           LocalExecution previousOrThisExecution =
               inFlightExecutions.merge(
@@ -196,7 +199,9 @@ final class RemoteSpawnCache implements SpawnCache {
           throw createExecExceptionForCredentialHelperException(e);
         } catch (RemoteExecutionCapabilitiesException e) {
           boolean shouldLocalFallback =
-              options.getRemoteLocalFallbackForRemoteCache() && options.getRemoteLocalFallback();
+              !remoteExecutionService.isCacheProbe()
+                  && options.getRemoteLocalFallbackForRemoteCache()
+                  && options.getRemoteLocalFallback();
           if (!shouldLocalFallback) {
             if (thisExecution != null) {
               thisExecution.close();
@@ -206,6 +211,8 @@ final class RemoteSpawnCache implements SpawnCache {
         } catch (IOException e) {
           if (BulkTransferException.allCausedByCacheNotFoundException(e)) {
             // Intentionally left blank
+          } else if (remoteExecutionService.isCacheProbe()) {
+            throw e;
           } else {
             String errorMessage = Utils.grpcAwareErrorMessage(e, verboseFailures);
             if (isNullOrEmpty(errorMessage)) {

@@ -99,7 +99,9 @@ abstract class AbstractInMemoryNodeEntry<D extends DirtyBuildingState>
     return !isDone()
         && isEvaluating()
         && (dirtyBuildingState.isReady(getNumTemporaryDirectDeps())
-            || key.supportsPartialReevaluation());
+            // Dirty checking must finish its current group before advancing to the next one.
+            || (key.supportsPartialReevaluation()
+                && dirtyBuildingState.getLifecycleState() != LifecycleState.CHECK_DEPENDENCIES));
   }
 
   @Override
