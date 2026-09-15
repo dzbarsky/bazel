@@ -320,6 +320,19 @@ public class CcToolchainFeatures implements StarlarkValue {
       ImmutableSet<WithFeatureSet> withFeatureSets,
       ImmutableList<FlagGroup> flagGroups) {
 
+    private static final Interner<FlagSet> FLAG_SET_INTERNER = BlazeInterners.newWeakInterner();
+
+    @VisibleForSerialization
+    @AutoCodec.Instantiator
+    static FlagSet create(
+        ImmutableSet<String> actions,
+        ImmutableSet<String> expandIfAllAvailable,
+        ImmutableSet<WithFeatureSet> withFeatureSets,
+        ImmutableList<FlagGroup> flagGroups) {
+      return FLAG_SET_INTERNER.intern(
+          new FlagSet(actions, expandIfAllAvailable, withFeatureSets, flagGroups));
+    }
+
     /** Adds the flags that apply to the given {@code action} to {@code commandLine}. */
     private void expandCommandLine(
         String action,
