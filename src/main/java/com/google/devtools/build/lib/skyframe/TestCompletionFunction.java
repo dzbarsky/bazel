@@ -63,35 +63,18 @@ public final class TestCompletionFunction implements SkyFunction {
 
     ConfiguredTargetValue ctValue =
         (ConfiguredTargetValue)
-            (ctx.cacheProbe()
-                ? CacheProbeCompletion.getValue(env, ctKey)
-                : env.getValue(ctKey));
+            (ctx.cacheProbe() ? CacheProbeCompletion.getValue(env, ctKey) : env.getValue(ctKey));
     if (ctValue == null) {
       return null;
     }
 
     ConfiguredTarget ct = ctValue.getConfiguredTarget();
-    if (key.exclusiveTesting()) {
+    if (key.exclusiveTesting() && !ctx.cacheProbe()) {
       // Request test execution iteratively if testing exclusively.
       for (Artifact.DerivedArtifact testArtifact : TestProvider.getTestStatusArtifacts(ct)) {
-        if (ctx.cacheProbe()) {
-          try {
-            if (CacheProbeCompletion.getValue(env, testArtifact.getGeneratingActionKey()) == null) {
-              return null;
-            }
-          } catch (CacheProbeCompletion.DependencyException e) {
-            if (e.getCause() instanceof ActionExecutionException failure
-                && failure.isCacheProbeMiss()) {
-              env.getListener().post(new CacheProbeCompletion.MissingOutputEvent(ctKey));
-              env.getListener().post(new CacheProbeCompletion.TestMissEvent(ctKey));
-            }
-            throw e;
-          }
-        } else {
-          env.getValue(testArtifact.getGeneratingActionKey());
-          if (env.valuesMissing()) {
-            return null;
-          }
+        env.getValue(testArtifact.getGeneratingActionKey());
+        if (env.valuesMissing()) {
+          return null;
         }
       }
     } else {
