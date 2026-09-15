@@ -294,7 +294,6 @@ public final class CacheProbe implements AutoCloseable {
   @Subscribe
   @AllowConcurrentEvents
   public void testSummary(TestSummary summary) {
-    recordFailure(summary.getSystemFailure());
     if (!TestResult.isBlazeTestStatusPassed(summary.getStatus())) {
       markMissing(testKey(summary.getTarget()));
     }

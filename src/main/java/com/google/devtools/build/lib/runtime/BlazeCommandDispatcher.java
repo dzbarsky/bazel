@@ -863,9 +863,8 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
       }
 
       needToCallAfterCommand = false;
-      var newResult = runtime.afterCommand(/* forceKeepStateForTesting= */ false, env, result);
-      result = newResult;
-      if (newResult.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED)) {
+      result = runtime.afterCommand(/* forceKeepStateForTesting= */ false, env, result);
+      if (result.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED)) {
         var executionOptions =
             Preconditions.checkNotNull(options.getOptions(ExecutionOptions.class));
         if (attemptedCommandIds.size() < executionOptions.remoteRetryOnTransientCacheError) {
@@ -873,7 +872,7 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
         }
       }
 
-      return newResult;
+      return result;
     } catch (RemoteCacheTransientErrorException e) {
       throw e;
     } catch (Throwable e) {
