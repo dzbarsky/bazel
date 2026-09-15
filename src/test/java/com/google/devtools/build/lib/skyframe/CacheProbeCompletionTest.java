@@ -144,16 +144,17 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
         ImmutableList.of(Spawn.Code.CACHE_PROBE_MISS, Spawn.Code.EXEC_IO_EXCEPTION)) {
       Fixture fixture = createFixture(/* probe= */ true, code);
       SkyKey testKey =
-          TestCompletionValue.key(
-              CONFIGURED_TARGET, fixture.key.topLevelArtifactContext(), false);
+          TestCompletionValue.key(CONFIGURED_TARGET, fixture.key.topLevelArtifactContext(), false);
 
       EvaluationResult<SkyValue> result = fixture.evaluateResult(testKey);
 
       assertThat(result.get(testKey)).isNull();
-      assertThat(result.getError(testKey).getException()).isInstanceOf(ActionExecutionException.class);
+      assertThat(result.getError(testKey).getException())
+          .isInstanceOf(ActionExecutionException.class);
       ActionExecutionException failure =
           (ActionExecutionException) result.getError(testKey).getException();
-      assertThat(failure.getDetailedExitCode().getFailureDetail().getSpawn().getCode()).isEqualTo(code);
+      assertThat(failure.getDetailedExitCode().getFailureDetail().getSpawn().getCode())
+          .isEqualTo(code);
       assertThat(fixture.events.getPosts())
           .containsExactly(new MissingOutputEvent(CONFIGURED_TARGET), new FinishedEvent())
           .inOrder();
@@ -172,10 +173,7 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
             /* detailedExitCode= */ null);
     Fixture fixture =
         createFixture(
-            /* probe= */ true,
-            Spawn.Code.CACHE_PROBE_MISS,
-            /* testStatusOnly= */ false,
-            failure);
+            /* probe= */ true, Spawn.Code.CACHE_PROBE_MISS, /* testStatusOnly= */ false, failure);
     for (SkyKey key :
         ImmutableList.of(
             fixture.key,
@@ -195,17 +193,14 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
     for (Spawn.Code code :
         ImmutableList.of(Spawn.Code.CACHE_PROBE_MISS, Spawn.Code.EXEC_IO_EXCEPTION)) {
       assertTestStatusFailure(/* exclusive= */ false, code);
+      assertTestStatusFailure(/* exclusive= */ true, code);
     }
-    assertTestStatusFailure(/* exclusive= */ true, Spawn.Code.CACHE_PROBE_MISS);
   }
 
   private void assertTestStatusFailure(boolean exclusive, Spawn.Code code) throws Exception {
     Fixture fixture =
         createFixture(
-            /* probe= */ true,
-            code,
-            /* testStatusOnly= */ true,
-            /* prerequisiteFailure= */ null);
+            /* probe= */ true, code, /* testStatusOnly= */ true, /* prerequisiteFailure= */ null);
     SkyKey testKey =
         TestCompletionValue.key(
             CONFIGURED_TARGET, fixture.key.topLevelArtifactContext(), exclusive);
@@ -215,7 +210,8 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
     assertThat(result.get(testKey)).isNull();
     ActionExecutionException failure =
         (ActionExecutionException) result.getError(testKey).getException();
-    assertThat(failure.getDetailedExitCode().getFailureDetail().getSpawn().getCode()).isEqualTo(code);
+    assertThat(failure.getDetailedExitCode().getFailureDetail().getSpawn().getCode())
+        .isEqualTo(code);
     if (code == Spawn.Code.CACHE_PROBE_MISS) {
       assertThat(fixture.events.getPosts())
           .containsExactly(
@@ -226,7 +222,8 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
       assertThat(fixture.evaluateResult(testKey).getError(testKey)).isNotNull();
       assertThat(fixture.events.getPosts()).containsExactly(new TestMissEvent(CONFIGURED_TARGET));
     } else {
-      assertThat(fixture.events.getPosts()).containsExactly(new MissingOutputEvent(CONFIGURED_TARGET));
+      assertThat(fixture.events.getPosts())
+          .containsExactly(new MissingOutputEvent(CONFIGURED_TARGET));
     }
   }
 
@@ -306,13 +303,16 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
     MemoizingEvaluator evaluator =
         new InMemoryMemoizingEvaluator(
             ImmutableMap.of(
-                SkyFunctions.CONFIGURED_TARGET, configuredTarget,
+                SkyFunctions.CONFIGURED_TARGET,
+                configuredTarget,
                 SkyFunctions.TARGET_COMPLETION,
-                    testStatusOnly
-                        ? (unusedKey, unusedEnv) -> TargetCompletionValue.INSTANCE
-                        : completion,
-                SkyFunctions.TEST_COMPLETION, new TestCompletionFunction(),
-                SkyFunctions.ACTION_EXECUTION, execute),
+                testStatusOnly
+                    ? (unusedKey, unusedEnv) -> TargetCompletionValue.INSTANCE
+                    : completion,
+                SkyFunctions.TEST_COMPLETION,
+                new TestCompletionFunction(),
+                SkyFunctions.ACTION_EXECUTION,
+                execute),
             differencer,
             EvaluationProgressReceiver.NULL,
             GraphInconsistencyReceiver.THROWING,
