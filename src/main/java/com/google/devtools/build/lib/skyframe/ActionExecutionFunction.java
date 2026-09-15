@@ -261,7 +261,7 @@ public final class ActionExecutionFunction implements SkyFunction {
     }
 
     InputDiscoveryState state;
-    if (action.discoversInputs()) {
+    if (action.discoversInputs() || skyframeActionExecutor.isCacheProbe()) {
       state = env.getState(InputDiscoveryState::new);
     } else {
       // Because this is a new state, all conditionals below about whether state has already done
@@ -298,6 +298,29 @@ public final class ActionExecutionFunction implements SkyFunction {
               allInputs,
               action.getSchedulingDependencies(),
               state);
+
+      if (skyframeActionExecutor.isCacheProbe() && previousExecution == null) {
+        if (state.cacheProbeInputBatches == null) {
+          state.cacheProbeInputBatches = new CacheProbeInputBatches();
+        }
+        ImmutableList<SkyKey> requested =
+            state.cacheProbeInputBatches.request(env, inputDepKeys.asList());
+        if (requested == null) {
+          return null;
+        }
+        if (state.cacheProbeInputBatches.stoppedOnMiss()) {
+          ImmutableSet.Builder<SkyKey> requestedKeys = ImmutableSet.builder();
+          requestedKeys.addAll(requested);
+          Predicate<Artifact> isMandatoryInput = makeMandatoryInputPredicate(action);
+          for (Artifact input :
+              Iterables.concat(allInputs.toList(), action.getSchedulingDependencies().toList())) {
+            if (input.isSourceArtifact() && isMandatoryInput.test(input)) {
+              requestedKeys.add(Artifact.key(input));
+            }
+          }
+          inputDepKeys = requestedKeys.build();
+        }
+      }
 
       SkyframeLookupResult inputDepsResult = env.getValuesAndExceptions(inputDepKeys);
       if (previousExecution == null) {
@@ -999,13 +1022,36 @@ public final class ActionExecutionFunction implements SkyFunction {
             isMandatoryInput,
             inputDepKeys);
     boolean hasMissingInputs =
-        actionExecutionFunctionExceptionHandler.accumulateAndMaybeThrowExceptions();
+        actionExecutionFunctionExceptionHandler.accumulateAndMaybeThrowExceptions(env);
 
     if (env.valuesMissing()) {
       return null;
     }
 
     ImmutableList<Artifact> allInputsList = allInputs.toList();
+
+    if (hasMissingInputs && actionExecutionFunctionExceptionHandler.firstCacheProbeMiss != null) {
+      // Missing source values need classification before an expected miss can be propagated.
+      // Do not look up failed derived inputs here: those have no value, not missing-file metadata.
+      CompactHashSet<Artifact> seen = CompactHashSet.create();
+      for (Artifact input :
+          Iterables.concat(allInputsList, action.getSchedulingDependencies().toList())) {
+        if (input.isSourceArtifact() && seen.add(input) && isMandatoryInput.test(input)) {
+          // A skipped batch may contain dirty source nodes from an earlier command. Their old
+          // missing-file values are not evidence about this invocation.
+          SkyKey inputKey = Artifact.key(input);
+          SkyValue value =
+              inputDepKeys.contains(inputKey)
+                  ? inputDepsResult.get(inputKey)
+                  : evaluator.get().getExistingValue(inputKey);
+          if (value instanceof MissingArtifactValue missing) {
+            actionExecutionFunctionExceptionHandler.accumulateMissingFileArtifactValue(
+                input, missing);
+          }
+        }
+      }
+      actionExecutionFunctionExceptionHandler.maybeThrowException(/* deferCacheProbeMiss= */ false);
+    }
 
     // When there are no missing values or there was an error, we can start checking individual
     // files. We don't bother to optimize the error-ful case since it's rare.
@@ -1074,7 +1120,7 @@ public final class ActionExecutionFunction implements SkyFunction {
 
     // After accumulating the inputs, we might find some mandatory artifact with
     // SourceFileInErrorArtifactValue.
-    actionExecutionFunctionExceptionHandler.maybeThrowException();
+    actionExecutionFunctionExceptionHandler.maybeThrowException(/* deferCacheProbeMiss= */ false);
 
     return new CheckInputResults(inputArtifactData);
   }
@@ -1189,6 +1235,7 @@ public final class ActionExecutionFunction implements SkyFunction {
    */
   static class InputDiscoveryState implements SerializableSkyKeyComputeState {
     AllInputs allInputs;
+    @Nullable CacheProbeInputBatches cacheProbeInputBatches;
 
     /** Mutable map containing metadata for known artifacts. */
     ActionInputMap inputArtifactData = null;
@@ -1360,6 +1407,7 @@ public final class ActionExecutionFunction implements SkyFunction {
     private final List<LabelCause> missingArtifactCauses = Lists.newArrayListWithCapacity(0);
     private final List<NestedSet<Cause>> transitiveCauses = Lists.newArrayListWithCapacity(0);
     private ActionExecutionException firstActionExecutionException;
+    private ActionExecutionException firstCacheProbeMiss;
 
     ActionExecutionFunctionExceptionHandler(
         Supplier<SetMultimap<SkyKey, Artifact>> skyKeyToDerivedArtifactSetForExceptions,
@@ -1384,7 +1432,7 @@ public final class ActionExecutionFunction implements SkyFunction {
      * @throws ActionExecutionException if the eval of any mandatory artifact threw an exception
      * @return true if there is at least one input artifact that is missing
      */
-    boolean accumulateAndMaybeThrowExceptions() throws ActionExecutionException {
+    boolean accumulateAndMaybeThrowExceptions(Environment env) throws ActionExecutionException {
       boolean someInputsMissing = false;
       for (SkyKey key : inputDepKeys) {
         try {
@@ -1412,6 +1460,7 @@ public final class ActionExecutionFunction implements SkyFunction {
         } catch (ActionExecutionException e) {
           handleActionExecutionExceptionFromSkykey(key, e);
         } catch (ArtifactNestedSetEvalException e) {
+          someInputsMissing |= e.hasMissingInputs();
           for (Pair<SkyKey, Exception> skyKeyAndException : e.getNestedExceptions().toList()) {
             SkyKey skyKey = skyKeyAndException.getFirst();
             Exception inputException = skyKeyAndException.getSecond();
@@ -1429,13 +1478,23 @@ public final class ActionExecutionFunction implements SkyFunction {
             handleActionExecutionExceptionFromSkykey(
                 skyKey, (ActionExecutionException) inputException);
           }
+          ActionExecutionException cacheProbeMiss = e.getCacheProbeMiss();
+          if (cacheProbeMiss != null) {
+            handleActionExecutionExceptionFromSkykey(key, cacheProbeMiss);
+          }
         }
       }
-      maybeThrowException();
+      maybeThrowException(/* deferCacheProbeMiss= */ someInputsMissing || env.valuesMissing());
       return someInputsMissing;
     }
 
     private void handleActionExecutionExceptionFromSkykey(SkyKey key, ActionExecutionException e) {
+      if (e.isCacheProbeMiss()) {
+        // All derived inputs are mandatory, including for actions that discover source inputs.
+        // A miss needs no per-artifact attribution or flattening of the consumer's input set.
+        accumulateActionExecutionException(e);
+        return;
+      }
       if (key instanceof Artifact artifact) {
         handleActionExecutionExceptionPerArtifact(artifact, e);
         return;
@@ -1453,8 +1512,7 @@ public final class ActionExecutionFunction implements SkyFunction {
                 + " any inputs",
             action.prettyPrint(), key);
         if (firstActionExecutionException == null) {
-          firstActionExecutionException = e;
-          transitiveCauses.add(e.getRootCauses());
+          accumulateActionExecutionException(e);
         }
       } else {
         for (Artifact input : associatedInputs) {
@@ -1491,7 +1549,7 @@ public final class ActionExecutionFunction implements SkyFunction {
     /**
      * @throws ActionExecutionException if there is any accumulated exception from the inputs.
      */
-    void maybeThrowException() throws ActionExecutionException {
+    void maybeThrowException(boolean deferCacheProbeMiss) throws ActionExecutionException {
       for (LabelCause missingInput : missingArtifactCauses) {
         skyframeActionExecutor.printError(missingInput.getMessage(), action);
       }
@@ -1518,18 +1576,32 @@ public final class ActionExecutionFunction implements SkyFunction {
       if (!missingArtifactCauses.isEmpty()) {
         throw throwSourceErrorException(action, missingArtifactCauses);
       }
+      if (firstCacheProbeMiss != null && !deferCacheProbeMiss) {
+        throw firstCacheProbeMiss;
+      }
     }
 
     private void handleActionExecutionExceptionPerArtifact(
         Artifact input, ActionExecutionException e) {
       if (isMandatoryInput.test(input)) {
-        // Prefer a catastrophic exception as the one we propagate.
-        if (firstActionExecutionException == null
-            || (!firstActionExecutionException.isCatastrophe() && e.isCatastrophe())) {
-          firstActionExecutionException = e;
-        }
-        transitiveCauses.add(e.getRootCauses());
+        accumulateActionExecutionException(e);
       }
+    }
+
+    private void accumulateActionExecutionException(ActionExecutionException e) {
+      if (e.isCacheProbeMiss()) {
+        // Keep one representative instead of expanding every missed action through every consumer.
+        if (firstCacheProbeMiss == null) {
+          firstCacheProbeMiss = e;
+        }
+        return;
+      }
+      // Genuine errors always take precedence over expected misses.
+      if (firstActionExecutionException == null
+          || (!firstActionExecutionException.isCatastrophe() && e.isCatastrophe())) {
+        firstActionExecutionException = e;
+      }
+      transitiveCauses.add(e.getRootCauses());
     }
   }
 

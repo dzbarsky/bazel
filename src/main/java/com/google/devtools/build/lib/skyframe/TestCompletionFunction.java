@@ -47,22 +47,29 @@ import javax.annotation.Nullable;
 public final class TestCompletionFunction implements SkyFunction {
   @Override
   @Nullable
-  public SkyValue compute(SkyKey skyKey, Environment env) throws InterruptedException {
+  public SkyValue compute(SkyKey skyKey, Environment env)
+      throws CacheProbeCompletion.DependencyException, InterruptedException {
     TestCompletionValue.TestCompletionKey key =
         (TestCompletionValue.TestCompletionKey) skyKey.argument();
     ConfiguredTargetKey ctKey = key.configuredTargetKey();
     TopLevelArtifactContext ctx = key.topLevelArtifactContext();
-    if (env.getValue(TargetCompletionValue.key(ctKey, ctx, /* willTest= */ true)) == null) {
+    SkyKey targetCompletionKey = TargetCompletionValue.key(ctKey, ctx, /* willTest= */ true);
+    if ((ctx.cacheProbe()
+            ? CacheProbeCompletion.getValue(env, targetCompletionKey)
+            : env.getValue(targetCompletionKey))
+        == null) {
       return null;
     }
 
-    ConfiguredTargetValue ctValue = (ConfiguredTargetValue) env.getValue(ctKey);
+    ConfiguredTargetValue ctValue =
+        (ConfiguredTargetValue)
+            (ctx.cacheProbe() ? CacheProbeCompletion.getValue(env, ctKey) : env.getValue(ctKey));
     if (ctValue == null) {
       return null;
     }
 
     ConfiguredTarget ct = ctValue.getConfiguredTarget();
-    if (key.exclusiveTesting()) {
+    if (key.exclusiveTesting() && !ctx.cacheProbe()) {
       // Request test execution iteratively if testing exclusively.
       for (Artifact.DerivedArtifact testArtifact : TestProvider.getTestStatusArtifacts(ct)) {
         env.getValue(testArtifact.getGeneratingActionKey());
@@ -71,12 +78,33 @@ public final class TestCompletionFunction implements SkyFunction {
         }
       }
     } else {
+      if (ctx.cacheProbe()
+          && !CacheProbeCompletion.awaitOutputs(
+              env, ctKey, () -> Artifact.keys(TestProvider.getTestStatusArtifacts(ct)))) {
+        return null;
+      }
       List<SkyKey> skyKeys = Artifact.keys(TestProvider.getTestStatusArtifacts(ct));
       SkyframeLookupResult result = env.getValuesAndExceptions(skyKeys);
       if (env.valuesMissing()) {
         return null;
       }
+      CacheProbeCompletion.DependencyException probeFailure = null;
       for (SkyKey actionKey : skyKeys) {
+        if (ctx.cacheProbe()) {
+          try {
+            if (CacheProbeCompletion.getValue(result, actionKey) == null) {
+              return null;
+            }
+          } catch (CacheProbeCompletion.DependencyException e) {
+            if (probeFailure == null
+                || (!probeFailure.isCatastrophic() && e.isCatastrophic())
+                || (probeFailure.getCause() instanceof ActionExecutionException failure
+                    && failure.isCacheProbeMiss())) {
+              probeFailure = e;
+            }
+          }
+          continue;
+        }
         try {
           if (result.getOrThrow(actionKey, ActionExecutionException.class) == null) {
             return null;
@@ -92,13 +120,21 @@ public final class TestCompletionFunction implements SkyFunction {
           }
         }
       }
+      if (probeFailure != null) {
+        if (probeFailure.getCause() instanceof ActionExecutionException failure
+            && failure.isCacheProbeMiss()) {
+          env.getListener().post(new CacheProbeCompletion.TestMissEvent(ctKey));
+        }
+        throw probeFailure;
+      }
     }
     return TestCompletionValue.TEST_COMPLETION_MARKER;
   }
 
   @Override
   public String extractTag(SkyKey skyKey) {
-    return Label.print(((ConfiguredTargetKey) skyKey.argument()).getLabel());
+    return Label.print(
+        ((TestCompletionValue.TestCompletionKey) skyKey.argument()).configuredTargetKey().getLabel());
   }
 
   /**

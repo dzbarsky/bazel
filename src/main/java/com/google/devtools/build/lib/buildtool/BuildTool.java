@@ -92,6 +92,7 @@ import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.query2.aquery.ActionGraphProtoOutputFormatterCallback;
 import com.google.devtools.build.lib.runtime.BlazeOptionHandler.SkyframeExecutorTargetLoader;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
+import com.google.devtools.build.lib.runtime.CacheProbe;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.CommandLineEvent;
 import com.google.devtools.build.lib.runtime.CommandLineEvent.CanonicalCommandLineEvent;
@@ -307,6 +308,7 @@ public class BuildTool {
                 request.getLoadingOptions(),
                 request.getLoadingPhaseThreadCount(),
                 request.shouldRunTests(),
+                request.getExecutionOptions().cacheProbeOutput != null,
                 validator);
       }
 
@@ -326,6 +328,7 @@ public class BuildTool {
                   request.getLoadingOptions(),
                   request.getLoadingPhaseThreadCount(),
                   request.shouldRunTests(),
+                  request.getExecutionOptions().cacheProbeOutput != null,
                   validator);
 
       ImmutableSet<OptionDefinition> optionDefinitions =
@@ -474,6 +477,7 @@ public class BuildTool {
       LoadingOptions loadingOptions,
       int loadingPhaseThreadCount,
       boolean shouldRunTests,
+      boolean cacheProbe,
       final TargetValidator validator)
       throws LoadingFailedException, TargetParsingException, InterruptedException {
     TargetPatternPhaseValue result =
@@ -484,7 +488,8 @@ public class BuildTool {
             loadingOptions,
             loadingPhaseThreadCount,
             keepGoing,
-            shouldRunTests);
+            shouldRunTests,
+            cacheProbe);
     if (validator != null) {
       ImmutableSet<Target> targetLabels =
           result.getTargets(reporter, skyframeExecutor.getPackageManager());
@@ -899,7 +904,11 @@ public class BuildTool {
     maybeSetStopOnFirstFailure(request, result);
     Throwable crash = null;
     DetailedExitCode detailedExitCode = null;
+    CacheProbe cacheProbe = null;
     try {
+      if (request.getExecutionOptions().cacheProbeOutput != null) {
+        cacheProbe = new CacheProbe(env, request);
+      }
       try (SilentCloseable c = Profiler.instance().profile("buildTargets")) {
         // This OptionsParsingResult is essentially a wrapper around the OptionsParser in
         // https://github.com/bazelbuild/bazel/blob/master/src/main/java/com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java#L341. Casting it back to
@@ -1007,6 +1016,9 @@ public class BuildTool {
                           .build())
                   .build());
       reportExceptionError(e);
+    } catch (IOException e) {
+      detailedExitCode = CacheProbe.error(e.getMessage());
+      reportExceptionError(e);
     } catch (Throwable throwable) {
       crash = throwable;
       detailedExitCode = CrashFailureDetails.detailedExitCodeForThrowable(crash);
@@ -1018,8 +1030,13 @@ public class BuildTool {
             CrashFailureDetails.detailedExitCodeForThrowable(
                 new IllegalStateException("Unspecified DetailedExitCode"));
       }
-      try (SilentCloseable c = Profiler.instance().profile("stopRequest")) {
-        stopRequest(result, crash, detailedExitCode);
+      try (CacheProbe probe = cacheProbe) {
+        if (probe != null && crash == null) {
+          detailedExitCode = probe.finish(result, detailedExitCode);
+        }
+        try (SilentCloseable c = Profiler.instance().profile("stopRequest")) {
+          stopRequest(result, crash, detailedExitCode);
+        }
       }
     }
 

@@ -421,6 +421,17 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
             buildRequestIdOverride,
             parseResults.configFlagDefinitions());
 
+    ExecutionOptions probeExecutionOptions = options.getOptions(ExecutionOptions.class);
+    if (probeExecutionOptions != null && probeExecutionOptions.cacheProbeOutput != null) {
+      try {
+        CacheProbe.deleteOutput(env, probeExecutionOptions);
+      } catch (IOException e) {
+        storedEventHandler.handle(Event.error(e.getMessage()));
+        earlyExitCode =
+            chooseMoreImportantWithFirstIfTie(earlyExitCode, CacheProbe.error(e.getMessage()));
+      }
+    }
+
     if (attemptNumber > 1) {
       outErr.printErrLn("Found transient remote cache error, retrying the build...");
     }
@@ -852,8 +863,8 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
       }
 
       needToCallAfterCommand = false;
-      var newResult = runtime.afterCommand(/* forceKeepStateForTesting= */ false, env, result);
-      if (newResult.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED)) {
+      result = runtime.afterCommand(/* forceKeepStateForTesting= */ false, env, result);
+      if (result.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED)) {
         var executionOptions =
             Preconditions.checkNotNull(options.getOptions(ExecutionOptions.class));
         if (attemptedCommandIds.size() < executionOptions.remoteRetryOnTransientCacheError) {
@@ -861,7 +872,7 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
         }
       }
 
-      return newResult;
+      return result;
     } catch (RemoteCacheTransientErrorException e) {
       throw e;
     } catch (Throwable e) {
@@ -890,6 +901,17 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
         BlazeCommandResult newResult = runtime.afterCommand(false, env, result);
         if (!newResult.equals(result)) {
           logger.atWarning().log("afterCommand yielded different result: %s %s", result, newResult);
+        }
+      }
+
+      if (!result.getDetailedExitCode().isSuccess()
+          && probeExecutionOptions != null
+          && probeExecutionOptions.cacheProbeOutput != null) {
+        try {
+          CacheProbe.deleteOutput(env, probeExecutionOptions);
+        } catch (IOException e) {
+          reporter.handle(
+              Event.error("Cannot remove incomplete cache probe manifest: " + e.getMessage()));
         }
       }
 

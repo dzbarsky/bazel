@@ -21,6 +21,7 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.skyframe.DetailedException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.ExitCode;
@@ -196,10 +197,18 @@ public class ActionExecutionException extends Exception implements DetailedExcep
     return detailedExitCode;
   }
 
+  /** Returns whether this failure only indicates unavailable work during a cache probe. */
+  public final boolean isCacheProbeMiss() {
+    return !catastrophe
+        && detailedExitCode.getFailureDetail() != null
+        && detailedExitCode.getFailureDetail().getSpawn().getCode()
+            == FailureDetails.Spawn.Code.CACHE_PROBE_MISS;
+  }
+
   /**
    * Returns true if the error should be shown.
    */
   public boolean showError() {
-    return getMessage() != null;
+    return !isCacheProbeMiss() && getMessage() != null;
   }
 }

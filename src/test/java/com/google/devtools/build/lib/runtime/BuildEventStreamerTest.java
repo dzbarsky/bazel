@@ -39,6 +39,7 @@ import com.google.devtools.build.lib.actions.ActionInputMap;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ArtifactPathResolver;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
+import com.google.devtools.build.lib.actions.CommandAction;
 import com.google.devtools.build.lib.actions.CompletionContext;
 import com.google.devtools.build.lib.actions.EventReportingArtifacts;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
@@ -1530,6 +1531,66 @@ public final class BuildEventStreamerTest extends FoundationTestCase {
 
     assertThat(transportedEvents).doesNotContain(SUCCESSFUL_ACTION_EXECUTED_EVENT);
     assertThat(transportedEvents).contains(failedActionExecutedEvent);
+  }
+
+  private enum ActionResult {
+    SUCCESS,
+    FAILURE,
+    CACHE_PROBE_MISS,
+    CATASTROPHIC_CACHE_PROBE_MISS
+  }
+
+  @Test
+  public void testActionCommandLineOmittedOnlyForCacheProbeMiss(@TestParameter ActionResult result)
+      throws Exception {
+    CommandAction action = mock(CommandAction.class);
+    when(action.getMnemonic()).thenReturn("TestCommand");
+    when(action.getOwner()).thenReturn(ActionsTestUtil.NULL_ACTION_OWNER);
+    when(action.getPrimaryOutput()).thenReturn(ActionsTestUtil.DUMMY_ARTIFACT);
+    ImmutableList<String> arguments = ImmutableList.of("/bin/tool", "--argument");
+    when(action.getArguments()).thenReturn(arguments);
+    boolean success = result == ActionResult.SUCCESS;
+    FailureDetail failureDetail =
+        FailureDetail.newBuilder()
+            .setMessage("Action failed")
+            .setSpawn(
+                Spawn.newBuilder()
+                    .setCode(
+                        result == ActionResult.FAILURE
+                            ? Code.EXECUTION_DENIED
+                            : Code.CACHE_PROBE_MISS))
+            .build();
+    ActionExecutionException exception =
+        success
+            ? null
+            : new ActionExecutionException(
+                "Action failed",
+                action,
+                /* catastrophe= */ result == ActionResult.CATASTROPHIC_CACHE_PROBE_MISS,
+                DetailedExitCode.of(failureDetail));
+    Path stdout = scratch.file("stdout");
+    Path stderr = scratch.file("stderr");
+    ActionExecutedEvent event =
+        new ActionExecutedEvent(
+            ActionsTestUtil.DUMMY_ARTIFACT.getExecPath(),
+            action,
+            exception,
+            ActionsTestUtil.DUMMY_ARTIFACT.getPath(),
+            ActionsTestUtil.DUMMY_ARTIFACT,
+            success ? FileArtifactValue.MISSING_FILE_MARKER : null,
+            stdout,
+            stderr,
+            success ? ErrorTiming.NO_ERROR : ErrorTiming.BEFORE_EXECUTION,
+            /* startTime= */ null,
+            /* endTime= */ null);
+
+    var proto = event.asStreamProto(getTestBuildEventContext(artifactGroupNamer));
+
+    boolean omitCommandLine = result == ActionResult.CACHE_PROBE_MISS;
+    verify(action, times(omitCommandLine ? 0 : 1)).getArguments();
+    assertThat(proto.getAction().getCommandLineList())
+        .containsExactlyElementsIn(omitCommandLine ? ImmutableList.of() : arguments)
+        .inOrder();
   }
 
   @Test

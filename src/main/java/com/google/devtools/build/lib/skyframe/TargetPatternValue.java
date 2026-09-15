@@ -61,8 +61,17 @@ public final class TargetPatternValue implements SkyValue {
    */
   @ThreadSafe
   public static TargetPatternKey key(SignedTargetPattern pattern, FilteringPolicy policy) {
+    return key(pattern, policy, ImmutableSet.of());
+  }
+
+  static TargetPatternKey key(
+      SignedTargetPattern pattern,
+      FilteringPolicy policy,
+      ImmutableSet<PathFragment> excludedSubdirectories) {
     return new TargetPatternKey(
-        pattern, pattern.sign() == Sign.POSITIVE ? policy : FilteringPolicies.NO_FILTER);
+        pattern,
+        pattern.sign() == Sign.POSITIVE ? policy : FilteringPolicies.NO_FILTER,
+        excludedSubdirectories);
   }
 
   /**
