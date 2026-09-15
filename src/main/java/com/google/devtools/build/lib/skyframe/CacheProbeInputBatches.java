@@ -58,7 +58,7 @@ final class CacheProbeInputBatches implements SkyKeyComputeState {
         } catch (ActionExecutionException e) {
           cacheMiss |= e.isCacheProbeMiss();
         } catch (ArtifactNestedSetEvalException e) {
-          cacheMiss |= e.hasCacheProbeMiss();
+          cacheMiss |= e.getCacheProbeMiss() != null;
         } catch (SourceArtifactException e) {
           // Optional source inputs require the consuming action's normal error classification.
         }
