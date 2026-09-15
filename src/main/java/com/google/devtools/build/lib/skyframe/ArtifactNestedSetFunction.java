@@ -199,10 +199,6 @@ final class ArtifactNestedSetFunction implements SkyFunction {
       return cacheProbeMiss == null ? null : cacheProbeMiss.getSecond();
     }
 
-    boolean hasCacheProbeMiss() {
-      return cacheProbeMiss != null;
-    }
-
     // Should be true if at least one child exception is catastrophic.
     boolean isCatastrophic() {
       return catastrophic;
