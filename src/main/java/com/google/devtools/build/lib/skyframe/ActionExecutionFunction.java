@@ -308,9 +308,9 @@ public final class ActionExecutionFunction implements SkyFunction {
         if (requested == null) {
           return null;
         }
-        ImmutableSet.Builder<SkyKey> requestedKeys = ImmutableSet.builder();
-        requestedKeys.addAll(requested);
         if (state.cacheProbeInputBatches.stoppedOnMiss()) {
+          ImmutableSet.Builder<SkyKey> requestedKeys = ImmutableSet.builder();
+          requestedKeys.addAll(requested);
           Predicate<Artifact> isMandatoryInput = makeMandatoryInputPredicate(action);
           for (Artifact input :
               Iterables.concat(allInputs.toList(), action.getSchedulingDependencies().toList())) {
@@ -318,8 +318,8 @@ public final class ActionExecutionFunction implements SkyFunction {
               requestedKeys.add(Artifact.key(input));
             }
           }
+          inputDepKeys = requestedKeys.build();
         }
-        inputDepKeys = requestedKeys.build();
       }
 
       SkyframeLookupResult inputDepsResult = env.getValuesAndExceptions(inputDepKeys);
