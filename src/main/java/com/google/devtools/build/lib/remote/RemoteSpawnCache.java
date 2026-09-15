@@ -120,7 +120,7 @@ final class RemoteSpawnCache implements SpawnCache {
               LocalExecution.createIfDeduplicatable(
                   action, () -> inFlightExecutions.remove(action.getActionKey()));
         }
-        if (shouldUploadLocalResults && thisExecution != null) {
+        if (thisExecution != null) {
           LocalExecution previousOrThisExecution =
               inFlightExecutions.merge(
                   action.getActionKey(),

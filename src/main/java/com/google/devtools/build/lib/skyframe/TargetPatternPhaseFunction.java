@@ -863,13 +863,14 @@ final class TargetPatternPhaseFunction implements SkyFunction {
         }
       }
       if (options.getDetermineTests() || options.getBuildTestsOnly()) {
-        var tagFilter = buildTagFilter(options);
         // Negative suites still expand even when their tags exclude them as build roots: their
         // members must be subtracted. Their excluded dependencies must stay unloaded.
         for (ExpandedPattern pattern : patterns) {
+          if (!pattern.pattern().isNegative()) {
+            continue;
+          }
           for (Target target : pattern.resolvedTargets().getTargets()) {
-            if (TargetUtils.isTestSuiteRule(target)
-                && (pattern.pattern().isNegative() || tagFilter.apply(target))) {
+            if (TargetUtils.isTestSuiteRule(target)) {
               pendingLabels.add(target.getLabel());
               expandedSuiteLabels.add(target.getLabel());
             }
