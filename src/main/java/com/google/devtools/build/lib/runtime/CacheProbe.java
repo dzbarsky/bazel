@@ -22,6 +22,7 @@ import com.google.devtools.build.lib.analysis.AnalysisFailureEvent;
 import com.google.devtools.build.lib.analysis.AspectCompleteEvent;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.TargetCompleteEvent;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.test.TestResult;
 import com.google.devtools.build.lib.buildtool.BuildRequest;
 import com.google.devtools.build.lib.buildtool.BuildResult;
@@ -244,34 +245,30 @@ public final class CacheProbe implements AutoCloseable {
         .build();
   }
 
+  private void registerTest(
+      ConfiguredTarget target, BuildConfigurationValue configuration, boolean skipped) {
+    tests.computeIfAbsent(
+        testKey(target),
+        unused -> new TestResultAggregator(target.getActual(), configuration, testPolicy, skipped));
+  }
+
   @Subscribe
   public void testFiltering(TestFilteringCompleteEvent event) {
     if (event.getTestTargets() == null) {
       return;
     }
     for (ConfiguredTarget target : event.getTestTargets()) {
-      tests.computeIfAbsent(
-          testKey(target),
-          unused ->
-              new TestResultAggregator(
-                  target.getActual(),
-                  event.getConfigurationForTarget(target),
-                  testPolicy,
-                  event.getSkippedTests().contains(target)));
+      registerTest(
+          target,
+          event.getConfigurationForTarget(target),
+          event.getSkippedTests().contains(target));
     }
   }
 
   @Subscribe
   @AllowConcurrentEvents
   public void testAnalyzed(TestAnalyzedEvent event) {
-    tests.computeIfAbsent(
-        testKey(event.configuredTarget()),
-        unused ->
-            new TestResultAggregator(
-                event.configuredTarget().getActual(),
-                event.buildConfigurationValue(),
-                testPolicy,
-                event.isSkipped()));
+    registerTest(event.configuredTarget(), event.buildConfigurationValue(), event.isSkipped());
   }
 
   @Subscribe
