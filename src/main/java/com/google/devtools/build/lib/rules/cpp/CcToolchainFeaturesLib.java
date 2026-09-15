@@ -353,7 +353,7 @@ public class CcToolchainFeaturesLib {
       withFeatureSetBuilder.add(withFeatureSetFromStarlark(withFeatureSetStruct));
     }
 
-    return new FlagSet(
+    return FlagSet.create(
         actions, ImmutableSet.of(), withFeatureSetBuilder.build(), flagGroupsBuilder.build());
   }
 
