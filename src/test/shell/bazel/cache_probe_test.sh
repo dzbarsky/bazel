@@ -730,10 +730,39 @@ EOF
   assert_equals test "$(cat "$marker")"
   rm "$marker"
 
-  run_probe test //pkg:test_alias //pkg:nested_suite //pkg:empty_suite
-  assert_affected
-  assert_equals 3 "$("$JQ" -r .total_targets "$manifest")"
-  assert_not_exists "$marker"
+  local merged
+  for merged in true false; do
+    run_probe test --experimental_merged_skyframe_analysis_execution="$merged" \
+      //pkg:test_alias //pkg:nested_suite //pkg:empty_suite
+    assert_affected
+    assert_equals 3 "$("$JQ" -r .total_targets "$manifest")"
+    assert_not_exists "$marker"
+  done
+}
+
+function test_incompatible_test_and_alias_do_not_stream_misses_after_completion() {
+  add_platforms MODULE.bazel
+  write_test_fixture
+  cat >> pkg/BUILD <<'EOF'
+sh_test(
+    name = "incompatible_test",
+    srcs = ["test.sh"],
+    target_compatible_with = ["@platforms//:incompatible"],
+)
+alias(name = "incompatible_alias", actual = ":incompatible_test")
+EOF
+  bazel test --spawn_strategy=standalone --test_strategy=standalone \
+    //pkg:test >& "$TEST_log" || fail "Initial test failed"
+  rm "$marker"
+
+  local merged
+  for merged in true false; do
+    run_probe test --experimental_merged_skyframe_analysis_execution="$merged" //pkg/...
+    assert_affected
+    expect_log "Cache probe complete: 0 of "
+    expect_not_log "CACHE_PROBE_MISS "
+    assert_not_exists "$marker"
+  done
 }
 
 function check_inactive_external_dependency() {
