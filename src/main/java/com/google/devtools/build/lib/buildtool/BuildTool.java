@@ -1030,22 +1030,12 @@ public class BuildTool {
             CrashFailureDetails.detailedExitCodeForThrowable(
                 new IllegalStateException("Unspecified DetailedExitCode"));
       }
-      try {
-        if (cacheProbe != null && crash == null) {
-          detailedExitCode = cacheProbe.finish(result, detailedExitCode);
+      try (CacheProbe probe = cacheProbe) {
+        if (probe != null && crash == null) {
+          detailedExitCode = probe.finish(result, detailedExitCode);
         }
         try (SilentCloseable c = Profiler.instance().profile("stopRequest")) {
           stopRequest(result, crash, detailedExitCode);
-        }
-      } finally {
-        if (cacheProbe != null) {
-          try {
-            if (!result.getSuccess()) {
-              cacheProbe.discardManifest();
-            }
-          } finally {
-            cacheProbe.close();
-          }
         }
       }
     }

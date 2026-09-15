@@ -20,11 +20,13 @@ import static java.util.Objects.requireNonNull;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
+import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSetMultimap;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -162,8 +164,7 @@ final class TargetPatternPhaseFunction implements SkyFunction {
         testTargets = ResolvedTargets.failed();
       } else {
         testTargets =
-            determineTests(
-                env, repositoryMappingValue.repositoryMapping(), options, probeExcluded);
+            determineTests(env, repositoryMappingValue.repositoryMapping(), options, probeExcluded);
       }
       Preconditions.checkState(env.valuesMissing() || (testTargets != null));
     }
@@ -276,12 +277,11 @@ final class TargetPatternPhaseFunction implements SkyFunction {
               .addAll(filteredTargets)
               .addAll(expandedTargets.getFilteredTargets())
               .build();
-      targetLabels =
-          ResolvedTargets.<Label>builder()
-              .addAll(expandedTargets.getTargets().stream().map(Target::getLabel).toList())
-              .mergeError(expandedTargets.hasError())
-              .build();
     }
+    ImmutableSet<Label> selectedLabels =
+        options.isCacheProbe()
+            ? expandedTargets.getTargets().stream().map(Target::getLabel).collect(toImmutableSet())
+            : targetLabels.getTargets();
     Set<Target> testSuiteTargets =
         Sets.difference(targets.getTargets(), expandedTargets.getTargets());
     ImmutableSet<Label> testsToRunLabels = null;
@@ -293,11 +293,9 @@ final class TargetPatternPhaseFunction implements SkyFunction {
         testSuiteTargets.stream().map(Target::getLabel).collect(ImmutableSet.toImmutableSet());
     TargetPatternPhaseValue result =
         new TargetPatternPhaseValue(
-            targetLabels.getTargets(),
+            selectedLabels,
             testsToRunLabels,
-            Objects.equals(nonExpandedLabels, targetLabels.getTargets())
-                ? targetLabels.getTargets()
-                : nonExpandedLabels,
+            Objects.equals(nonExpandedLabels, selectedLabels) ? selectedLabels : nonExpandedLabels,
             targets.hasError(),
             expandedTargets.hasError());
 
@@ -312,8 +310,7 @@ final class TargetPatternPhaseFunction implements SkyFunction {
                 ImmutableList.copyOf(failedPatterns),
                 mapOriginalPatternsToLabels(expandedPatterns, targets.getTargets()),
                 options.isCacheProbe()
-                    ? filterSuiteExpansions(
-                        testSuiteExpansions.buildOrThrow(), targetLabels.getTargets())
+                    ? filterSuiteExpansions(testSuiteExpansions.buildOrThrow(), selectedLabels)
                     : testSuiteExpansions.buildOrThrow()));
     env.getListener()
         .post(
@@ -535,7 +532,7 @@ final class TargetPatternPhaseFunction implements SkyFunction {
             filterProbeTargets(positiveTargets, options, probeExcluded).getTargets().stream()
                 .map(Target::getLabel)
                 .collect(toImmutableSet());
-      } else {
+      } else if (!probeExcluded.isEmpty()) {
         labels =
             labels.stream()
                 .filter(label -> !probeExcluded.contains(label))
@@ -600,7 +597,8 @@ final class TargetPatternPhaseFunction implements SkyFunction {
     ImmutableMap.Builder<Label, ImmutableSet<Label>> result = ImmutableMap.builder();
     expansions.forEach(
         (suite, members) ->
-            result.put(suite, members.stream().filter(included::contains).collect(toImmutableSet())));
+            result.put(
+                suite, members.stream().filter(included::contains).collect(toImmutableSet())));
     return result.buildOrThrow();
   }
 
@@ -704,11 +702,9 @@ final class TargetPatternPhaseFunction implements SkyFunction {
     }
     var tagFilter = buildTagFilter(options);
     while (!state.pendingLabels.isEmpty()) {
-      Map<PackageIdentifier, List<Label>> labelsByPackage = new HashMap<>();
+      ListMultimap<PackageIdentifier, Label> labelsByPackage = ArrayListMultimap.create();
       for (Label label : state.pendingLabels) {
-        labelsByPackage
-            .computeIfAbsent(label.getPackageIdentifier(), unused -> new ArrayList<>())
-            .add(label);
+        labelsByPackage.put(label.getPackageIdentifier(), label);
       }
       SkyframeLookupResult packages = env.getValuesAndExceptions(labelsByPackage.keySet());
       if (env.valuesMissing()) {
@@ -730,7 +726,7 @@ final class TargetPatternPhaseFunction implements SkyFunction {
         availablePackages.put(packageIdentifier, value);
       }
       Set<Label> nextLabels = new HashSet<>();
-      for (var entry : labelsByPackage.entrySet()) {
+      for (var entry : labelsByPackage.asMap().entrySet()) {
         PackageValue value = availablePackages.get(entry.getKey());
         if (value == null) {
           continue;
@@ -754,7 +750,10 @@ final class TargetPatternPhaseFunction implements SkyFunction {
                   continue;
                 }
               }
-              state.reverse.computeIfAbsent(label, unused -> new ArrayList<>()).add(suite.getLabel());
+              state
+                  .reverse
+                  .computeIfAbsent(label, unused -> new ArrayList<>())
+                  .add(suite.getLabel());
               required = true;
             }
           }
@@ -790,7 +789,8 @@ final class TargetPatternPhaseFunction implements SkyFunction {
                         && (attribute.getName().equals("tests")
                             || attribute.getName().equals("$implicit_tests"))
                         && !excludedPackage(dependencyPackage, prefixes)) {
-                      state.suiteMemberships
+                      state
+                          .suiteMemberships
                           .computeIfAbsent(prerequisite, unused -> new ArrayList<>())
                           .add(rule);
                       nextLabels.add(prerequisite);
