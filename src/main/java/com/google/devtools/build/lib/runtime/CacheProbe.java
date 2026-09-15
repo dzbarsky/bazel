@@ -13,7 +13,11 @@
 // limitations under the License.
 package com.google.devtools.build.lib.runtime;
 
+import static com.google.devtools.build.lib.runtime.AggregatingTestListener.asKey;
+
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSetMultimap;
 import com.google.common.eventbus.AllowConcurrentEvents;
 import com.google.common.eventbus.EventBus;
 import com.google.common.eventbus.Subscribe;
@@ -22,24 +26,20 @@ import com.google.devtools.build.lib.analysis.AnalysisFailureEvent;
 import com.google.devtools.build.lib.analysis.AspectCompleteEvent;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.TargetCompleteEvent;
-import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.test.TestResult;
 import com.google.devtools.build.lib.buildtool.BuildRequest;
 import com.google.devtools.build.lib.buildtool.BuildResult;
-import com.google.devtools.build.lib.buildtool.buildevent.TestFilteringCompleteEvent;
 import com.google.devtools.build.lib.causes.Cause;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.exec.ExecutionOptions;
 import com.google.devtools.build.lib.pkgcache.LoadingFailureEvent;
 import com.google.devtools.build.lib.pkgcache.TargetParsingCompleteEvent;
-import com.google.devtools.build.lib.runtime.TestResultAggregator.AggregationPolicy;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn;
 import com.google.devtools.build.lib.skyframe.CacheProbeCompletion.MissingOutputEvent;
 import com.google.devtools.build.lib.skyframe.CacheProbeCompletion.TestMissEvent;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
-import com.google.devtools.build.lib.skyframe.TopLevelStatusEvents.TestAnalyzedEvent;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.DetailedExitCode.DetailedExitCodeComparator;
 import com.google.devtools.build.lib.vfs.Path;
@@ -61,23 +61,21 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class CacheProbe implements AutoCloseable {
   private final CommandEnvironment env;
-  private final BuildRequest request;
+  private final boolean runTests;
   private final Path output;
-  private final EventBus testEvents = new EventBus();
-  private final AggregationPolicy testPolicy = new AggregationPolicy(testEvents, false, false);
-  private final Map<ConfiguredTargetKey, TestResultAggregator> tests = new ConcurrentHashMap<>();
+  private final AggregatingTestListener tests;
   private final Set<ConfiguredTargetKey> missing = ConcurrentHashMap.newKeySet();
-  private final Set<Label> roots = ConcurrentHashMap.newKeySet();
-  private final Set<Label> excluded = ConcurrentHashMap.newKeySet();
+  private volatile ImmutableSet<Label> roots = ImmutableSet.of();
+  private volatile ImmutableSet<Label> excluded = ImmutableSet.of();
   private final Set<Label> affected = ConcurrentHashMap.newKeySet();
-  private final Map<Label, Set<Label>> memberSuites = new ConcurrentHashMap<>();
-  private final Map<Label, Set<Label>> suiteMembers = new ConcurrentHashMap<>();
+  private volatile ImmutableSetMultimap<Label, Label> memberSuites = ImmutableSetMultimap.of();
+  private volatile ImmutableMap<Label, ImmutableSet<Label>> suiteMembers = ImmutableMap.of();
   private final AtomicReference<DetailedExitCode> failure = new AtomicReference<>();
   private final AtomicReference<String> incomplete = new AtomicReference<>();
 
   public CacheProbe(CommandEnvironment env, BuildRequest request) throws IOException {
     this.env = env;
-    this.request = request;
+    runTests = request.shouldRunTests();
     output = env.getWorkingDirectory().getRelative(request.getExecutionOptions().cacheProbeOutput);
     if (!Set.of("build", "test").contains(request.getCommandName())) {
       throw new IOException("Cache probing supports only build and test commands");
@@ -96,8 +94,13 @@ public final class CacheProbe implements AutoCloseable {
           "Cache probing does not support check_up_to_date or streamed test output");
     }
     output.getParentDirectory().createDirectoryAndParents();
+    EventBus testEvents = new EventBus();
+    tests = new AggregatingTestListener(TestSummaryOptions.DEFAULTS, execution, testEvents);
     testEvents.register(this);
     env.getEventBus().register(this);
+    if (runTests) {
+      env.getEventBus().register(tests);
+    }
     env.getReporter()
         .handle(
             Event.info(
@@ -136,20 +139,16 @@ public final class CacheProbe implements AutoCloseable {
       incomplete.compareAndSet(
           null, "Cache probe could not load target patterns: " + event.getFailedTargetPatterns());
     }
-    event.getFilteredLabels().forEach(excluded::add);
-    event.getTestFilteredLabels().forEach(excluded::add);
-    roots.addAll(event.getOriginalPatternsToLabels().values());
-    suiteMembers.putAll(event.getTestSuiteExpansions());
-    event
-        .getTestSuiteExpansions()
-        .forEach(
-            (suite, members) -> {
-              for (Label member : members) {
-                memberSuites
-                    .computeIfAbsent(member, unused -> ConcurrentHashMap.newKeySet())
-                    .add(suite);
-              }
-            });
+    excluded =
+        ImmutableSet.<Label>builder()
+            .addAll(event.getFilteredLabels())
+            .addAll(event.getTestFilteredLabels())
+            .build();
+    roots = ImmutableSet.copyOf(event.getOriginalPatternsToLabels().values());
+    suiteMembers = event.getTestSuiteExpansions();
+    ImmutableSetMultimap.Builder<Label, Label> suites = ImmutableSetMultimap.builder();
+    suiteMembers.forEach((suite, members) -> members.forEach(member -> suites.put(member, suite)));
+    memberSuites = suites.build();
   }
 
   @Subscribe
@@ -183,7 +182,7 @@ public final class CacheProbe implements AutoCloseable {
     if (roots.contains(label) && affected.add(label)) {
       env.getReporter().getOutErr().printOutLn("CACHE_PROBE_MISS " + label.getCanonicalForm());
     }
-    for (Label suite : memberSuites.getOrDefault(label, Set.of())) {
+    for (Label suite : memberSuites.get(label)) {
       if (roots.contains(suite) && affected.add(suite)) {
         env.getReporter().getOutErr().printOutLn("CACHE_PROBE_MISS " + suite.getCanonicalForm());
       }
@@ -238,39 +237,6 @@ public final class CacheProbe implements AutoCloseable {
     }
   }
 
-  private static ConfiguredTargetKey testKey(ConfiguredTarget target) {
-    return ConfiguredTargetKey.builder()
-        .setLabel(target.getLabel())
-        .setConfigurationKey(target.getActual().getConfigurationKey())
-        .build();
-  }
-
-  private void registerTest(
-      ConfiguredTarget target, BuildConfigurationValue configuration, boolean skipped) {
-    tests.computeIfAbsent(
-        testKey(target),
-        unused -> new TestResultAggregator(target.getActual(), configuration, testPolicy, skipped));
-  }
-
-  @Subscribe
-  public void testFiltering(TestFilteringCompleteEvent event) {
-    if (event.getTestTargets() == null) {
-      return;
-    }
-    for (ConfiguredTarget target : event.getTestTargets()) {
-      registerTest(
-          target,
-          event.getConfigurationForTarget(target),
-          event.getSkippedTests().contains(target));
-    }
-  }
-
-  @Subscribe
-  @AllowConcurrentEvents
-  public void testAnalyzed(TestAnalyzedEvent event) {
-    registerTest(event.configuredTarget(), event.buildConfigurationValue(), event.isSkipped());
-  }
-
   @Subscribe
   @AllowConcurrentEvents
   public void testResult(TestResult result) {
@@ -283,19 +249,22 @@ public final class CacheProbe implements AutoCloseable {
     if (isMiss(result.getSystemFailure())) {
       markMissing(key);
     }
-    TestResultAggregator aggregator = tests.get(key);
-    if (aggregator == null) {
+    if (tests.getAggregator(key) == null) {
       recordFailure(error("Cache probe received a result for an unregistered test: " + key));
-    } else {
-      aggregator.testEvent(result);
     }
   }
 
   @Subscribe
   @AllowConcurrentEvents
   public void testSummary(TestSummary summary) {
-    if (!TestResult.isBlazeTestStatusPassed(summary.getStatus())) {
-      markMissing(testKey(summary.getTarget()));
+    ConfiguredTargetKey key = asKey(summary.getTarget());
+    TestResultAggregator aggregator = tests.getAggregator(key);
+    // Synthetic skipped or incomplete summaries are not cached test results.
+    if (!summary.isSkipped()
+        && aggregator != null
+        && aggregator.remainingRuns() == 0
+        && !TestResult.isBlazeTestStatusPassed(summary.getStatus())) {
+      markMissing(key);
     }
   }
 
@@ -329,20 +298,20 @@ public final class CacheProbe implements AutoCloseable {
       // Failed analysis can omit a requested target from actualTargets altogether. A suite is
       // accounted for only when every selected member is accounted for, including on warm builds.
       for (Label root : roots) {
-        for (Label member : suiteMembers.getOrDefault(root, Set.of(root))) {
+        for (Label member : suiteMembers.getOrDefault(root, ImmutableSet.of(root))) {
           if (!accounted.contains(member)) {
             return error(
                 "Cache probe has an unaccounted target: " + member + " (root " + root + ")");
           }
         }
       }
-      if (request.shouldRunTests() && result.getTestTargets() != null) {
+      if (runTests && result.getTestTargets() != null) {
         for (ConfiguredTarget target : result.getTestTargets()) {
           if (skipped.contains(target)) {
             continue;
           }
-          ConfiguredTargetKey key = testKey(target);
-          TestResultAggregator aggregator = tests.get(key);
+          ConfiguredTargetKey key = asKey(target);
+          TestResultAggregator aggregator = tests.getAggregator(key);
           if (missing.contains(ConfiguredTargetKey.fromConfiguredTarget(target))
               || missing.contains(key)) {
             markLabel(target.getOriginalLabel());
@@ -356,9 +325,6 @@ public final class CacheProbe implements AutoCloseable {
             markLabel(target.getOriginalLabel());
           }
         }
-      }
-      if (failure.get() != null) {
-        return failure.get();
       }
       writeManifest();
       env.getReporter()
@@ -409,18 +375,11 @@ public final class CacheProbe implements AutoCloseable {
     }
   }
 
-  public void discardManifest() {
-    try {
-      output.delete();
-    } catch (IOException e) {
-      env.getReporter()
-          .handle(Event.error("Cannot remove incomplete cache probe manifest: " + e.getMessage()));
-    }
-  }
-
   @Override
   public void close() {
     env.getEventBus().unregister(this);
-    testEvents.unregister(this);
+    if (runTests) {
+      env.getEventBus().unregister(tests);
+    }
   }
 }
