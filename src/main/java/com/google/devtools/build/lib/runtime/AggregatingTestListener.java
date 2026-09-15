@@ -338,7 +338,12 @@ public final class AggregatingTestListener {
         : TESTS_FAILED_DETAILED_CODE;
   }
 
-  private static ConfiguredTargetKey asKey(ConfiguredTarget target) {
+  @Nullable
+  TestResultAggregator getAggregator(ConfiguredTargetKey key) {
+    return aggregators.get(key);
+  }
+
+  static ConfiguredTargetKey asKey(ConfiguredTarget target) {
     return ConfiguredTargetKey.builder()
         .setLabel(target.getLabel())
         .setConfigurationKey(target.getActual().getConfigurationKey())
