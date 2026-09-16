@@ -78,6 +78,7 @@ import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
 import io.grpc.util.MutableHandlerRegistry;
 import io.reactivex.rxjava3.core.Single;
+import java.io.ByteArrayInputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -262,6 +263,38 @@ public class ByteStreamBuildEventArtifactUploaderTest {
       output.write(blob, 8, blob.length - 8);
     }
 
+    assertThat(upload.uriFuture().get())
+        .isEqualTo(
+            "bytestream://localhost/instance/blobs/"
+                + digest.getHash()
+                + "/"
+                + digest.getSizeBytes());
+
+    artifactUploader.release();
+    assertThat(combinedCache.refCnt()).isEqualTo(0);
+    assertThat(refCntChannel.isShutdown()).isTrue();
+  }
+
+  @Test
+  public void streamingUploadFromInputSupplierShouldWork() throws Exception {
+    byte[] blob = "supplied execution log".getBytes(StandardCharsets.UTF_8);
+    Digest digest = DIGEST_UTIL.compute(blob);
+    Map<HashCode, byte[]> blobsByHash = new HashMap<>();
+    blobsByHash.put(HashCode.fromString(digest.getHash()), blob);
+    serviceRegistry.addService(new MaybeFailOnceUploadService(blobsByHash));
+
+    RemoteRetrier retrier =
+        TestUtils.newRemoteRetrier(
+            () -> new FixedBackoff(1, 0), (e) -> Result.TRANSIENT_FAILURE, retryService);
+    ReferenceCountedChannel refCntChannel = new ReferenceCountedChannel(channelConnectionFactory);
+    CombinedCache combinedCache = newCombinedCache(refCntChannel, retrier);
+    ByteStreamBuildEventArtifactUploader artifactUploader = newArtifactUploader(combinedCache);
+
+    BuildEventArtifactUploader.UploadContext upload =
+        artifactUploader.startUpload(
+            LocalFileType.LOG, () -> new ByteArrayInputStream(blob));
+
+    assertThat(upload.getOutputStream()).isNull();
     assertThat(upload.uriFuture().get())
         .isEqualTo(
             "bytestream://localhost/instance/blobs/"
