@@ -13,8 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote;
 
-import static com.google.common.base.Preconditions.checkState;
-
 import com.google.devtools.build.lib.buildeventstream.BuildEventArtifactUploader;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.remote.options.RemoteBuildEventUploadMode;
@@ -63,23 +61,24 @@ class ByteStreamBuildEventArtifactUploaderFactory implements BuildEventArtifactU
   }
 
   @Override
-  public BuildEventArtifactUploader create(CommandEnvironment env) {
-    checkState(uploader == null, "Already created");
-    uploader =
-        new ByteStreamBuildEventArtifactUploader(
-            executor,
-            reporter,
-            verboseFailures,
-            combinedCache.retain(),
-            remoteInstanceName,
-            remoteBytestreamUriPrefix,
-            buildRequestId,
-            commandId,
-            env.getXattrProvider(),
-            env.getExecRoot().asFragment(),
-            remoteBuildEventUploadMode,
-            maximumOpenFiles);
-    env.getEventBus().register(uploader);
+  public synchronized BuildEventArtifactUploader create(CommandEnvironment env) {
+    if (uploader == null) {
+      uploader =
+          new ByteStreamBuildEventArtifactUploader(
+              executor,
+              reporter,
+              verboseFailures,
+              combinedCache.retain(),
+              remoteInstanceName,
+              remoteBytestreamUriPrefix,
+              buildRequestId,
+              commandId,
+              env.getXattrProvider(),
+              env.getExecRoot().asFragment(),
+              remoteBuildEventUploadMode,
+              maximumOpenFiles);
+      env.getEventBus().register(uploader);
+    }
     return uploader;
   }
 
