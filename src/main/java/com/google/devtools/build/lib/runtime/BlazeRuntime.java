@@ -365,7 +365,6 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
       CommandEnvironment env,
       long execStartTimeNanos,
       long waitTimeInMs) {
-    BuildEventProtocolOptions bepOptions = options.getOptions(BuildEventProtocolOptions.class);
     CommonCommandOptions commandOptions = options.getOptions(CommonCommandOptions.class);
     OutputStream out = null;
     boolean recordFullProfilerData = commandOptions.recordFullProfilerData;
@@ -377,11 +376,11 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
         if (commandOptions.profilePath == null) {
           String profileName = "command.profile.gz";
           format = Format.JSON_TRACE_FILE_COMPRESSED_FORMAT;
-          if (bepOptions != null && bepOptions.streamingLogFileUploads) {
-            profile =
-                instrumentationOutputFactory.createBuildEventArtifactInstrumentationOutput(
-                    profileName, newUploader(env, bepOptions.buildEventUploadStrategy));
-          } else if (commandOptions.redirectLocalInstrumentationOutputWrites) {
+          // RemoteModule initializes its ByteStream uploader after profiling starts in the 9.3
+          // lifecycle. Keep the default profile local here; it is still published through the
+          // normal BEP artifact uploader after RemoteModule is initialized. Execution logs start
+          // later and can use the streaming uploader directly.
+          if (commandOptions.redirectLocalInstrumentationOutputWrites) {
             profile =
                 instrumentationOutputFactory.createInstrumentationOutput(
                     profileName,

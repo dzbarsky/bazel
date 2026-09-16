@@ -136,12 +136,12 @@ public final class SpawnLogModule extends BlazeModule {
         outputPath = getAbsolutePath(logPath, env);
         outputStream = new BufferedOutputStream(outputPath.getOutputStream(), OUTPUT_BUFFER_SIZE);
         displayName = outputPath.toString();
-      } else if (bepOptions.getStreamingLogFileUploads()) {
+      } else if (bepOptions.streamingLogFileUploads) {
         // Path is empty but streaming is enabled.
         BuildEventArtifactUploader uploader =
             env.getRuntime()
                 .getBuildEventArtifactUploaderFactoryMap()
-                .select(bepOptions.getBuildEventUploadStrategy())
+                .select(bepOptions.buildEventUploadStrategy)
                 .create(env);
         UploadContext uploadContext = uploader.startUpload(LocalFileType.LOG, null);
         outputStream =
