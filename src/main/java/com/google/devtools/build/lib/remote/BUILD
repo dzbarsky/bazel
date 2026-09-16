@@ -553,6 +553,8 @@ java_library(
         "//src/tools/remote:__subpackages__",
     ],
     deps = [
+        "//src/main/java/com/google/devtools/build/lib/remote/util:digest_output_stream",
+        "//third_party/java/guava:io",
         ":combined_cache",
         ":remote_action_file_system",
         "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
