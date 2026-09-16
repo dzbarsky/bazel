@@ -27,7 +27,6 @@ import com.google.devtools.build.lib.util.RegexFilter;
 import com.google.devtools.build.lib.util.ResourceConverter;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.BoolOrEnumConverter;
-import com.google.devtools.common.options.BooleanStyleOption;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.Converters;
 import com.google.devtools.common.options.Converters.AssignmentToListOfValuesConverter;
@@ -554,8 +553,7 @@ public class ExecutionOptions extends OptionsBase {
    * Accepts a filesystem path, or boolean-like values selecting a default location or disabling the
    * log.
    */
-  public static final class ExecutionLogFileConverter extends Converter.Contextless<PathFragment>
-      implements BooleanStyleOption {
+  public static final class ExecutionLogFileConverter extends Converter.Contextless<PathFragment> {
 
     private static final Converters.BooleanConverter BOOLEAN_CONVERTER =
         new Converters.BooleanConverter();

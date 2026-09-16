@@ -28,7 +28,11 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
+import com.google.common.io.FileBackedOutputStream;
+import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.SettableFuture;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent.LocalFile;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent.LocalFile.LocalFileType;
@@ -40,6 +44,7 @@ import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext.CachePolicy;
 import com.google.devtools.build.lib.remote.options.RemoteBuildEventUploadMode;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
+import com.google.devtools.build.lib.remote.util.DigestOutputStream;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.XattrProvider;
@@ -49,7 +54,10 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import java.io.FilterOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -58,6 +66,7 @@ import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
@@ -65,6 +74,10 @@ import javax.annotation.Nullable;
 /** A {@link BuildEventArtifactUploader} backed by {@link CombinedCache}. */
 class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
     implements BuildEventArtifactUploader {
+  // Keep small logs in memory while spilling larger logs to a temporary file. REAPI ByteStream
+  // upload resource names include the digest and size, so the upload cannot begin until the
+  // producer closes the stream and those values are known.
+  private static final int STREAM_UPLOAD_MEMORY_THRESHOLD_BYTES = 1024 * 1024;
   private static final Pattern TEST_LOG_PATTERN = Pattern.compile(".*/bazel-out/[^/]*/testlogs/.*");
   private static final Pattern BUILD_LOG_PATTERN =
       Pattern.compile(".*/bazel-out/_tmp/actions/std(err|out)-.*");
@@ -438,6 +451,141 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
   @Override
   public ListenableFuture<PathConverter> upload(Map<Path, LocalFile> files) {
     return toListenableFuture(doUpload(files).subscribeOn(scheduler));
+  }
+
+  @Override
+  public UploadContext startUpload(
+      LocalFileType type, @Nullable Supplier<InputStream> inputSupplier) {
+    if (shutdown.get()) {
+      return BuildEventArtifactUploader.EMPTY_UPLOAD;
+    }
+
+    FileBackedOutputStream buffer =
+        new FileBackedOutputStream(STREAM_UPLOAD_MEMORY_THRESHOLD_BYTES, /* resetOnFinalize= */ true);
+    DigestOutputStream digestStream = combinedCache.digestUtil.newDigestOutputStream(buffer);
+    SettableFuture<String> uriFuture = SettableFuture.create();
+    CombinedCache retainedCache = combinedCache.retain();
+    AtomicBoolean closed = new AtomicBoolean();
+
+    OutputStream stream =
+        new FilterOutputStream(digestStream) {
+          @Override
+          public void close() throws IOException {
+            if (!closed.compareAndSet(false, true)) {
+              return;
+            }
+            try {
+              super.close();
+              finishStreamUpload(retainedCache, buffer, digestStream.digest(), uriFuture);
+            } catch (IOException | RuntimeException e) {
+              releaseStreamUpload(retainedCache, buffer);
+              uriFuture.setException(e);
+              throw e;
+            }
+          }
+        };
+
+    OutputStream outputStream;
+    if (inputSupplier != null) {
+      OutputStream writer = stream;
+      executor.execute(
+          () -> {
+            try (InputStream input = inputSupplier.get()) {
+              input.transferTo(writer);
+              writer.close();
+            } catch (IOException | RuntimeException e) {
+              if (closed.compareAndSet(false, true)) {
+                releaseStreamUpload(retainedCache, buffer);
+                uriFuture.setException(e);
+              }
+            }
+          });
+      outputStream = null;
+    } else {
+      outputStream = stream;
+    }
+
+    OutputStream finalOutputStream = outputStream;
+    return new UploadContext() {
+      @Override
+      @Nullable
+      public OutputStream getOutputStream() {
+        return finalOutputStream;
+      }
+
+      @Override
+      public ListenableFuture<String> uriFuture() {
+        return uriFuture;
+      }
+    };
+  }
+
+  private void finishStreamUpload(
+      CombinedCache retainedCache,
+      FileBackedOutputStream buffer,
+      Digest digest,
+      SettableFuture<String> uriFuture) {
+    RequestMetadata metadata =
+        TracingMetadataUtils.buildMetadata(buildRequestId, commandId, "bes-stream-upload", null);
+    RemoteActionExecutionContext context =
+        RemoteActionExecutionContext.create(metadata)
+            .withWriteCachePolicy(CachePolicy.REMOTE_CACHE_ONLY);
+    ListenableFuture<Void> upload =
+        retainedCache.uploadBlob(
+            context,
+            digest,
+            (com.google.devtools.build.lib.remote.common.RemoteCacheClient.Blob)
+                () -> buffer.asByteSource().openStream());
+    ListenableFuture<String> result =
+        Futures.transformAsync(
+            upload,
+            unused ->
+                toListenableFuture(
+                    getRemoteServerInstanceName(retainedCache)
+                        .map(authority -> toBytestreamUri(authority, digest))),
+            directExecutor());
+    Futures.addCallback(
+        result,
+        new FutureCallback<>() {
+          @Override
+          public void onSuccess(String uri) {
+            releaseStreamUpload(retainedCache, buffer);
+            uriFuture.set(uri);
+          }
+
+          @Override
+          public void onFailure(Throwable error) {
+            releaseStreamUpload(retainedCache, buffer);
+            uriFuture.setException(error);
+          }
+        },
+        directExecutor());
+  }
+
+  private String toBytestreamUri(String remoteServerInstanceName, Digest digest) {
+    DigestFunction.Value digestFunction = combinedCache.digestUtil.getDigestFunction();
+    if (isOldStyleDigestFunction(digestFunction)) {
+      return String.format(
+          "bytestream://%s/blobs/%s/%d",
+          remoteServerInstanceName, digest.getHash(), digest.getSizeBytes());
+    }
+    return String.format(
+        "bytestream://%s/blobs/%s/%s/%d",
+        remoteServerInstanceName,
+        Ascii.toLowerCase(digestFunction.getValueDescriptor().getName()),
+        digest.getHash(),
+        digest.getSizeBytes());
+  }
+
+  private static void releaseStreamUpload(
+      CombinedCache retainedCache, FileBackedOutputStream buffer) {
+    try {
+      buffer.reset();
+    } catch (IOException ignored) {
+      // Upload completion is authoritative; cleanup failure should not hide it.
+    } finally {
+      retainedCache.release();
+    }
   }
 
   @Override

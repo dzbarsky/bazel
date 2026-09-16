@@ -45,6 +45,7 @@ import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.authandtls.CallCredentialsProvider;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent.LocalFile;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent.LocalFile.LocalFileType;
+import com.google.devtools.build.lib.buildeventstream.BuildEventArtifactUploader;
 import com.google.devtools.build.lib.buildeventstream.PathConverter;
 import com.google.devtools.build.lib.clock.JavaClock;
 import com.google.devtools.build.lib.events.Reporter;
@@ -77,9 +78,11 @@ import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
 import io.grpc.util.MutableHandlerRegistry;
 import io.reactivex.rxjava3.core.Single;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -233,6 +236,40 @@ public class ByteStreamBuildEventArtifactUploaderTest {
 
     artifactUploader.release();
 
+    assertThat(combinedCache.refCnt()).isEqualTo(0);
+    assertThat(refCntChannel.isShutdown()).isTrue();
+  }
+
+  @Test
+  public void streamingUploadShouldWork() throws Exception {
+    byte[] blob = "streamed execution log".getBytes(StandardCharsets.UTF_8);
+    Digest digest = DIGEST_UTIL.compute(blob);
+    Map<HashCode, byte[]> blobsByHash = new HashMap<>();
+    blobsByHash.put(HashCode.fromString(digest.getHash()), blob);
+    serviceRegistry.addService(new MaybeFailOnceUploadService(blobsByHash));
+
+    RemoteRetrier retrier =
+        TestUtils.newRemoteRetrier(
+            () -> new FixedBackoff(1, 0), (e) -> Result.TRANSIENT_FAILURE, retryService);
+    ReferenceCountedChannel refCntChannel = new ReferenceCountedChannel(channelConnectionFactory);
+    CombinedCache combinedCache = newCombinedCache(refCntChannel, retrier);
+    ByteStreamBuildEventArtifactUploader artifactUploader = newArtifactUploader(combinedCache);
+
+    BuildEventArtifactUploader.UploadContext upload =
+        artifactUploader.startUpload(LocalFileType.LOG, /* inputSupplier= */ null);
+    try (OutputStream output = Objects.requireNonNull(upload.getOutputStream())) {
+      output.write(blob, 0, 8);
+      output.write(blob, 8, blob.length - 8);
+    }
+
+    assertThat(upload.uriFuture().get())
+        .isEqualTo(
+            "bytestream://localhost/instance/blobs/"
+                + digest.getHash()
+                + "/"
+                + digest.getSizeBytes());
+
+    artifactUploader.release();
     assertThat(combinedCache.refCnt()).isEqualTo(0);
     assertThat(refCntChannel.isShutdown()).isTrue();
   }
