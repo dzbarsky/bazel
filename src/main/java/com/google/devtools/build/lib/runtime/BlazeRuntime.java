@@ -43,8 +43,6 @@ import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.bugreport.BugReporter;
 import com.google.devtools.build.lib.bugreport.Crash;
 import com.google.devtools.build.lib.bugreport.CrashContext;
-import com.google.devtools.build.lib.buildeventstream.BuildEventArtifactUploader;
-import com.google.devtools.build.lib.buildeventstream.BuildEventProtocolOptions;
 import com.google.devtools.build.lib.buildtool.BuildRequestOptions;
 import com.google.devtools.build.lib.buildtool.CommandPrecompleteEvent;
 import com.google.devtools.build.lib.buildtool.OutputDirectoryLinksUtils;
@@ -338,11 +336,6 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
     return moduleInvocationPolicy;
   }
 
-  private BuildEventArtifactUploader newUploader(
-      CommandEnvironment env, String buildEventUploadStrategy) throws IOException {
-    return buildEventArtifactUploaderFactoryMap.select(buildEventUploadStrategy).create(env);
-  }
-
   /**
    * Implements automatic profile management.
    *
@@ -384,7 +377,6 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
       CommandEnvironment env,
       long execStartTimeNanos,
       long waitTimeInMs) {
-    BuildEventProtocolOptions bepOptions = options.getOptions(BuildEventProtocolOptions.class);
     CommonCommandOptions commandOptions = options.getOptions(CommonCommandOptions.class);
     OutputStream out = null;
     boolean recordFullProfilerData = commandOptions.getRecordFullProfilerData();
@@ -396,11 +388,8 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
         if (commandOptions.getProfilePath() == null) {
           String profileName = "command.profile.gz";
           format = Format.JSON_TRACE_FILE_COMPRESSED_FORMAT;
-          if (bepOptions != null && bepOptions.getStreamingLogFileUploads()) {
-            profile =
-                instrumentationOutputFactory.createBuildEventArtifactInstrumentationOutput(
-                    profileName, newUploader(env, bepOptions.getBuildEventUploadStrategy()));
-          } else if (commandOptions.getRedirectLocalInstrumentationOutputWrites()) {
+          // initProfiler runs before RemoteModule.beforeCommand initializes the ByteStream uploader.
+          if (commandOptions.getRedirectLocalInstrumentationOutputWrites()) {
             profile =
                 instrumentationOutputFactory.createInstrumentationOutput(
                     profileName,
