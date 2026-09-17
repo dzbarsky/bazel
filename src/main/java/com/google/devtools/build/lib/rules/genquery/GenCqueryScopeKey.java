@@ -24,6 +24,7 @@ import com.google.devtools.build.skyframe.AbstractSkyKey;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import java.util.Collections;
+import java.util.Comparator;
 
 /**
  * Analysis dependencies of a configured query, outside the build's action dependency graph. Query
@@ -36,6 +37,9 @@ public final class GenCqueryScopeKey
   public static final SkyFunctionName FUNCTION_NAME =
       SkyFunctionName.createHermetic("GENCQUERY_SCOPE");
   private static final SkyKeyInterner<GenCqueryScopeKey> interner = SkyKey.newInterner();
+  // The standard ordering omits this bit, but a transition's result is not its incoming root.
+  private static final Comparator<ConfiguredTargetKey> ROOT_ORDER =
+      ConfiguredTargetKey.ORDERING.thenComparing(ConfiguredTargetKey::shouldApplyRuleTransition);
 
   private GenCqueryScopeKey(ImmutableList<ConfiguredTargetKey> arg) {
     super(arg);
@@ -44,14 +48,13 @@ public final class GenCqueryScopeKey
   @VisibleForSerialization
   @AutoCodec.Instantiator
   public static GenCqueryScopeKey create(ImmutableList<ConfiguredTargetKey> arg) {
-    return interner.intern(
-        new GenCqueryScopeKey(ImmutableList.sortedCopyOf(ConfiguredTargetKey.ORDERING, arg)));
+    return interner.intern(new GenCqueryScopeKey(ImmutableList.sortedCopyOf(ROOT_ORDER, arg)));
   }
 
   /** Tests the original root key, before configuration trimming or rule transitions. */
   public boolean containsRoot(SkyKey key) {
     return key instanceof ConfiguredTargetKey configuredKey
-        && Collections.binarySearch(argument(), configuredKey, ConfiguredTargetKey.ORDERING) >= 0;
+        && Collections.binarySearch(argument(), configuredKey, ROOT_ORDER) >= 0;
   }
 
   /** Collects logical query edges for both local scope snapshots and cached analysis values. */

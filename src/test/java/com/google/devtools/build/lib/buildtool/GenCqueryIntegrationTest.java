@@ -431,6 +431,24 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
+  public void testScopeAnalysisDiagnosticsAreReplayed() throws Exception {
+    write(
+        "pkg/rules.bzl",
+        "def _impl(ctx): fail('scope analysis failure')",
+        "broken = rule(implementation = _impl)");
+    write(
+        "pkg/BUILD",
+        "load(':rules.bzl', 'broken')",
+        "broken(name = 'root')",
+        "gencquery(name = 'q', expression = 'set()', scope = [':root'])");
+    for (int attempt = 0; attempt < 2; attempt++) {
+      events.clear();
+      assertFailure("//pkg:q", "scope analysis failure");
+      assertContainsEvent("pkg/rules.bzl");
+    }
+  }
+
+  @Test
   public void testInvalidQueryExpression() throws Exception {
     write("pkg/BUILD", "gencquery(name = 'q', expression = 'deps(', scope = [])");
     assertFailure("//pkg:q", "cquery failed");
@@ -460,8 +478,8 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
     write(
         "pkg/BUILD",
         """
-        genrule(name = "producer", outs = ["generated.txt"], cmd = "exit 1")
-        alias(name = "alias", actual = ":generated.txt")
+        genrule(name = "producer", outs = ["z_generated.txt"], cmd = "exit 1")
+        alias(name = "alias", actual = ":z_generated.txt")
         gencquery(
             name = "q",
             expression = "deps(//pkg:alias, 1)",
@@ -469,13 +487,13 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
         )
         gencquery(
             name = "path",
-            expression = "somepath(//pkg:generated.txt, //pkg:producer)",
-            scope = [":generated.txt"],
+            expression = "somepath(//pkg:z_generated.txt, //pkg:producer)",
+            scope = [":z_generated.txt"],
             output = "starlark",
         )
         """);
-    assertThat(getQueryResult("//pkg:q")).contains("//pkg:generated.txt (");
-    assertQueryResult("//pkg:path", "@@//pkg:generated.txt", "@@//pkg:producer");
+    assertThat(getQueryResult("//pkg:q")).contains("//pkg:z_generated.txt (");
+    assertQueryResult("//pkg:path", "@@//pkg:z_generated.txt", "@@//pkg:producer");
   }
 
   @Test
