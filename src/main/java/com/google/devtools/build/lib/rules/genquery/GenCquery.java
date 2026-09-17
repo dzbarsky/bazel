@@ -231,6 +231,7 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
                   queryEnvironment.getAccessor(),
                   ruleContext.getAnalysisEnvironment().getStarlarkSemantics(),
                   starlarkFile,
+                  starlarkFile == null ? "starlark_expr" : "starlark_file",
                   ISO_8859_1)
               : new LabelAndConfigurationOutputFormatterCallback(
                   events,
