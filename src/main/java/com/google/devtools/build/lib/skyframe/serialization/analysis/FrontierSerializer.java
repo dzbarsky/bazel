@@ -41,6 +41,7 @@ import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryScopeKey;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.RemoteAnalysisCaching;
 import com.google.devtools.build.lib.server.FailureDetails.RemoteAnalysisCaching.Code;
@@ -423,6 +424,14 @@ public final class FrontierSerializer {
     }
 
     for (SkyKey dep : node.getDirectDeps()) {
+      if (dep instanceof GenCqueryScopeKey scope) {
+        // Query roots still belong on the analysis-cache frontier, although their actions aren't
+        // build dependencies. The rest of the snapshot's tracked closure isn't a direct edge.
+        for (SkyKey scopeRoot : scope.argument()) {
+          selection.putIfAbsent(scopeRoot, FRONTIER_CANDIDATE);
+        }
+        continue;
+      }
       if (!(dep instanceof ActionLookupKey actionLookupKey)) {
         continue;
       }
@@ -443,6 +452,16 @@ public final class FrontierSerializer {
       }
     }
     for (SkyKey rdep : node.getReverseDepsForDoneEntry()) {
+      if (rdep instanceof GenCqueryScopeKey scope) {
+        if (scope.containsRoot(root)) {
+          for (SkyKey scopeParent : graph.getIfPresent(scope).getReverseDepsForDoneEntry()) {
+            if (scopeParent instanceof ActionLookupKey parent) {
+              markActiveAndTraverseEdges(graph, parent, selection);
+            }
+          }
+        }
+        continue;
+      }
       if (!(rdep instanceof ActionLookupKey parent)) {
         continue;
       }

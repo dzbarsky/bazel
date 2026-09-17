@@ -65,6 +65,7 @@ import com.google.devtools.build.lib.query2.engine.QueryUtil.UniquifierImpl;
 import com.google.devtools.build.lib.query2.engine.ThreadSafeOutputFormatterCallback;
 import com.google.devtools.build.lib.query2.engine.Uniquifier;
 import com.google.devtools.build.lib.rules.AliasConfiguredTarget;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryScopeKey;
 import com.google.devtools.build.lib.server.FailureDetails.ConfigurableQuery;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
@@ -374,7 +375,8 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
    * duplicate values. The delegating parent has the same value as the delegate child.
    *
    * <p>This method replaces any delegating ancestor in the set of reverse dependencies with the
-   * reverse dependencies of the ancestor.
+   * reverse dependencies of the ancestor. Query scope nodes are also expanded, but only for their
+   * declared roots: their other Skyframe edges track transitive invalidation, not query adjacency.
    */
   private ImmutableListMultimap<SkyKey, SkyKey> skipDelegatingAncestors(
       Map<SkyKey, Iterable<SkyKey>> reverseDeps) throws InterruptedException {
@@ -394,6 +396,10 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
     // Most rdeps will not be delegating. Performs an optimistic pass that avoids copying.
     boolean foundDelegatingRdep = false;
     for (SkyKey rdepKey : rdeps) {
+      if (rdepKey instanceof GenCqueryScopeKey) {
+        foundDelegatingRdep = true;
+        break;
+      }
       if (!rdepKey.functionName().equals(SkyFunctions.CONFIGURED_TARGET)) {
         continue;
       }
@@ -414,15 +420,23 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       return null;
     }
     var logicalParents = new HashSet<SkyKey>();
-    unwindReverseDependencyDelegationLayers(child, rdeps, logicalParents);
+    unwindReverseDependencyDelegationLayers(child, child, rdeps, logicalParents);
     return logicalParents;
   }
 
   private void unwindReverseDependencyDelegationLayers(
-      SkyKey child, Iterable<SkyKey> rdeps, Set<SkyKey> output) throws InterruptedException {
+      SkyKey child, SkyKey dependencyKey, Iterable<SkyKey> rdeps, Set<SkyKey> output)
+      throws InterruptedException {
     // Checks the value of each rdep to see if it is delegating to `child`. If so, fetches its rdeps
     // and processes those, applying the same expansion as needed.
     for (SkyKey rdepKey : rdeps) {
+      if (rdepKey instanceof GenCqueryScopeKey scope) {
+        // Keep the key of each delegation layer: roots are declared in the incoming configuration.
+        if (scope.containsRoot(dependencyKey)) {
+          Iterables.addAll(output, graph.getReverseDeps(ImmutableList.of(scope)).get(scope));
+        }
+        continue;
+      }
       if (!rdepKey.functionName().equals(SkyFunctions.CONFIGURED_TARGET)) {
         output.add(rdepKey);
         continue;
@@ -441,7 +455,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       // Otherwise `rdepKey` is delegating to child and needs to be unwound.
       Iterable<SkyKey> rdepParents = graph.getReverseDeps(ImmutableList.of(rdepKey)).get(rdepKey);
       // Applies this recursively in case there are multiple layers of delegation.
-      unwindReverseDependencyDelegationLayers(child, rdepParents, output);
+      unwindReverseDependencyDelegationLayers(child, rdepKey, rdepParents, output);
     }
   }
 
@@ -517,7 +531,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
    */
   private ImmutableList<ClassifiedDependency<T>> targetifyValues(
       @Nullable T parent,
-      Iterable<SkyKey> dependencies,
+      Iterable<? extends SkyKey> dependencies,
       Set<SkyKey> knownCtDeps,
       Set<AspectClass> resolvedAspectClasses)
       throws InterruptedException {
@@ -624,6 +638,9 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       } else if (key.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION)) {
         values.addAll(
             targetifyValues(null, graph.getDirectDeps(key), knownCtDeps, resolvedAspectClasses));
+      } else if (key instanceof GenCqueryScopeKey scope) {
+        values.addAll(
+            targetifyValues(parent, scope.argument(), knownCtDeps, resolvedAspectClasses));
       }
     }
     return values.build();

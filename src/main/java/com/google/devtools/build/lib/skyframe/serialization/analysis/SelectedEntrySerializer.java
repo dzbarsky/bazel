@@ -41,7 +41,7 @@ import com.google.devtools.build.lib.concurrent.QuiescingFuture;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNode;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNodeOrEmpty;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FutureFileOpNode;
-import com.google.devtools.build.lib.skyframe.SkyFunctions;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryScopeKey;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueService;
 import com.google.devtools.build.lib.skyframe.serialization.FrontierNodeVersion;
 import com.google.devtools.build.lib.skyframe.serialization.KeyValueWriter;
@@ -250,14 +250,7 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
     if (value instanceof ConfiguredObjectValue configuredValue) {
       ImmutableList<SkyKey> dependencies = configuredValue.getQueryDependencies(key);
       if (dependencies == null) {
-        dependencies =
-            ImmutableSet.copyOf(nodeEntry.getDirectDeps()).stream()
-                .filter(
-                    dep ->
-                        dep.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
-                            || dep.functionName().equals(SkyFunctions.ASPECT)
-                            || dep.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION))
-                .collect(ImmutableList.toImmutableList());
+        dependencies = GenCqueryScopeKey.queryDependencies(nodeEntry.getDirectDeps());
       }
       value = new AnalysisCacheEntry(configuredValue, dependencies);
     }
