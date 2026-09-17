@@ -18,7 +18,9 @@ import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static java.util.concurrent.ForkJoinPool.commonPool;
 import static org.junit.Assert.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.google.common.eventbus.Subscribe;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -35,12 +37,19 @@ import com.google.devtools.build.lib.skyframe.WorkspaceStatusValue;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueStore;
 import com.google.devtools.build.lib.skyframe.serialization.InMemoryFingerprintValueStore;
 import com.google.devtools.build.lib.skyframe.serialization.KeyBytesProvider;
+import com.google.devtools.build.lib.skyframe.serialization.PackedFingerprint;
 import com.google.devtools.build.lib.skyframe.serialization.SerializationModule;
 import com.google.devtools.build.lib.skyframe.serialization.WriteStatus;
 import com.google.devtools.build.lib.skyframe.serialization.WriteStatuses;
+import com.google.devtools.build.lib.skyframe.serialization.proto.DataType;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.versioning.LongVersionGetter;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.CodedInputStream;
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -68,6 +77,7 @@ public final class BazelSkycacheIntegrationTest extends SkycacheIntegrationTestB
 
   private static class FailingFingerprintValueStore implements FingerprintValueStore {
     private final FingerprintValueStore delegate = new InMemoryFingerprintValueStore();
+    private final Map<ByteString, byte[]> entries = new ConcurrentHashMap<>();
     private final AtomicBoolean shouldFail = new AtomicBoolean();
     private final AtomicInteger failCounter = new AtomicInteger();
     private final AtomicReference<KeyBytesProvider> lastFailedKey = new AtomicReference<>();
@@ -92,6 +102,7 @@ public final class BazelSkycacheIntegrationTest extends SkycacheIntegrationTestB
         return WriteStatuses.immediateFailedWriteStatus(
             new IOException("Simulated write failure for " + fingerprint));
       }
+      entries.put(ByteString.copyFrom(fingerprint.toBytes()), serializedBytes);
       return delegate.put(fingerprint, serializedBytes);
     }
 
@@ -111,17 +122,49 @@ public final class BazelSkycacheIntegrationTest extends SkycacheIntegrationTestB
 
   private static class TestServicesSupplier implements RemoteAnalysisCachingServicesSupplier {
     private final ListenableFuture<FingerprintValueStore> fingerprintValueStore;
+    private final RemoteAnalysisCacheClient client = mock(RemoteAnalysisCacheClient.class);
 
     /** This is safe and does not leak because the underlying commonPool is never shut down. */
     private final SafeExecutorOwner commandExecutor = new SafeExecutorOwner(commonPool());
 
     private TestServicesSupplier(FailingFingerprintValueStore failingStore) {
       this.fingerprintValueStore = immediateFuture(failingStore);
+      when(client.getStats()).thenReturn(RemoteAnalysisCacheClient.EMPTY_STATS);
+      when(client.lookup(any()))
+          .thenAnswer(
+              invocation -> {
+                byte[] key = invocation.getArgument(0);
+                byte[] entry = failingStore.entries.get(ByteString.copyFrom(key));
+                if (entry == null) {
+                  return immediateFuture(new LookupResultImpl(new byte[0]));
+                }
+                CodedInputStream input = CodedInputStream.newInstance(entry);
+                byte[] invalidationFingerprint =
+                    switch (DataType.forNumber(input.readEnum())) {
+                      case DATA_TYPE_EMPTY -> null;
+                      case DATA_TYPE_FILE, DATA_TYPE_LISTING -> {
+                        input.readString();
+                        yield null;
+                      }
+                      case DATA_TYPE_ANALYSIS_NODE, DATA_TYPE_EXECUTION_NODE ->
+                          PackedFingerprint.readFrom(input).toBytes();
+                      default -> throw new IOException("Unexpected cache entry header");
+                    };
+                int offset = input.getTotalBytesRead();
+                return immediateFuture(
+                    new LookupResultImpl(
+                        Arrays.copyOfRange(entry, offset, entry.length), invalidationFingerprint, 0));
+              });
     }
 
     @Override
     public ListenableFuture<FingerprintValueStore> getFingerprintValueStore() {
       return fingerprintValueStore;
+    }
+
+    @Override
+    public ListenableFuture<RemoteAnalysisCacheClient> getAnalysisCacheClient() {
+      return immediateFuture(client);
     }
 
     @Override
