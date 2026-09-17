@@ -88,6 +88,23 @@ public class DiskCacheClientTest {
   }
 
   @Test
+  public void nonWritableTempDirectory_allowsReads() throws Exception {
+    ActionKey actionKey = new ActionKey(getDigest("key"));
+    ActionResult actionResult = ActionResult.newBuilder().setExitCode(42).build();
+    populateAc(actionKey, actionResult);
+    root.getChild("tmp").setWritable(false);
+
+    DiskCacheClient reader =
+        new DiskCacheClient(root, DIGEST_UTIL, /* checkActionResultIntegrity= */ true);
+    try {
+      assertThat(getFromFuture(reader.downloadActionResult(actionKey))).isEqualTo(actionResult);
+      assertThrows(IOException.class, reader::getTempPath);
+    } finally {
+      reader.close();
+    }
+  }
+
+  @Test
   public void toPath_forCas_forOldStyleHashFunction() throws Exception {
     Digest digest = Digest.newBuilder().setHash("0123456789abcdef").setSizeBytes(42).build();
 
