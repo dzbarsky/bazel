@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.analysis;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.packages.Package;
 import com.google.devtools.build.skyframe.NotComparableSkyValue;
@@ -36,6 +37,11 @@ public interface ConfiguredObjectValue extends NotComparableSkyValue {
   @Nullable
   default ImmutableList<SkyKey> getQueryDependencies(SkyKey key) {
     return null;
+  }
+
+  /** Physical edges that are only reads of a base target's prerequisites, not query edges. */
+  default ImmutableSet<SkyKey> getQueryDependencyExclusions(SkyKey key) {
+    return ImmutableSet.of();
   }
 
   /**
