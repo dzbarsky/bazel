@@ -364,10 +364,10 @@ public class GenQuery implements RuleConfiguredTargetFactory {
   }
 
   @Immutable // assuming no other reference to result
-  private static final class QueryResultAction extends AbstractFileWriteAction {
+  static final class QueryResultAction extends AbstractFileWriteAction {
     private final GenQueryResult result;
 
-    private QueryResultAction(ActionOwner owner, Artifact output, GenQueryResult result) {
+    QueryResultAction(ActionOwner owner, Artifact output, GenQueryResult result) {
       super(owner, NestedSetBuilder.emptySet(Order.STABLE_ORDER), output);
       this.result = result;
     }
