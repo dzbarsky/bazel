@@ -150,6 +150,7 @@ public final class GenCqueryRule implements RuleDefinition {
 </p>
 <p>
   Results are ordered lexicographically by label and configuration checksum before formatting.
+  A top-level <code>somepath(...)</code> expression instead retains dependency path order.
   Multiple configurations or execution-platform instances of a target produce separate results,
   even if their formatted text is identical. <code>config()</code> preserves all instances in
   its selected configuration. Functions such as <code>some</code> and <code>somepath</code> retain cquery's
