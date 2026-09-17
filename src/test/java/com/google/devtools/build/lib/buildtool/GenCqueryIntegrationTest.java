@@ -166,6 +166,39 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
+  public void testScopeActionsAreExcludedFromConflictChecking(
+      @TestParameter boolean mergedAnalysisExecution) throws Exception {
+    addOptions("--experimental_merged_skyframe_analysis_execution=" + mergedAnalysisExecution);
+    write(
+        "pkg/rules.bzl",
+        """
+        def _impl(ctx):
+            output = ctx.actions.declare_file("shared.out")
+            ctx.actions.write(output, ctx.label.name)
+            return [DefaultInfo(files = depset([output]))]
+        producer = rule(implementation = _impl)
+        """);
+    write(
+        "pkg/BUILD",
+        """
+        load(":rules.bzl", "producer")
+        producer(name = "a")
+        producer(name = "b")
+        filegroup(name = "build_both", srcs = [":a", ":b"])
+        gencquery(name = "q", expression = "set(//pkg:a //pkg:b)", scope = [":a", ":b"],
+                  output = "starlark")
+        """);
+    assertQueryResult("//pkg:q", "@@//pkg:a", "@@//pkg:b");
+    var scopedOutput =
+        Iterables.getOnlyElement(getFilesToBuild(getConfiguredTarget("//pkg:a")).toList());
+    assertThat(scopedOutput.getPath().exists()).isFalse();
+    buildTarget("//pkg:q", "//pkg:a");
+    assertThat(readContentAsByteArray(scopedOutput).toStringUtf8()).isEqualTo("a");
+    assertFailure("//pkg:build_both", "conflicting actions");
+    assertQueryResult("//pkg:q", "@@//pkg:a", "@@//pkg:b");
+  }
+
+  @Test
   public void testIncompatibleScopeTargetsCanBeInspected() throws Exception {
     write(
         "pkg/BUILD",
@@ -311,9 +344,18 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
             output = "starlark",
             opts = ["--noimplicit_deps"],
         )
+        gencquery(name = "direct", expression = "deps(//inner:q, 1)",
+                  scope = ["//inner:q"], output = "starlark", opts = ["--noimplicit_deps"])
+        gencquery(name = "leaf_parents", expression = "rdeps(deps(//inner:q), //inner:leaf, 1)",
+                  scope = ["//inner:q"], output = "starlark", opts = ["--noimplicit_deps"])
+        gencquery(name = "root_parents", expression = "rdeps(deps(//inner:q), //inner:root, 1)",
+                  scope = ["//inner:q"], output = "starlark", opts = ["--noimplicit_deps"])
         """);
     assertQueryResult(
         "//outer:q", "@@//inner:leaf", "@@//inner:q", "@@//inner:root", "@@//outer:root");
+    assertQueryResult("//outer:direct", "@@//inner:q", "@@//inner:root");
+    assertQueryResult("//outer:leaf_parents", "@@//inner:leaf", "@@//inner:root");
+    assertQueryResult("//outer:root_parents", "@@//inner:q", "@@//inner:root");
   }
 
   @Test
@@ -375,6 +417,7 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   @TestParameters("{scope: '//other:missing', message: \"no such target '//other:missing'\"}")
   @TestParameters("{scope: '//pkg:broken', message: \"no such package 'missing'\"}")
   @TestParameters("{scope: '//pkg:cycle', message: 'cycle in dependency graph'}")
+  @TestParameters("{scope: '//pkg:q', message: 'cycle in dependency graph'}")
   public void testInvalidScopeFailsEvenWhenNonStrict(String scope, String message)
       throws Exception {
     write("other/BUILD", "filegroup(name = 'root')");
@@ -384,6 +427,7 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
         "filegroup(name = 'cycle', srcs = [':cycle'])",
         "gencquery(name = 'q', expression = 'set()', strict = False, scope = ['" + scope + "'])");
     assertFailure("//pkg:q", message);
+    assertDoesNotContainEvent("GENCQUERY_SCOPE");
   }
 
   @Test
