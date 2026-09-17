@@ -67,6 +67,7 @@ import org.junit.rules.TestName;
 public abstract class SkycacheIntegrationTestBase extends BuildIntegrationTestCase
     implements SkycacheIntegrationTestHelpers {
 
+  protected static final String OFF_MODE_OPTION = "--experimental_remote_analysis_cache_mode=off";
   protected static final String UPLOAD_MODE_OPTION =
       "--experimental_remote_analysis_cache_mode=upload";
   protected static final String DOWNLOAD_MODE_OPTION =
@@ -371,6 +372,7 @@ project = project_pb2.Project.create(project_directories = []) # empty
             "com.google.devtools.build.lib.actions.Artifact.DerivedArtifact",
             "com.google.devtools.build.lib.actions.Artifact.SourceArtifact",
             "com.google.devtools.build.lib.skyframe.serialization.analysis.AnalysisCacheEntry",
+            "com.google.devtools.build.lib.skyframe.ConfiguredTargetKey",
             "com.google.devtools.build.lib.cmdline.Label",
             "java.lang.Object[]");
 
