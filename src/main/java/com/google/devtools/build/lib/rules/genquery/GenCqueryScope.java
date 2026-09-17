@@ -17,7 +17,6 @@ package com.google.devtools.build.lib.rules.genquery;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.analysis.ConfiguredObjectValue;
 import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
@@ -25,15 +24,10 @@ import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.query2.common.CqueryNode;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
-import com.google.devtools.build.lib.skyframe.SkyFunctions;
-import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.util.Pair;
-import com.google.devtools.build.skyframe.AbstractSkyKey;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunction.Environment.SkyKeyComputeState;
 import com.google.devtools.build.skyframe.SkyFunctionException;
-import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
@@ -52,43 +46,6 @@ import javax.annotation.Nullable;
 
 /** A dependency-tracked, closed snapshot of a gencquery's configured target graph. */
 public final class GenCqueryScope implements SkyValue, WalkableGraph {
-  public static final SkyFunctionName FUNCTION_NAME =
-      SkyFunctionName.createHermetic("GENCQUERY_SCOPE");
-
-  @AutoCodec
-  public static final class Key
-      extends AbstractSkyKey.WithCachedHashCode<ImmutableList<ConfiguredTargetKey>> {
-    private static final SkyKeyInterner<Key> interner = SkyKey.newInterner();
-
-    private Key(ImmutableList<ConfiguredTargetKey> arg) {
-      super(arg);
-    }
-
-    @VisibleForSerialization
-    @AutoCodec.Instantiator
-    public static Key create(ImmutableList<ConfiguredTargetKey> arg) {
-      return interner.intern(
-          new Key(ImmutableList.sortedCopyOf(ConfiguredTargetKey.ORDERING, arg)));
-    }
-
-    @Override
-    public SkyFunctionName functionName() {
-      return FUNCTION_NAME;
-    }
-
-    @Override
-    public SkyKeyInterner<Key> getSkyKeyInterner() {
-      return interner;
-    }
-
-    @Override
-    public boolean skipsBatchPrefetch() {
-      // Traversal state retains completed values; fetching them again on every layer is quadratic
-      // for a deep cached graph.
-      return true;
-    }
-  }
-
   private final ImmutableList<ConfiguredTargetKey> rootKeys;
   private final ImmutableMap<SkyKey, SkyValue> values;
   private final ImmutableMap<SkyKey, Iterable<SkyKey>> directDeps;
@@ -225,7 +182,7 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
     return result.buildKeepingLast();
   }
 
-  /** Builds the snapshot only after its roots have finished analysis. */
+  /** Analyzes the roots and collects their dependency-tracked query graph. */
   public static final class Function implements SkyFunction {
     private final Supplier<WalkableGraph> graphSupplier;
     private final BooleanSupplier tracksIncrementalState;
@@ -241,7 +198,7 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
       final Set<SkyKey> metadataKeys = new LinkedHashSet<>();
       final Set<SkyKey> pending;
 
-      State(Key key) {
+      State(GenCqueryScopeKey key) {
         pending = new LinkedHashSet<>(key.argument());
       }
     }
@@ -257,7 +214,7 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
       WalkableGraph graph = graphSupplier.get();
       // Cache hits can require additional rounds of dependency downloads. Retain completed work
       // across restarts so each node and its outgoing edges are processed only once.
-      State state = env.getState(() -> new State((Key) skyKey));
+      State state = env.getState(() -> new State((GenCqueryScopeKey) skyKey));
       while (!state.pending.isEmpty()) {
         SkyframeLookupResult lookup = env.getValuesAndExceptions(state.pending);
         Set<SkyKey> next = new LinkedHashSet<>();
@@ -287,14 +244,7 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
                   ? configuredValue.getQueryDependencies(key)
                   : null;
           if (deps == null) {
-            deps =
-                ImmutableSet.copyOf(graph.getDirectDeps(key)).stream()
-                    .filter(
-                        dep ->
-                            dep.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
-                                || dep.functionName().equals(SkyFunctions.ASPECT)
-                                || dep.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION))
-                    .collect(ImmutableList.toImmutableList());
+            deps = GenCqueryScopeKey.queryDependencies(graph.getDirectDeps(key));
           }
           state.directDeps.put(key, deps);
           next.addAll(deps);
@@ -319,7 +269,8 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
       if (env.valuesMissing()) {
         return null;
       }
-      return new GenCqueryScope(((Key) skyKey).argument(), state.values, state.directDeps);
+      return new GenCqueryScope(
+          ((GenCqueryScopeKey) skyKey).argument(), state.values, state.directDeps);
     }
   }
 

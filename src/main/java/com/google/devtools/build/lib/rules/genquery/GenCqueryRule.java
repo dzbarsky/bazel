@@ -40,6 +40,7 @@ public final class GenCqueryRule implements RuleDefinition {
         /* <!-- #BLAZE_RULE(gencquery).ATTRIBUTE(scope) -->
         The roots of the configured query graph. These targets are analyzed in this rule's
         configuration, including their configuration transitions, but their actions are not run.
+        Actions belonging only to the scope are also excluded from build action-conflict checks.
         The query can only visit these targets and their configured transitive dependencies.
         Scope targets and their selected dependencies must analyze successfully, even if
         <code>strict = False</code> or the query does not reference them.

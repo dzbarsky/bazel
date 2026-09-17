@@ -186,6 +186,7 @@ import com.google.devtools.build.lib.query2.common.QueryTransitivePackagePreload
 import com.google.devtools.build.lib.query2.common.UniverseScope;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.rules.genquery.GenCqueryScope;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryScopeKey;
 import com.google.devtools.build.lib.rules.genquery.GenQueryPackageProviderFactory;
 import com.google.devtools.build.lib.runtime.KeepGoingOption;
 import com.google.devtools.build.lib.runtime.MemoryPressureOptions;
@@ -875,7 +876,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     map.put(SkyFunctions.LOAD_ASPECTS, new LoadAspectsFunction());
     map.put(GenQueryPackageProviderFactory.GENQUERY_SCOPE, GenQueryPackageProviderFactory.FUNCTION);
     map.put(
-        GenCqueryScope.FUNCTION_NAME,
+        GenCqueryScopeKey.FUNCTION_NAME,
         new GenCqueryScope.Function(
             () -> SkyframeExecutorWrappingWalkableGraph.of(this), this::tracksStateForIncrementality));
     map.put(SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING, new ActionLookupConflictFindingFunction());
@@ -4361,9 +4362,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         }
         var subtasks = new ArrayList<VisitActionLookupKey>();
         for (SkyKey dep : directDeps) {
-          // Besides PlatformFunction, the subgraph of dependencies of ActionLookupKeys never has
-          // a non-ActionLookupKey depending on an ActionLookupKey. So we can skip any other
-          // non-ActionLookupKeys in the traversal as an optimization.
+          // Follow build action dependencies. Query scope nodes analyze configured targets without
+          // making their actions part of the build; platform dependencies still need unwrapping.
           if (dep.functionName().equals(SkyFunctions.PLATFORM)) {
             var platformLabel = ((PlatformValue.Key) dep.argument()).label();
             dep = PlatformFunction.configuredTargetDep(platformLabel);
