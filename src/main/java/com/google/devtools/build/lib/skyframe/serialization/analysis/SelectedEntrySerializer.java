@@ -25,6 +25,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.common.eventbus.EventBus;
 import com.google.common.util.concurrent.FutureCallback;
@@ -45,7 +46,7 @@ import com.google.devtools.build.lib.profiler.CounterSeriesTask;
 import com.google.devtools.build.lib.profiler.CounterSeriesTask.Color;
 import com.google.devtools.build.lib.profiler.CounterSeriesTaskImpl;
 import com.google.devtools.build.lib.profiler.Profiler;
-import com.google.devtools.build.lib.rules.genquery.GenCqueryScopeKey;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryKey;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNode;
@@ -511,7 +512,11 @@ final class SelectedEntrySerializer {
     if (savedDependencies != null) {
       return savedDependencies;
     }
-    return GenCqueryScopeKey.queryDependencies(directDeps);
+    var excluded = value.getQueryDependencyExclusions(key);
+    if (!excluded.isEmpty()) {
+      directDeps = Iterables.filter(directDeps, dependency -> !excluded.contains(dependency));
+    }
+    return GenCqueryKey.queryDependencies(directDeps);
   }
 
   private final class UploadTask

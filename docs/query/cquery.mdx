@@ -557,6 +557,9 @@ wildcard and recursive target patterns are not supported. Labels in the
 expression are relative to the rule's repository root, so `:app` refers to
 `//:app`, regardless of the package containing the rule.
 
+As with genquery, an absolute spelling such as `//pkg:all` can name an individual
+existing target instead of a wildcard.
+
 Results are formatted in label and configuration checksum order, except that a
 top-level `somepath(...)` expression retains dependency path order. A target in
 multiple configurations or execution-platform instances produces multiple results,
@@ -570,6 +573,8 @@ earlier builds cannot influence the query's scope.
 combinations are rejected before evaluating the query. `opts` accepts additional
 cquery options such as dependency filters, but not `--output`, `--starlark:expr`,
 or `--starlark:file`. Build options come from the enclosing build.
+
+As with genquery, output labels use canonical repository names.
 
 To use a formatter file, replace `starlark_expr` with
 `starlark_file = ":format.cquery"`. This attribute accepts a source-file label,
