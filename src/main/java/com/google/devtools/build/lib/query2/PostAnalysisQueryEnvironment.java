@@ -65,7 +65,7 @@ import com.google.devtools.build.lib.query2.engine.QueryUtil.UniquifierImpl;
 import com.google.devtools.build.lib.query2.engine.ThreadSafeOutputFormatterCallback;
 import com.google.devtools.build.lib.query2.engine.Uniquifier;
 import com.google.devtools.build.lib.rules.AliasConfiguredTarget;
-import com.google.devtools.build.lib.rules.genquery.GenCqueryScopeKey;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryKey;
 import com.google.devtools.build.lib.server.FailureDetails.ConfigurableQuery;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
@@ -396,7 +396,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
     // Most rdeps will not be delegating. Performs an optimistic pass that avoids copying.
     boolean foundDelegatingRdep = false;
     for (SkyKey rdepKey : rdeps) {
-      if (rdepKey instanceof GenCqueryScopeKey) {
+      if (rdepKey instanceof GenCqueryKey) {
         foundDelegatingRdep = true;
         break;
       }
@@ -430,15 +430,15 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
     // Checks the value of each rdep to see if it is delegating to `child`. If so, fetches its rdeps
     // and processes those, applying the same expansion as needed.
     for (SkyKey rdepKey : rdeps) {
-      if (rdepKey instanceof GenCqueryScopeKey scope) {
+      if (rdepKey instanceof GenCqueryKey scope) {
         // Keep the key of each delegation layer: roots are declared in the incoming configuration.
         if (scope.containsRoot(dependencyKey)) {
-          // Invalidated scopes outside this query's universe are absent from the lookup.
-          Iterables.addAll(
-              output,
-              graph
-                  .getReverseDeps(ImmutableList.of(scope))
-                  .getOrDefault(scope, ImmutableList.of()));
+          // A report can be invalidated independently of its still-clean query helper.
+          unwindReverseDependencyDelegationLayers(
+              child,
+              scope,
+              graph.getReverseDeps(ImmutableList.of(scope)).getOrDefault(scope, ImmutableList.of()),
+              output);
         }
         continue;
       }
@@ -498,7 +498,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       }
     }
     if (settings.contains(Setting.NO_IMPLICIT_DEPS)) {
-        deps = deps.stream().filter(dep -> !dep.implicit).collect(Collectors.toList());
+      deps = deps.stream().filter(dep -> !dep.implicit).collect(Collectors.toList());
     }
     return getDependencies(deps);
   }
@@ -643,9 +643,8 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       } else if (key.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION)) {
         values.addAll(
             targetifyValues(null, graph.getDirectDeps(key), knownCtDeps, resolvedAspectClasses));
-      } else if (key instanceof GenCqueryScopeKey scope) {
-        values.addAll(
-            targetifyValues(parent, scope.argument(), knownCtDeps, resolvedAspectClasses));
+      } else if (key instanceof GenCqueryKey scope) {
+        values.addAll(targetifyValues(parent, scope.roots(), knownCtDeps, resolvedAspectClasses));
       }
     }
     return values.build();

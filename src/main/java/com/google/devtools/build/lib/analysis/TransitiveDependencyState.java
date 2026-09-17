@@ -35,11 +35,24 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.TreeMap;
+import java.util.function.Consumer;
 import javax.annotation.Nullable;
 
 /** Groups state associated with transitive dependencies. */
 public final class TransitiveDependencyState {
   private final NestedSetBuilder<Cause> transitiveRootCauses;
+  @Nullable private Consumer<ConfiguredTargetKey> queryDependencyRecorder;
+
+  /** Installed only during aspect analysis; ordinary target analysis allocates no recorder. */
+  public void setQueryDependencyRecorder(Consumer<ConfiguredTargetKey> recorder) {
+    this.queryDependencyRecorder = recorder;
+  }
+
+  public void recordDirectQueryDependency(ConfiguredTargetKey key) {
+    if (queryDependencyRecorder != null) {
+      queryDependencyRecorder.accept(key);
+    }
+  }
 
   /**
    * State for constructing the packages transitively loaded for the value being built.
