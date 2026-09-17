@@ -39,9 +39,7 @@ class ExtraActionUtils {
    * AnalysisEnvironment} for bookkeeping.
    */
   static ExtraActionArtifactsProvider createExtraActionProvider(
-      Set<ActionAnalysisMetadata> actionsWithoutExtraAction,
-      RuleContext ruleContext,
-      boolean propagateExtraActionArtifacts)
+      Set<ActionAnalysisMetadata> actionsWithoutExtraAction, RuleContext ruleContext)
       throws InterruptedException {
     BuildConfigurationValue configuration = ruleContext.getConfiguration();
     if (configuration.isToolConfiguration()) {
@@ -72,12 +70,11 @@ class ExtraActionUtils {
       }
     }
 
-    if (propagateExtraActionArtifacts) {
-      for (ExtraActionArtifactsProvider provider :
-          AnalysisUtils.getProviders(
-              ruleContext.getAllPrerequisites(), ExtraActionArtifactsProvider.class)) {
-        builder.addTransitive(provider.getTransitiveExtraActionArtifacts());
-      }
+    // Add extra action artifacts from dependencies
+    for (ExtraActionArtifactsProvider provider :
+        AnalysisUtils.getProviders(
+            ruleContext.getAllPrerequisites(), ExtraActionArtifactsProvider.class)) {
+      builder.addTransitive(provider.getTransitiveExtraActionArtifacts());
     }
 
     return ExtraActionArtifactsProvider.create(

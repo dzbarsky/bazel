@@ -15,8 +15,8 @@
 package com.google.devtools.build.lib.rules.genquery;
 
 import static com.google.devtools.build.lib.packages.Attribute.attr;
+import static com.google.devtools.build.lib.packages.BuildType.GENQUERY_SCOPE_TYPE_LIST;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
-import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
 import static com.google.devtools.build.lib.packages.Type.BOOLEAN;
 import static com.google.devtools.build.lib.packages.Type.STRING;
 import static com.google.devtools.build.lib.packages.Types.STRING_LIST;
@@ -43,13 +43,12 @@ public final class GenCqueryRule implements RuleDefinition {
         The query can only visit these targets and their configured transitive dependencies.
         Scope targets and their selected dependencies must analyze successfully, even if
         <code>strict = False</code> or the query does not reference them.
+        Incompatible targets can be inspected; their dependencies are limited to those Bazel
+        analyzes when determining incompatibility. Scope targets do not impose their visibility,
+        compatibility, coverage, or extra-action requirements on consumers of the query output.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
-        // Like genquery, querying metadata does not consume the scope targets' outputs.
-        .add(
-            attr("scope", LABEL_LIST)
-                .mandatory()
-                .legacyAllowAnyFileType()
-                .skipPrereqValidatorCheck())
+        // The implementation analyzes scope explicitly, without propagating its prerequisites.
+        .add(attr("scope", GENQUERY_SCOPE_TYPE_LIST).mandatory().legacyAllowAnyFileType())
         /* <!-- #BLAZE_RULE(gencquery).ATTRIBUTE(expression) -->
         The <a href="${link cquery}">cquery expression</a> to evaluate. Labels are relative to the
         root of this rule's repository, not its package. For example, <code>:b</code> in
@@ -150,8 +149,9 @@ public final class GenCqueryRule implements RuleDefinition {
 </p>
 <p>
   Results are ordered lexicographically by label and configuration checksum before formatting.
-  Multiple configurations of a target produce separate results, even if their formatted text
-  is identical. Functions such as <code>some</code> and <code>somepath</code> retain cquery's
+  Multiple configurations or execution-platform instances of a target produce separate results,
+  even if their formatted text is identical. <code>config()</code> preserves all instances in
+  its selected configuration. Functions such as <code>some</code> and <code>somepath</code> retain cquery's
   freedom to choose any matching target or path. Starlark formatting errors fail the build.
   This rule requires <code>--track_incremental_state</code> (the default) to retain configured
   dependency edges.
