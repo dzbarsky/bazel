@@ -36,10 +36,12 @@ import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
+import com.google.devtools.build.lib.analysis.ConfiguredObjectValue;
 import com.google.devtools.build.lib.concurrent.QuiescingFuture;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNode;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNodeOrEmpty;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FutureFileOpNode;
+import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueService;
 import com.google.devtools.build.lib.skyframe.serialization.FrontierNodeVersion;
 import com.google.devtools.build.lib.skyframe.serialization.KeyValueWriter;
@@ -244,11 +246,26 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
             () -> codecs.serializeMemoizedAsync(fingerprintValueService, key, profileCollector),
             fingerprintValueService.getExecutor());
 
+    Object value = nodeEntry.getValue();
+    if (value instanceof ConfiguredObjectValue configuredValue) {
+      ImmutableList<SkyKey> dependencies = configuredValue.getQueryDependencies(key);
+      if (dependencies == null) {
+        dependencies =
+            ImmutableSet.copyOf(nodeEntry.getDirectDeps()).stream()
+                .filter(
+                    dep ->
+                        dep.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
+                            || dep.functionName().equals(SkyFunctions.ASPECT)
+                            || dep.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION))
+                .collect(ImmutableList.toImmutableList());
+      }
+      value = new AnalysisCacheEntry(configuredValue, dependencies);
+    }
+    Object valueToSerialize = value;
     ListenableFuture<SerializationResult<ByteString>> futureValueBytes =
         Futures.submitAsync(
-            () ->
-                codecs.serializeMemoizedAsync(
-                    fingerprintValueService, nodeEntry.getValue(), profileCollector),
+            () -> codecs.serializeMemoizedAsync(
+                fingerprintValueService, valueToSerialize, profileCollector),
             fingerprintValueService.getExecutor());
 
     new FileOpNodeProcessor(

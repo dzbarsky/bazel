@@ -61,8 +61,11 @@ import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.WalkableGraph;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -299,7 +302,7 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
    * Returns the {@link CqueryNode} for the given label and configuration if it exists, else null.
    */
   @Nullable
-  protected CqueryNode getConfiguredTarget(
+  private CqueryNode getConfiguredTarget(
       Label label, @Nullable BuildConfigurationValue configuration) throws InterruptedException {
     BuildConfigurationKey configurationKey = configuration == null ? null : configuration.getKey();
     CqueryNode target =
@@ -416,60 +419,81 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
           (ThreadSafeMutableSet<CqueryNode>) targetsFuture.getIfSuccessful();
       List<CqueryNode> transformedResult = new ArrayList<>();
       boolean userFriendlyConfigName = true;
+      Set<Label> seenLabels = new HashSet<>();
+      ConfigurationSelection selection = null;
       for (CqueryNode target : targets) {
         Label label = getCorrectLabel(target);
-        CqueryNode keyedConfiguredTarget;
+        if (!seenLabels.add(label)) {
+          continue;
+        }
+        ImmutableList<CqueryNode> configuredTargets;
         switch (configPrefix) {
           case "host" ->
               throw new QueryException(
                   "'host' configuration no longer exists. Use a specific configuration hash"
                       + " instead",
                   ConfigurableQuery.Code.INCORRECT_CONFIG_ARGUMENT_ERROR);
-          case "target" -> keyedConfiguredTarget = getTargetConfiguredTarget(label);
-          case "null" -> keyedConfiguredTarget = getNullConfiguredTarget(label);
-          default -> {
-            ImmutableList<String> matchingConfigs =
-                transitiveConfigurations.keySet().stream()
-                    .filter(fullConfig -> fullConfig.startsWith(configPrefix))
-                    .collect(ImmutableList.toImmutableList());
-            if (matchingConfigs.size() == 1) {
-              keyedConfiguredTarget =
-                  getConfiguredTarget(
-                      label,
-                      Verify.verifyNotNull(transitiveConfigurations.get(matchingConfigs.get(0))));
-              userFriendlyConfigName = false;
-            } else if (matchingConfigs.size() >= 2) {
-              throw new QueryException(
-                  String.format(
-                      "Configuration ID '%s' is ambiguous.\n"
-                          + "'%s' is a prefix of multiple configurations:\n "
-                          + Joiner.on("\n ").join(matchingConfigs)
-                          + "\n\n"
-                          + "Use a longer prefix to uniquely identify one configuration.",
-                      configPrefix,
-                      configPrefix),
-                  ConfigurableQuery.Code.INCORRECT_CONFIG_ARGUMENT_ERROR);
-            } else {
-              throw new QueryException(
-                  String.format("Unknown configuration ID '%s'.\n", configPrefix)
-                      + "config()'s second argument must identify a unique configuration.\n"
-                      + "\n"
-                      + "Valid values:\n"
-                      + " 'target' for the default configuration\n"
-                      + " 'null' for source files (which have no configuration)\n"
-                      + " an arbitrary configuration's full or short ID\n"
-                      + "\n"
-                      + "A short ID is any prefix of a full ID. cquery shows short IDs. 'bazel "
-                      + "config' shows full IDs.\n"
-                      + "\n"
-                      + "For more help, see https://bazel.build/docs/cquery.",
-                  ConfigurableQuery.Code.INCORRECT_CONFIG_ARGUMENT_ERROR);
+          case "target" -> {
+            if (selection == null) {
+              selection = new ConfigurationSelection(topLevelConfigurations.getConfigurations());
             }
+            configuredTargets =
+                getConfiguredTargets(
+                    label,
+                    topLevelConfigurations.isTopLevelTarget(label)
+                        ? new ConfigurationSelection(
+                            Collections.singletonList(
+                                topLevelConfigurations.getConfigurationForTopLevelTarget(label)))
+                        : selection);
+          }
+          case "null" -> {
+            if (selection == null) {
+              selection = new ConfigurationSelection(Collections.singletonList(null));
+            }
+            configuredTargets = getConfiguredTargets(label, selection);
+          }
+          default -> {
+            if (selection == null) {
+              ImmutableList<String> matchingConfigs =
+                  transitiveConfigurations.keySet().stream()
+                      .filter(fullConfig -> fullConfig.startsWith(configPrefix))
+                      .collect(ImmutableList.toImmutableList());
+              if (matchingConfigs.size() == 1) {
+                selection =
+                    new ConfigurationSelection(
+                        ImmutableList.of(
+                            Verify.verifyNotNull(
+                                transitiveConfigurations.get(matchingConfigs.get(0)))));
+              } else if (matchingConfigs.size() >= 2) {
+                throw new QueryException(
+                    String.format(
+                        "Configuration ID '%s' is ambiguous.\n"
+                            + "'%s' is a prefix of multiple configurations:\n %s\n\n"
+                            + "Use a longer prefix to uniquely identify one configuration.",
+                        configPrefix, configPrefix, Joiner.on("\n ").join(matchingConfigs)),
+                    ConfigurableQuery.Code.INCORRECT_CONFIG_ARGUMENT_ERROR);
+              } else {
+                throw new QueryException(
+                    String.format("Unknown configuration ID '%s'.\n", configPrefix)
+                        + "config()'s second argument must identify a unique configuration.\n"
+                        + "\n"
+                        + "Valid values:\n"
+                        + " 'target' for the default configuration\n"
+                        + " 'null' for source files (which have no configuration)\n"
+                        + " an arbitrary configuration's full or short ID\n"
+                        + "\n"
+                        + "A short ID is any prefix of a full ID. cquery shows short IDs. 'bazel "
+                        + "config' shows full IDs.\n"
+                        + "\n"
+                        + "For more help, see https://bazel.build/docs/cquery.",
+                    ConfigurableQuery.Code.INCORRECT_CONFIG_ARGUMENT_ERROR);
+              }
+            }
+            userFriendlyConfigName = false;
+            configuredTargets = getConfiguredTargets(label, selection);
           }
         }
-        if (keyedConfiguredTarget != null) {
-          transformedResult.add(keyedConfiguredTarget);
-        }
+        transformedResult.addAll(configuredTargets);
       }
       if (transformedResult.isEmpty()) {
         throw new QueryException(
@@ -484,6 +508,37 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
       callback.process(transformedResult);
       return null;
     };
+  }
+
+  /** Configuration preference order, resolved once per config() expression. */
+  protected static final class ConfigurationSelection {
+    private final List<BuildConfigurationValue> configurations = new ArrayList<>();
+    private final Map<BuildConfigurationKey, Integer> priorities = new HashMap<>();
+
+    private ConfigurationSelection(Iterable<BuildConfigurationValue> configurations) {
+      for (BuildConfigurationValue configuration : configurations) {
+        priorities.putIfAbsent(
+            configuration == null ? null : configuration.getKey(), this.configurations.size());
+        this.configurations.add(configuration);
+      }
+    }
+
+    /** Returns the preference rank, or MAX_VALUE if this configuration is not selected. */
+    public int priority(@Nullable BuildConfigurationKey key) {
+      return priorities.getOrDefault(key, Integer.MAX_VALUE);
+    }
+  }
+
+  /** Returns the instances in the first matching configuration. */
+  protected ImmutableList<CqueryNode> getConfiguredTargets(
+      Label label, ConfigurationSelection selection) throws InterruptedException {
+    for (BuildConfigurationValue configuration : selection.configurations) {
+      CqueryNode target = getConfiguredTarget(label, configuration);
+      if (target != null) {
+        return ImmutableList.of(target);
+      }
+    }
+    return ImmutableList.of();
   }
 
   /**

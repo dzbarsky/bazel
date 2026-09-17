@@ -52,6 +52,7 @@ java_library(
         "SelectedEntrySerializer.java",
     ],
     deps = [
+        ":analysis_cache_entry",
         ":dependencies_provider",
         ":event_listener",
         ":file_dependency_serializer",
@@ -64,12 +65,14 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_data",
         "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_key",
         "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
+        "//src/main/java/com/google/devtools/build/lib/analysis:configured_object_value",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/concurrent",
         "//src/main/java/com/google/devtools/build/lib/events",
         "//src/main/java/com/google/devtools/build/lib/profiler",
         "//src/main/java/com/google/devtools/build/lib/skyframe:action_execution_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:filesystem_keys",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:sky_functions",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:error_message_helper",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:frontier_node_version",
@@ -97,7 +100,6 @@ java_library(
         ":value_or_future_map",
         "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_key",
         "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
-        "//src/main/java/com/google/devtools/build/lib/analysis:analysis_cluster",
         "//src/main/java/com/google/devtools/build/lib/concurrent",
         "//src/main/java/com/google/devtools/build/lib/skyframe:filesystem_keys",
         "//src/main/java/com/google/devtools/build/lib/skyframe:rule_configured_target_value",
@@ -119,7 +121,6 @@ java_library(
         ":missing_skyframe_entry_exception",
         ":value_or_future_map",
         "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
-        "//src/main/java/com/google/devtools/build/lib/analysis:analysis_cluster",
         "//src/main/java/com/google/devtools/build/lib/skyframe:filesystem_keys",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:write_statuses",
@@ -342,6 +343,16 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:write_statuses",
         "//third_party:flogger",
         "//third_party:gson",
+        "//third_party:guava",
+    ],
+)
+
+java_library(
+    name = "analysis_cache_entry",
+    srcs = ["AnalysisCacheEntry.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//third_party:guava",
     ],
 )
