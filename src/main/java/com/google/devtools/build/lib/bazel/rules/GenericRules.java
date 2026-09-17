@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.rules.LabelBuildSettings.LabelBuildFlagRule
 import com.google.devtools.build.lib.rules.LabelBuildSettings.LabelBuildSettingRule;
 import com.google.devtools.build.lib.rules.core.CoreRules;
 import com.google.devtools.build.lib.rules.filegroup.FilegroupRule;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryRule;
 import com.google.devtools.build.lib.rules.genquery.GenQueryRule;
 import com.google.devtools.build.lib.rules.starlarkdocextract.StarlarkDocExtractRule;
 import com.google.devtools.build.lib.rules.test.TestSuiteRule;
@@ -46,6 +47,7 @@ public class GenericRules implements RuleSet {
     builder.addRuleDefinition(new FilegroupRule());
     builder.addRuleDefinition(new TestSuiteRule());
     GenQueryRule.register(builder);
+    builder.addRuleDefinition(new GenCqueryRule());
     builder.addRuleDefinition(new LabelBuildSettingRule());
     builder.addRuleDefinition(new LabelBuildFlagRule());
     builder.addRuleDefinition(new StarlarkDocExtractRule());
