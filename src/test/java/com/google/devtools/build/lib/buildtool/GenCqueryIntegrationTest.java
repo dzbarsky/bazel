@@ -26,9 +26,15 @@ import com.google.devtools.build.lib.analysis.ExtraActionArtifactsProvider;
 import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
 import com.google.devtools.build.lib.analysis.test.InstrumentedFilesInfo;
 import com.google.devtools.build.lib.buildtool.util.BuildIntegrationTestCase;
+import com.google.devtools.build.lib.vfs.DelegateFileSystem;
+import com.google.devtools.build.lib.vfs.FileSystem;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import com.google.testing.junit.testparameterinjector.TestParameters;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.GZIPInputStream;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -37,6 +43,20 @@ import org.junit.runner.RunWith;
 @RunWith(TestParameterInjector.class)
 public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   @TestParameter private boolean keepGoing;
+  private final AtomicBoolean failFormatterRead = new AtomicBoolean();
+
+  @Override
+  protected FileSystem createFileSystem() throws Exception {
+    return new DelegateFileSystem(super.createFileSystem()) {
+      @Override
+      public InputStream getInputStream(PathFragment path) throws IOException {
+        if (path.getBaseName().equals("retry.cquery") && failFormatterRead.getAndSet(false)) {
+          throw new IOException("temporary formatter read failure");
+        }
+        return super.getInputStream(path);
+      }
+    };
+  }
 
   @Override
   protected void setupOptions() throws Exception {
@@ -308,6 +328,21 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
+  public void testFormatterReadFailureIsRetriedWithoutInputChanges() throws Exception {
+    write("pkg/retry.cquery", "def format(target): return str(target.label)");
+    write(
+        "pkg/BUILD",
+        """
+        filegroup(name = "root")
+        gencquery(name = "q", expression = "//pkg:root", scope = [":root"],
+                 output = "starlark", starlark_file = ":retry.cquery")
+        """);
+    failFormatterRead.set(true);
+    assertFailure("//pkg:q", "cannot read file: temporary formatter read failure");
+    assertQueryResult("//pkg:q", "@@//pkg:root");
+  }
+
+  @Test
   public void testResultsSortedAcrossCleanBuilds() throws Exception {
     write("one/BUILD", "filegroup(name = 'root', visibility = ['//visibility:public'])");
     write("two/BUILD", "filegroup(name = 'root', visibility = ['//visibility:public'])");
@@ -326,6 +361,7 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
 
   @Test
   public void testGenCqueryEncountersAnotherGenCquery() throws Exception {
+    addOptions("--experimental_oom_sensitive_skyfunctions_semaphore_size=1");
     write(
         "inner/BUILD",
         """
@@ -382,6 +418,38 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
+  public void testProviderChangesInvalidateOutput(@TestParameter boolean discardAnalysisCache)
+      throws Exception {
+    if (discardAnalysisCache) {
+      addOptions("--discard_analysis_cache");
+    }
+    write("leaf/value.bzl", "VALUE = 'first'");
+    write(
+        "leaf/rules.bzl",
+        """
+        load(":value.bzl", "VALUE")
+        Info = provider(fields = ["value"])
+        def _impl(ctx):
+            return [Info(value = VALUE)]
+        leaf = rule(implementation = _impl)
+        """);
+    write("leaf/BUILD", "load(':rules.bzl', 'leaf')", "leaf(name = 'leaf')");
+    write(
+        "pkg/BUILD",
+        """
+        gencquery(name = "q", expression = "//leaf:leaf", scope = ["//leaf:leaf"],
+                 output = "starlark", starlark_expr = "providers(target)['//leaf:rules.bzl%Info'].value")
+        """);
+    assertQueryResult("//pkg:q", "first");
+    // An analysis hit must still recreate the output when the output and action cache are absent.
+    getArtifacts("//pkg:q").iterator().next().getPath().delete();
+    addOptions("--nouse_action_cache");
+    assertQueryResult("//pkg:q", "first");
+    write("leaf/value.bzl", "VALUE = 'second'");
+    assertQueryResult("//pkg:q", "second");
+  }
+
+  @Test
   public void testOutOfScopeTargetFromPreviousBuildIsRejected() throws Exception {
     write(
         "pkg/BUILD",
@@ -395,21 +463,33 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
-  public void testNonStrictScopeWarnsAndPreservesOtherResults() throws Exception {
+  public void testNonStrictScopeWarnsAndPreservesOtherResults(
+      @TestParameter({"//does_not_exist:outside", "//other:all", "//pkg:all"}) String outside)
+      throws Exception {
+    write("lib/BUILD", "filegroup(name = 'inside')");
+    write("other/BUILD", "filegroup(name = 'all', srcs = ['//does_not_exist:outside'])");
     write(
         "pkg/BUILD",
         """
-        filegroup(name = "inside")
+        filegroup(name = "all", srcs = ["//does_not_exist:outside"])
         gencquery(
             name = "q",
-            expression = "//pkg:inside + //does_not_exist:outside",
-            scope = [":inside"],
+            expression = "//lib:inside + %s",
+            scope = ["//lib:inside"],
             strict = False,
             output = "starlark",
         )
-        """);
-    assertQueryResult("//pkg:q", "@@//pkg:inside");
+        """
+            .formatted(outside));
+    assertQueryResult("//pkg:q", "@@//lib:inside");
     assertContainsEvent("is not within the scope of the query");
+    if (outside.equals("//other:all")) {
+      // Resolution metadata must invalidate the report without adding configured scope targets.
+      write("other/BUILD", "filegroup(name = 'different')");
+      assertFailure("//pkg:q", "target patterns are not allowed in gencquery");
+      write("other/BUILD", "filegroup(name = 'all', srcs = ['//does_not_exist:outside'])");
+      assertQueryResult("//pkg:q", "@@//lib:inside");
+    }
   }
 
   @Test
@@ -427,7 +507,7 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
         "filegroup(name = 'cycle', srcs = [':cycle'])",
         "gencquery(name = 'q', expression = 'set()', strict = False, scope = ['" + scope + "'])");
     assertFailure("//pkg:q", message);
-    assertDoesNotContainEvent("GENCQUERY_SCOPE");
+    assertDoesNotContainEvent("GENCQUERY");
   }
 
   @Test
@@ -681,13 +761,25 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
-  public void testTargetPatternsAreRejected(
+  public void testTargetPatternsRequireExplicitTargets(
       @TestParameter({"//pkg:*", "//pkg:all", "//pkg/..."}) String pattern) throws Exception {
     write(
         "pkg/BUILD",
         "filegroup(name = 'root')",
         "gencquery(name = 'q', expression = '" + pattern + "', scope = [':root'])");
     assertFailure("//pkg:q", "target patterns are not allowed in gencquery");
+    if (!pattern.endsWith("/...")) {
+      String name = pattern.substring(pattern.lastIndexOf(':') + 1);
+      write(
+          "pkg/BUILD",
+          "filegroup(name = '" + name + "')",
+          "gencquery(name = 'q', expression = '"
+              + pattern
+              + "', scope = [':"
+              + name
+              + "'], output = 'starlark')");
+      assertQueryResult("//pkg:q", "@@" + pattern);
+    }
   }
 
   @Test
@@ -805,8 +897,15 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
         "exports_files(['format.cquery'])",
         "filegroup(name = 'root')",
         "gencquery(name = 'q', expression = '//pkg:root', scope = [':root'], output = 'starlark',"
-            + " starlark_file = ':format.cquery')");
+            + " starlark_file = ':format.cquery')",
+        "gencquery(name = 'labels', expression = '//pkg:root', scope = [':root'])",
+        "gencquery(name = 'kinds', expression = '//pkg:root', scope = [':root'],"
+            + " output = 'label_kind')");
     assertQueryResult("@renamed//pkg:q", "root");
+    assertThat(getQueryResult("@renamed//pkg:labels"))
+        .matches("@@other\\+//pkg:root \\([a-f0-9]+\\)\n");
+    assertThat(getQueryResult("@renamed//pkg:kinds"))
+        .matches("filegroup rule @@other\\+//pkg:root \\([a-f0-9]+\\)\n");
     write(
         "pkg/BUILD",
         """
