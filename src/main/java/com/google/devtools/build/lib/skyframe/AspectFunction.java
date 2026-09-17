@@ -192,6 +192,7 @@ final class AspectFunction implements SkyFunction {
     @Nullable InitialValues initialValues;
 
     final DependencyResolver.State computeDependenciesState;
+    final AspectQueryDependencyRecorder queryDependencies;
 
     /**
      * Computes the {@link UnloadedToolchainContext} collection for the underlying target of the
@@ -212,9 +213,14 @@ final class AspectFunction implements SkyFunction {
     boolean baseTargetHasNoToolchains;
 
     private State(
-        boolean storeTransitivePackages, PrerequisitePackageFunction prerequisitePackages) {
+        boolean storeTransitivePackages,
+        PrerequisitePackageFunction prerequisitePackages,
+        BaseTargetPrerequisitesSupplier baseTargetPrerequisitesSupplier) {
+      this.queryDependencies = new AspectQueryDependencyRecorder(baseTargetPrerequisitesSupplier);
       this.computeDependenciesState =
           new DependencyResolver.State(storeTransitivePackages, prerequisitePackages);
+      this.computeDependenciesState.transitiveState.setQueryDependencyRecorder(
+          queryDependencies::recordOwned);
     }
 
     @Override
@@ -253,7 +259,9 @@ final class AspectFunction implements SkyFunction {
       throws AspectFunctionException, InterruptedException {
     AspectKey key = (AspectKey) skyKey.argument();
     java.util.function.Supplier<State> stateSupplier =
-        () -> new State(storeTransitivePackages, prerequisitePackages);
+        () ->
+            new State(
+                storeTransitivePackages, prerequisitePackages, baseTargetPrerequisitesSupplier);
 
     RemoteAnalysisCacheReaderDepsProvider remoteCachingDependencies =
         cachingDependenciesSupplier.get();
@@ -427,7 +435,7 @@ final class AspectFunction implements SkyFunction {
               starlarkExecTransition.orElse(null),
               env,
               env.getListener(),
-              baseTargetPrerequisitesSupplier,
+              state.queryDependencies,
               baseTargetUnloadedToolchainContexts);
       if (!computeDependenciesState.transitiveRootCauses().isEmpty()) {
         NestedSet<Cause> causes = computeDependenciesState.transitiveRootCauses().build();
@@ -470,7 +478,7 @@ final class AspectFunction implements SkyFunction {
         throw new AspectFunctionException(
             new AspectCreationException(e.getMessage(), target.getLabel(), configuration));
       }
-      SkyValue result =
+      AspectValue result =
           createAspect(
               env,
               key,
@@ -488,6 +496,13 @@ final class AspectFunction implements SkyFunction {
               computeDependenciesState.transitiveState,
               starlarkExecTransition.orElse(null));
       if (result != null) {
+        state.queryDependencies.recordOwned(key.getBaseConfiguredTargetKey());
+        if (unloadedToolchainContexts != null) {
+          for (var context : unloadedToolchainContexts.contextMap().values()) {
+            state.queryDependencies.recordOwned(context.key());
+          }
+        }
+        result.initializeQueryDependencyExclusions(key, state.queryDependencies.excludedEdges(env));
         SkyValueRetrieverUtils.tryUploadAsync(remoteCachingDependencies, key, result, env);
       }
       return result;
@@ -610,7 +625,7 @@ final class AspectFunction implements SkyFunction {
           new Driver(
               new UnloadedToolchainContextsProducer(
                   unloadedToolchainContextsInputs,
-                  baseTargetPrerequisitesSupplier,
+                  state.queryDependencies,
                   (UnloadedToolchainContextsProducer.ResultSink) state,
                   t -> {
                     return StateMachine.DONE;
