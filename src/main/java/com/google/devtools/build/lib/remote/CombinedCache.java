@@ -576,7 +576,12 @@ public class CombinedCache extends AbstractReferenceCounted {
     checkState(remoteCacheClient != null && context.getReadCachePolicy().allowRemoteCache());
 
     if (diskCacheClient != null && context.getWriteCachePolicy().allowDiskCache()) {
-      Path tempPath = diskCacheClient.getTempPath();
+      Path tempPath;
+      try {
+        tempPath = diskCacheClient.getTempPath();
+      } catch (IOException e) {
+        return immediateFailedFuture(e);
+      }
       LazyFileOutputStream tempOut = new LazyFileOutputStream(tempPath);
       ListenableFuture<Void> download = remoteCacheClient.downloadBlob(context, digest, tempOut);
       return cleanupTempFileOnError(
