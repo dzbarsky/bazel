@@ -94,8 +94,9 @@ public final class BuildType {
   public static final ListType<Label> DORMANT_LABEL_LIST = ListType.create(DORMANT_LABEL);
 
   /**
-   * This is a label type that causes dependencies, but the dependencies are NOT to be configured.
-   * Does not say anything about whether the attribute of this type is itself configurable.
+   * A query scope label, excluded from ordinary configured prerequisites. The rule evaluates its
+   * scope explicitly: genquery loads targets, while gencquery analyzes configured targets without
+   * propagating their providers to the report. The attribute itself may still be configurable.
    *
    * <p>Without a special type to handle genquery.scope, configuring a genquery target ends up
    * configuring the transitive closure of genquery.scope. Since genquery rule implementation loads
@@ -106,10 +107,7 @@ public final class BuildType {
   public static final Type<Label> GENQUERY_SCOPE_TYPE =
       new LabelType(LabelClass.GENQUERY_SCOPE_REFERENCE);
 
-  /**
-   * This is a label type that causes dependencies, but the dependencies are NOT to be configured.
-   * Does not say anything about whether the attribute of this type is itself configurable.
-   */
+  /** A list of query scope labels. See {@link #GENQUERY_SCOPE_TYPE}. */
   @SerializationConstant
   public static final ListType<Label> GENQUERY_SCOPE_TYPE_LIST =
       ListType.create(GENQUERY_SCOPE_TYPE);
