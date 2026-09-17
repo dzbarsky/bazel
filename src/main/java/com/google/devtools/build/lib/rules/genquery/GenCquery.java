@@ -166,20 +166,14 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
                         .setConfigurationKey(ruleContext.getConfiguration().getKey())
                         .build())
             .collect(ImmutableList.toImmutableList());
-    // Keep direct Skyframe edges for queries of this rule, but do not make scope targets ordinary
-    // prerequisites: their compatibility, visibility, and artifacts do not belong to the report.
-    var roots = env.getValuesAndExceptions(rootKeys);
-    for (ConfiguredTargetKey key : rootKeys) {
-      if (roots.get(key) == null) {
-        return null;
-      }
-    }
+    // The scope node tracks analysis dependencies without exposing their actions to build
+    // traversal. Query traversal separately exposes its declared roots as logical dependencies.
     GenCqueryScope scope;
     try {
       scope =
           (GenCqueryScope)
               env.getValueOrThrow(
-                  GenCqueryScope.Key.create(rootKeys), GenCqueryScope.ScopeException.class);
+                  GenCqueryScopeKey.create(rootKeys), GenCqueryScope.ScopeException.class);
     } catch (GenCqueryScope.ScopeException e) {
       ruleContext.ruleError(e.getMessage());
       return null;

@@ -472,17 +472,18 @@ genrule(
   }
 
   @Test
-  public void gencqueryIncludesDependenciesOfCachedScopeTargets() throws Exception {
+  public void gencqueryIncludesDependenciesOfCachedReports() throws Exception {
     write(
         "scope/BUILD",
         "package(default_visibility = ['//visibility:public'])",
         "filegroup(name = 'leaf')",
-        "filegroup(name = 'root', srcs = [':leaf'])");
+        "filegroup(name = 'root', srcs = [':leaf'])",
+        "gencquery(name = 'inner', expression = 'deps(//scope:root)', scope = [':root'])");
     write(
         "queries/BUILD",
-        "filegroup(name = 'seed', srcs = ['//scope:root'])",
-        "gencquery(name = 'report', expression = 'filter(\"^//scope:\", deps(//scope:root))',"
-            + " scope = ['//scope:root'], output = 'starlark')");
+        "gencquery(name = 'seed', expression = '//scope:inner', scope = ['//scope:inner'])",
+        "gencquery(name = 'report', expression = 'filter(\"^//scope:\", deps(//scope:inner))',"
+            + " scope = ['//scope:inner'], output = 'starlark')");
     addOptions("--experimental_active_directories=queries");
     assertUploadSuccess("//queries:seed");
     getSkyframeExecutor().resetEvaluator();
@@ -491,11 +492,11 @@ genrule(
             getCommandEnvironment().getRemoteAnalysisCachingEventListener().getCacheHits().stream()
                 .filter(key -> key instanceof ActionLookupKey)
                 .map(key -> ((ActionLookupKey) key).getLabel()))
-        .contains(parseCanonicalUnchecked("//scope:root"));
+        .contains(parseCanonicalUnchecked("//scope:inner"));
     assertThat(
             readContentAsByteArray(getArtifacts("//queries:report").iterator().next())
                 .toStringUtf8())
-        .isEqualTo("@@//scope:leaf\n@@//scope:root\n");
+        .isEqualTo("@@//scope:inner\n@@//scope:leaf\n@@//scope:root\n");
   }
 
   @Test
