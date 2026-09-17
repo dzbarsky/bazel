@@ -86,7 +86,6 @@ public final class RuleConfiguredTargetBuilder {
   private RunfilesSupport runfilesSupport;
   private Artifact executable;
   private final ImmutableSet<ActionAnalysisMetadata> actionsWithoutExtraAction = ImmutableSet.of();
-  private boolean propagateExtraActionArtifacts = true;
 
   public RuleConfiguredTargetBuilder(RuleContext ruleContext) {
     this.ruleContext = ruleContext;
@@ -205,8 +204,7 @@ public final class RuleConfiguredTargetBuilder {
     // Only add {@link ExtraActionProvider} if extra action listeners are applied
     if (!ruleContext.getConfiguration().getActionListeners().isEmpty()) {
       ExtraActionArtifactsProvider extraActionsProvider =
-          createExtraActionProvider(
-              actionsWithoutExtraAction, ruleContext, propagateExtraActionArtifacts);
+          createExtraActionProvider(actionsWithoutExtraAction, ruleContext);
       add(ExtraActionArtifactsProvider.class, extraActionsProvider);
     }
 
@@ -627,16 +625,6 @@ public final class RuleConfiguredTargetBuilder {
   @CanIgnoreReturnValue
   public RuleConfiguredTargetBuilder setFilesToBuild(NestedSet<Artifact> filesToBuild) {
     this.filesToBuild = filesToBuild;
-    return this;
-  }
-
-  /**
-   * Sets whether extra-action artifacts from dependencies are propagated. Extra actions on this
-   * rule's own actions are still created.
-   */
-  @CanIgnoreReturnValue
-  public RuleConfiguredTargetBuilder setPropagateExtraActionArtifacts(boolean propagate) {
-    this.propagateExtraActionArtifacts = propagate;
     return this;
   }
 

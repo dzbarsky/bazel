@@ -94,13 +94,18 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:serialization_module",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:write_statuses",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:long_version_getter_test_injection",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:lookup_result",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:remote_analysis_cache_client",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:remote_analysis_caching_services_supplier",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis/proto:analysis_cache_service_miss_reason_java_proto",
         "//src/main/java/com/google/devtools/build/lib/util:abrupt_exit_exception",
         "//src/main/java/com/google/devtools/build/lib/versioning:long_version_getter",
+        "//src/main/protobuf:file_invalidation_data_java_proto",
         "//third_party:guava",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
+        "@com_google_protobuf//:protobuf_java",
     ],
 )
 

@@ -36,6 +36,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
+import com.google.devtools.build.lib.analysis.ConfiguredObjectValue;
 import com.google.devtools.build.lib.concurrent.QuiescingFuture;
 import com.google.devtools.build.lib.profiler.CounterSeriesCollector;
 import com.google.devtools.build.lib.profiler.CounterSeriesTask;
@@ -44,6 +45,7 @@ import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNode;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNodeOrEmpty;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FutureFileOpNode;
+import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.serialization.AsyncSerializationTask;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueService;
 import com.google.devtools.build.lib.skyframe.serialization.FrontierNodeVersion;
@@ -352,9 +354,23 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
     AsyncSerializationTask keyResultTask =
         codecs.serializeMemoizedAsync(fingerprintValueService, key, /* profileCollector= */ null);
     fingerprintValueService.getExecutor().execute(keyResultTask);
+    Object value = nodeEntry.getValue();
+    if (value instanceof ConfiguredObjectValue configuredValue) {
+      ImmutableList<SkyKey> dependencies = configuredValue.getQueryDependencies(key);
+      if (dependencies == null) {
+        dependencies =
+            ImmutableSet.copyOf(nodeEntry.getDirectDeps()).stream()
+                .filter(
+                    dep ->
+                        dep.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
+                            || dep.functionName().equals(SkyFunctions.ASPECT)
+                            || dep.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION))
+                .collect(ImmutableList.toImmutableList());
+      }
+      value = new AnalysisCacheEntry(configuredValue, dependencies);
+    }
     AsyncSerializationTask valueResultTask =
-        codecs.serializeMemoizedAsync(
-            fingerprintValueService, nodeEntry.getValue(), profileCollector);
+        codecs.serializeMemoizedAsync(fingerprintValueService, value, profileCollector);
     fingerprintValueService.getExecutor().execute(valueResultTask);
 
     keyResultTask.addListener(

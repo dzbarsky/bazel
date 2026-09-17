@@ -18,6 +18,7 @@ import static java.util.Objects.requireNonNull;
 import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.AspectValue;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.skyframe.serialization.DependOnFutureShim.DefaultDependOnFutureShim;
 import com.google.devtools.build.lib.skyframe.serialization.DeserializedSkyValue;
@@ -29,6 +30,7 @@ import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.Re
 import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.RetrievalResult;
 import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.RetrievedValue;
 import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.SerializableSkyKeyComputeState;
+import com.google.devtools.build.lib.skyframe.serialization.analysis.AnalysisCacheEntry;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCacheReaderDepsProvider;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.proto.MissReason;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
@@ -96,6 +98,20 @@ public final class SkyValueRetrieverUtils {
       if (retrievalResult == Restart.RESTART) {
         state.addRestart();
       }
+    }
+
+    if (retrievalResult instanceof RetrievedValue(AnalysisCacheEntry entry)) {
+      retrievalResult =
+          new RetrievedValue(
+              switch (entry.value()) {
+                case RemoteConfiguredTargetValue target ->
+                    target.withQueryDependencies(key, entry.queryDependencies());
+                case AspectValue aspect ->
+                    aspect.withQueryDependencies(key, entry.queryDependencies());
+                default ->
+                    throw new IllegalStateException(
+                        "Unexpected analysis cache entry: " + entry.value());
+              });
     }
 
     if (retrievalResult instanceof RetrievedValue(SkyValue v)

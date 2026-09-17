@@ -17,10 +17,8 @@ package com.google.devtools.build.lib.rules.genquery;
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.ActionConflictException;
-import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
@@ -33,7 +31,6 @@ import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
 import com.google.devtools.build.lib.analysis.TargetAndConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
-import com.google.devtools.build.lib.analysis.test.InstrumentedFilesInfo;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
@@ -67,14 +64,11 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction;
-import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.io.IOException;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Objects;
+import java.util.List;
 import java.util.function.Function;
 import javax.annotation.Nullable;
 import net.starlark.java.syntax.ParserInput;
@@ -162,20 +156,30 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
     CqueryOptions options = parser.getOptions(CqueryOptions.class);
 
     SkyFunction.Environment env = ruleContext.getAnalysisEnvironment().getSkyframeEnv();
+    ImmutableList<ConfiguredTargetKey> rootKeys =
+        ruleContext.attributes().get("scope", BuildType.GENQUERY_SCOPE_TYPE_LIST).stream()
+            .distinct()
+            .map(
+                label ->
+                    ConfiguredTargetKey.builder()
+                        .setLabel(label)
+                        .setConfigurationKey(ruleContext.getConfiguration().getKey())
+                        .build())
+            .collect(ImmutableList.toImmutableList());
+    // Keep direct Skyframe edges for queries of this rule, but do not make scope targets ordinary
+    // prerequisites: their compatibility, visibility, and artifacts do not belong to the report.
+    var roots = env.getValuesAndExceptions(rootKeys);
+    for (ConfiguredTargetKey key : rootKeys) {
+      if (roots.get(key) == null) {
+        return null;
+      }
+    }
     GenCqueryScope scope;
     try {
       scope =
           (GenCqueryScope)
               env.getValueOrThrow(
-                  GenCqueryScope.Key.create(
-                      ruleContext.getPrerequisiteConfiguredTargets("scope").stream()
-                          .map(
-                              dep ->
-                                  ConfiguredTargetKey.fromConfiguredTarget(
-                                      dep.getConfiguredTarget()))
-                          .distinct()
-                          .collect(ImmutableList.toImmutableList())),
-                  GenCqueryScope.ScopeException.class);
+                  GenCqueryScope.Key.create(rootKeys), GenCqueryScope.ScopeException.class);
     } catch (GenCqueryScope.ScopeException e) {
       ruleContext.ruleError(e.getMessage());
       return null;
@@ -270,9 +274,6 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
     var files = NestedSetBuilder.create(Order.STABLE_ORDER, output);
     return new RuleConfiguredTargetBuilder(ruleContext)
         .setFilesToBuild(files)
-        // Scope dependencies contribute query metadata, not artifacts for consumers to build.
-        .addNativeDeclaredProvider(InstrumentedFilesInfo.EMPTY)
-        .setPropagateExtraActionArtifacts(false)
         .addProvider(
             RunfilesProvider.class,
             RunfilesProvider.simple(
@@ -284,20 +285,9 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
         .build();
   }
 
-  private static ImmutableMap<String, BuildConfigurationValue> configurations(
-      GenCqueryScope scope) {
-    ImmutableMap.Builder<String, BuildConfigurationValue> result = ImmutableMap.builder();
-    for (SkyValue value : scope.getValues().values()) {
-      if (value instanceof BuildConfigurationValue configuration) {
-        result.put(configuration.checksum(), configuration);
-      }
-    }
-    return result.buildOrThrow();
-  }
-
   /** Uses cquery's evaluator while resolving target literals exclusively within the snapshot. */
   private static final class ScopedEnvironment extends ConfiguredTargetQueryEnvironment {
-    private final ImmutableListMultimap<Label, CqueryNode> targetsByLabel;
+    private final GenCqueryScope scope;
     private final boolean strict;
 
     ScopedEnvironment(
@@ -309,8 +299,8 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
           /* keepGoing= */ false,
           events,
           CQUERY_FUNCTIONS,
-          topLevelConfigurations(ruleContext, scope),
-          configurations(scope),
+          topLevelConfigurations(scope),
+          scope.getConfigurations(),
           /* topLevelAspects= */ ImmutableMap.of(),
           new TargetPattern.Parser(
               PathFragment.EMPTY_FRAGMENT,
@@ -324,30 +314,24 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
               ruleContext.getAnalysisEnvironment().getStarlarkSemantics(),
               ruleContext.getRule().getPackageMetadata().repositoryMapping()));
       this.strict = ruleContext.attributes().get("strict", Type.BOOLEAN);
-      Map<ActionLookupKey, CqueryNode> targets = new LinkedHashMap<>();
-      for (SkyValue value : scope.getValues().values()) {
-        if (value instanceof ConfiguredTargetValue configured) {
-          CqueryNode target = configured.getConfiguredTarget();
-          targets.put(target.getLookupKey(), target);
-        }
-      }
-      ImmutableListMultimap.Builder<Label, CqueryNode> builder = ImmutableListMultimap.builder();
-      targets.values().forEach(target -> builder.put(target.getOriginalLabel(), target));
-      targetsByLabel = builder.orderValuesBy(TARGET_ORDER).build();
+      this.scope = scope;
     }
 
-    private static TopLevelConfigurations topLevelConfigurations(
-        RuleContext ruleContext, GenCqueryScope scope) {
+    private static TopLevelConfigurations topLevelConfigurations(GenCqueryScope scope) {
       ImmutableList.Builder<TargetAndConfiguration> roots = ImmutableList.builder();
-      for (var dep : ruleContext.getPrerequisiteConfiguredTargets("scope")) {
-        Label label = dep.getConfiguredTarget().getOriginalLabel();
+      for (ConfiguredTargetKey key : scope.getRootKeys()) {
+        ConfiguredTarget target =
+            ((ConfiguredTargetValue) scope.getValue(key)).getConfiguredTarget();
+        Label label = target.getOriginalLabel();
         try {
           roots.add(
               new TargetAndConfiguration(
                   ((PackageValue) scope.getValue(label.getPackageIdentifier()))
                       .getPackage()
                       .getTarget(label.getName()),
-                  dep.getConfiguration()));
+                  target.getConfigurationKey() == null
+                      ? null
+                      : (BuildConfigurationValue) scope.getValue(target.getConfigurationKey())));
         } catch (NoSuchTargetException e) {
           throw new IllegalStateException("analyzed scope target is missing: " + label, e);
         }
@@ -356,18 +340,24 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
     }
 
     @Override
-    @Nullable
-    protected CqueryNode getConfiguredTarget(
-        Label label, @Nullable BuildConfigurationValue configuration) {
-      // Resolve the already configured instance, including non-idempotent rule transitions and
-      // execution platform overrides, without synthesizing a fresh pre-transition SkyKey.
-      BuildConfigurationKey key = configuration == null ? null : configuration.getKey();
-      for (CqueryNode target : targetsByLabel.get(label)) {
-        if (Objects.equals(target.getConfigurationKey(), key)) {
-          return target;
+    protected ImmutableList<CqueryNode> getConfiguredTargets(
+        Label label, ConfigurationSelection selection) {
+      // A configuration can contain several execution-platform instances of the same label.
+      // Scan its candidates once, preserving full identities in the preferred configuration.
+      int bestPriority = Integer.MAX_VALUE;
+      ImmutableList.Builder<CqueryNode> result = ImmutableList.builder();
+      for (CqueryNode target : scope.getTargets(label)) {
+        int priority = selection.priority(target.getConfigurationKey());
+        if (priority == Integer.MAX_VALUE || priority > bestPriority) {
+          continue;
         }
+        if (priority < bestPriority) {
+          bestPriority = priority;
+          result = ImmutableList.builder();
+        }
+        result.add(target);
       }
-      return null;
+      return result.build();
     }
 
     @Override
@@ -382,7 +372,7 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
               Query.Code.SYNTAX_ERROR);
         }
         Label label = parsed.getSingleTargetLabel();
-        ImmutableList<CqueryNode> targets = targetsByLabel.get(label);
+        List<CqueryNode> targets = scope.getTargets(label);
         if (targets.isEmpty()) {
           String message = "target '" + label + "' is not within the scope of the query";
           if (strict) {
