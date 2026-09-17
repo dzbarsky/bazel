@@ -14,6 +14,8 @@
 package com.google.devtools.build.lib.query2.cquery;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
@@ -27,10 +29,12 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import javax.annotation.Nullable;
 
 /**
@@ -50,7 +54,7 @@ public abstract class CqueryThreadsafeCallback
   protected Writer printStream;
   // Skyframe calls incur a performance cost, even on cache hits. Consider this before exposing
   // direct executor access to child classes.
-  private final SkyframeExecutor skyframeExecutor;
+  private final Function<BuildConfigurationKey, BuildConfigurationValue> configurationGetter;
   private final Map<BuildConfigurationKey, BuildConfigurationValue> configCache =
       new ConcurrentHashMap<>();
   protected final ConfiguredTargetAccessor accessor;
@@ -58,7 +62,6 @@ public abstract class CqueryThreadsafeCallback
   private final List<String> result = new ArrayList<>();
   private final boolean uniquifyResults;
 
-  @SuppressWarnings("DefaultCharset")
   CqueryThreadsafeCallback(
       ExtendedEventHandler eventHandler,
       CqueryOptions options,
@@ -66,14 +69,31 @@ public abstract class CqueryThreadsafeCallback
       SkyframeExecutor skyframeExecutor,
       TargetAccessor<CqueryNode> accessor,
       boolean uniquifyResults) {
+    this(
+        eventHandler,
+        options,
+        out,
+        key -> skyframeExecutor.getConfiguration(eventHandler, key),
+        accessor,
+        uniquifyResults,
+        Charset.defaultCharset());
+  }
+
+  CqueryThreadsafeCallback(
+      ExtendedEventHandler eventHandler,
+      CqueryOptions options,
+      OutputStream out,
+      Function<BuildConfigurationKey, BuildConfigurationValue> configurationGetter,
+      TargetAccessor<CqueryNode> accessor,
+      boolean uniquifyResults,
+      Charset charset) {
     this.eventHandler = eventHandler;
     this.options = options;
     if (out != null) {
       this.outputStream = out;
-      // This code intentionally uses the platform default encoding.
-      this.printStream = new BufferedWriter(new OutputStreamWriter(out));
+      this.printStream = new BufferedWriter(new OutputStreamWriter(out, charset));
     }
-    this.skyframeExecutor = skyframeExecutor;
+    this.configurationGetter = configurationGetter;
     this.accessor = (ConfiguredTargetAccessor) accessor;
     this.uniquifyResults = uniquifyResults;
   }
@@ -85,6 +105,22 @@ public abstract class CqueryThreadsafeCallback
   @VisibleForTesting
   public List<String> getResult() {
     return result;
+  }
+
+  /**
+   * Formats and writes one target at a time, bounding the buffered output by the largest target's
+   * result. For callers that already order their results and do not need to deduplicate them.
+   */
+  public void processOutputAndWrite(Iterable<CqueryNode> targets)
+      throws IOException, InterruptedException {
+    Preconditions.checkState(!uniquifyResults && printStream != null && result.isEmpty());
+    for (CqueryNode target : targets) {
+      processOutput(ImmutableList.of(target));
+      for (String line : result) {
+        printStream.append(line).append(options.getLineTerminator());
+      }
+      result.clear();
+    }
   }
 
   @Override
@@ -107,8 +143,7 @@ public abstract class CqueryThreadsafeCallback
     if (configKey == null) {
       return null;
     }
-    return configCache.computeIfAbsent(
-        configKey, key -> skyframeExecutor.getConfiguration(eventHandler, key));
+    return configCache.computeIfAbsent(configKey, configurationGetter);
   }
 
   /**
