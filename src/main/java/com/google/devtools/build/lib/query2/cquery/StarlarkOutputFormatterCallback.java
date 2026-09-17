@@ -30,10 +30,14 @@ import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.server.FailureDetails.ConfigurableQuery;
 import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
+import com.google.devtools.build.lib.skyframe.config.BuildConfigurationKey;
 import com.google.devtools.common.options.OptionDefinition;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.charset.Charset;
 import java.util.Map;
+import java.util.function.Function;
+import javax.annotation.Nullable;
 import net.starlark.java.annot.Param;
 import net.starlark.java.annot.StarlarkMethod;
 import net.starlark.java.eval.Dict;
@@ -132,25 +136,51 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
       TargetAccessor<CqueryNode> accessor,
       StarlarkSemantics starlarkSemantics)
       throws QueryException, InterruptedException {
-    super(eventHandler, options, out, skyframeExecutor, accessor, /* uniquifyResults= */ false);
+    this(
+        eventHandler,
+        options,
+        out,
+        key -> skyframeExecutor.getConfiguration(eventHandler, key),
+        accessor,
+        starlarkSemantics,
+        readStarlarkFile(options),
+        Charset.defaultCharset());
+  }
+
+  /**
+   * Creates a formatter with tracked inputs supplied by the caller. In particular, this constructor
+   * never reads a path from {@code --starlark:file}.
+   */
+  public StarlarkOutputFormatterCallback(
+      ExtendedEventHandler eventHandler,
+      CqueryOptions options,
+      OutputStream out,
+      Function<BuildConfigurationKey, BuildConfigurationValue> configurationGetter,
+      TargetAccessor<CqueryNode> accessor,
+      StarlarkSemantics starlarkSemantics,
+      @Nullable ParserInput starlarkFile,
+      Charset charset)
+      throws QueryException, InterruptedException {
+    super(
+        eventHandler,
+        options,
+        out,
+        configurationGetter,
+        accessor,
+        /* uniquifyResults= */ false,
+        charset);
     this.starlarkSemantics = starlarkSemantics;
 
-    ParserInput input = null;
+    ParserInput input;
     String exceptionMessagePrefix;
-    if (!options.getFile().isEmpty()) {
+    if (starlarkFile != null) {
       if (!options.getExpr().isEmpty()) {
         throw new QueryException(
             "You must not specify both --starlark:expr and --starlark:file",
             Query.Code.ILLEGAL_FLAG_COMBINATION);
       }
       exceptionMessagePrefix = "invalid --starlark:file: ";
-      try {
-        input = ParserInput.readFile(options.getFile());
-      } catch (IOException ex) {
-        throw new QueryException(
-            exceptionMessagePrefix + "failed to read " + ex.getMessage(),
-            Query.Code.QUERY_FILE_READ_FAILURE);
-      }
+      input = starlarkFile;
     } else {
       exceptionMessagePrefix = "invalid --starlark:expr: ";
       String expr = options.getExpr().isEmpty() ? "str(target.label)" : options.getExpr();
@@ -209,6 +239,25 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
       throw new QueryException(
           exceptionMessagePrefix + ex.getMessageWithStack(),
           ConfigurableQuery.Code.STARLARK_EVAL_ERROR);
+    }
+  }
+
+  @Nullable
+  private static ParserInput readStarlarkFile(CqueryOptions options) throws QueryException {
+    if (options.getFile().isEmpty()) {
+      return null;
+    }
+    if (!options.getExpr().isEmpty()) {
+      throw new QueryException(
+          "You must not specify both --starlark:expr and --starlark:file",
+          Query.Code.ILLEGAL_FLAG_COMBINATION);
+    }
+    try {
+      return ParserInput.readFile(options.getFile());
+    } catch (IOException ex) {
+      throw new QueryException(
+          "invalid --starlark:file: failed to read " + ex.getMessage(),
+          Query.Code.QUERY_FILE_READ_FAILURE);
     }
   }
 

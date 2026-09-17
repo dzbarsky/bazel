@@ -300,7 +300,7 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
    * Returns the {@link CqueryNode} for the given label and configuration if it exists, else null.
    */
   @Nullable
-  private CqueryNode getConfiguredTarget(
+  protected CqueryNode getConfiguredTarget(
       Label label, @Nullable BuildConfigurationValue configuration) throws InterruptedException {
     BuildConfigurationKey configurationKey = configuration == null ? null : configuration.getKey();
     CqueryNode target =

@@ -175,7 +175,9 @@ public interface ConfiguredAspect extends ProviderCollection {
       if (!ruleContext.getConfiguration().getActionListeners().isEmpty()) {
         addProvider(
             createExtraActionProvider(
-                /* actionsWithoutExtraAction= */ ImmutableSet.of(), ruleContext));
+                /* actionsWithoutExtraAction= */ ImmutableSet.of(),
+                ruleContext,
+                /* propagateExtraActionArtifacts= */ true));
       }
 
       AnalysisEnvironment analysisEnvironment = ruleContext.getAnalysisEnvironment();

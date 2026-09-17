@@ -182,6 +182,7 @@ import com.google.devtools.build.lib.query2.common.QueryTransitivePackagePreload
 import com.google.devtools.build.lib.query2.common.UniverseScope;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.rules.AliasConfiguredTarget;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryScope;
 import com.google.devtools.build.lib.rules.genquery.GenQueryPackageProviderFactory;
 import com.google.devtools.build.lib.runtime.KeepGoingOption;
 import com.google.devtools.build.lib.runtime.KeepStateAfterBuildOption;
@@ -897,6 +898,10 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
             this::getExistingPackage));
     map.put(SkyFunctions.LOAD_ASPECTS, new LoadAspectsFunction());
     map.put(GenQueryPackageProviderFactory.GENQUERY_SCOPE, GenQueryPackageProviderFactory.FUNCTION);
+    map.put(
+        GenCqueryScope.FUNCTION_NAME,
+        new GenCqueryScope.Function(
+            () -> SkyframeExecutorWrappingWalkableGraph.of(this), this::tracksStateForIncrementality));
     map.put(
         SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING,
         new ActionLookupConflictFindingFunction(this::getRemoteAnalysisCacheReaderDepsProvider));
