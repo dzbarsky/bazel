@@ -16,8 +16,12 @@ package com.google.devtools.build.lib.rules.genquery;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
+import com.google.devtools.build.lib.skyframe.config.BuildConfigurationKey;
 import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.skyframe.AbstractSkyKey;
@@ -25,6 +29,7 @@ import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import java.util.Collections;
 import java.util.Comparator;
+import javax.annotation.Nullable;
 
 /**
  * Analysis dependencies of a configured query, outside the build's action dependency graph. Query
@@ -32,37 +37,56 @@ import java.util.Comparator;
  * set of Skyframe dependencies.
  */
 @AutoCodec
-public final class GenCqueryScopeKey
-    extends AbstractSkyKey.WithCachedHashCode<ImmutableList<ConfiguredTargetKey>> {
-  public static final SkyFunctionName FUNCTION_NAME =
-      SkyFunctionName.createHermetic("GENCQUERY_SCOPE");
-  private static final SkyKeyInterner<GenCqueryScopeKey> interner = SkyKey.newInterner();
+public final class GenCqueryKey extends AbstractSkyKey.WithCachedHashCode<GenCqueryKey.Request> {
+  public static final SkyFunctionName FUNCTION_NAME = SkyFunctionName.createHermetic("GENCQUERY");
+  private static final SkyKeyInterner<GenCqueryKey> interner = SkyKey.newInterner();
   // The standard ordering omits this bit, but a transition's result is not its incoming root.
   private static final Comparator<ConfiguredTargetKey> ROOT_ORDER =
       ConfiguredTargetKey.ORDERING.thenComparing(ConfiguredTargetKey::shouldApplyRuleTransition);
 
-  private GenCqueryScopeKey(ImmutableList<ConfiguredTargetKey> arg) {
-    super(arg);
+  /** Immutable inputs resolved and validated by the native rule. */
+  @AutoCodec
+  public record Request(
+      Label owner,
+      BuildConfigurationKey configuration,
+      ImmutableList<ConfiguredTargetKey> roots,
+      String expression,
+      ImmutableList<PackageIdentifier> targetPatternPackages,
+      ImmutableList<String> options,
+      @Nullable Artifact formatter,
+      boolean strict,
+      boolean compressedOutput) {
+    public Request {
+      roots = ImmutableList.sortedCopyOf(ROOT_ORDER, ImmutableSet.copyOf(roots));
+    }
+  }
+
+  private GenCqueryKey(Request request) {
+    super(request);
   }
 
   @VisibleForSerialization
   @AutoCodec.Instantiator
-  public static GenCqueryScopeKey create(ImmutableList<ConfiguredTargetKey> arg) {
-    return interner.intern(new GenCqueryScopeKey(ImmutableList.sortedCopyOf(ROOT_ORDER, arg)));
+  public static GenCqueryKey create(Request argument) {
+    return interner.intern(new GenCqueryKey(argument));
+  }
+
+  public ImmutableList<ConfiguredTargetKey> roots() {
+    return argument().roots();
   }
 
   /** Tests the original root key, before configuration trimming or rule transitions. */
   public boolean containsRoot(SkyKey key) {
     return key instanceof ConfiguredTargetKey configuredKey
-        && Collections.binarySearch(argument(), configuredKey, ROOT_ORDER) >= 0;
+        && Collections.binarySearch(roots(), configuredKey, ROOT_ORDER) >= 0;
   }
 
   /** Collects logical query edges for both local scope snapshots and cached analysis values. */
   public static ImmutableList<SkyKey> queryDependencies(Iterable<SkyKey> dependencies) {
     ImmutableSet.Builder<SkyKey> result = ImmutableSet.builder();
     for (SkyKey dependency : dependencies) {
-      if (dependency instanceof GenCqueryScopeKey scope) {
-        result.addAll(scope.argument());
+      if (dependency instanceof GenCqueryKey scope) {
+        result.addAll(scope.roots());
       } else if (dependency.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
           || dependency.functionName().equals(SkyFunctions.ASPECT)
           || dependency.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION)) {
@@ -79,7 +103,7 @@ public final class GenCqueryScopeKey
   }
 
   @Override
-  public SkyKeyInterner<GenCqueryScopeKey> getSkyKeyInterner() {
+  public SkyKeyInterner<GenCqueryKey> getSkyKeyInterner() {
     return interner;
   }
 

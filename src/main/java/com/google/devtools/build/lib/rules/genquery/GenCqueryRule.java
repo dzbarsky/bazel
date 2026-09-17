@@ -55,6 +55,8 @@ public final class GenCqueryRule implements RuleDefinition {
         root of this rule's repository, not its package. For example, <code>:b</code> in
         <code>a/BUILD</code> refers to <code>//:b</code>. Wildcard and recursive target patterns
         such as <code>//pkg:*</code>, <code>//pkg:all</code>, and <code>//pkg/...</code> are not allowed.
+        As with genquery, an absolute spelling such as <code>//pkg:all</code> can instead name an
+        individual existing target.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(attr("expression", STRING).mandatory())
         /* <!-- #BLAZE_RULE(gencquery).ATTRIBUTE(strict) -->
@@ -67,6 +69,7 @@ public final class GenCqueryRule implements RuleDefinition {
         The output format: <code>label</code> (the default), <code>label_kind</code>, or
         <code>starlark</code>. The <code>label</code> format includes each target's label and
         configuration identifier; <code>label_kind</code> also includes its kind.
+        As with genquery, labels use canonical repository names.
         The <code>starlark_expr</code> and <code>starlark_file</code> attributes can only be
         specified when this is <code>starlark</code>.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */

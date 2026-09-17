@@ -18,9 +18,11 @@ import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.actions.ActionConflictException;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.analysis.OutputGroupInfo;
@@ -32,11 +34,15 @@ import com.google.devtools.build.lib.analysis.RunfilesProvider;
 import com.google.devtools.build.lib.analysis.TargetAndConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
+import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.NoSuchTargetException;
@@ -50,36 +56,43 @@ import com.google.devtools.build.lib.query2.cquery.CqueryThreadsafeCallback;
 import com.google.devtools.build.lib.query2.cquery.LabelAndConfigurationOutputFormatterCallback;
 import com.google.devtools.build.lib.query2.cquery.StarlarkOutputFormatterCallback;
 import com.google.devtools.build.lib.query2.engine.Callback;
+import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
+import com.google.devtools.build.lib.query2.engine.QueryParser;
 import com.google.devtools.build.lib.query2.engine.QuerySyntaxException;
 import com.google.devtools.build.lib.query2.engine.QueryUtil;
+import com.google.devtools.build.lib.query2.engine.ThreadSafeOutputFormatterCallback;
 import com.google.devtools.build.lib.rules.genquery.GenQueryOutputStream.GenQueryResult;
 import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.PackageValue;
 import com.google.devtools.build.lib.skyframe.config.BuildConfigurationKey;
-import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.io.IOException;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.Function;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.StarlarkSemantics;
 import net.starlark.java.syntax.ParserInput;
 
 /**
  * Evaluates cquery over an explicitly scoped configured graph and registers a file write action.
  */
-public final class GenCquery implements RuleConfiguredTargetFactory {
-  private static final Comparator<CqueryNode> TARGET_ORDER =
-      Comparator.comparing((CqueryNode target) -> target.getOriginalLabel().toString())
-          .thenComparing(
+public final class GenCquery
+    implements RuleConfiguredTargetFactory, GenCqueryFunction.QueryEvaluator {
+  private static final ImmutableMap<String, QueryFunction> QUERY_FUNCTIONS =
+      Maps.uniqueIndex(ConfiguredTargetQueryEnvironment.FUNCTIONS, QueryFunction::getName);
+
+  private static final Comparator<CqueryNode> CONFIGURATION_ORDER =
+      Comparator.comparing(
               CqueryNode::getConfigurationChecksum,
               Comparator.nullsFirst(Comparator.naturalOrder()))
           .thenComparing(
@@ -153,7 +166,29 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
       ruleContext.attributeError("opts", "error while parsing cquery options: " + e.getMessage());
       return null;
     }
-    CqueryOptions options = parser.getOptions(CqueryOptions.class);
+
+    String expression = ruleContext.attributes().get("expression", Type.STRING);
+    var targetPatternPackages = ImmutableSet.<PackageIdentifier>builder();
+    try {
+      var patterns = new LinkedHashSet<String>();
+      QueryParser.parse(expression, QUERY_FUNCTIONS).collectTargetPatterns(patterns);
+      var targetParser =
+          new TargetPattern.Parser(
+              PathFragment.EMPTY_FRAGMENT,
+              ruleContext.getRepository(),
+              ruleContext.getRule().getPackageMetadata().repositoryMapping());
+      for (String pattern : patterns) {
+        TargetPattern parsed = targetParser.parse(pattern);
+        if (parsed.getType() == TargetPattern.Type.TARGETS_IN_PACKAGE
+            && (pattern.startsWith("//") || pattern.startsWith("@"))) {
+          // Resolve concrete names such as //pkg:all before applying strict scope filtering.
+          targetPatternPackages.add(parsed.getDirectory());
+        }
+      }
+    } catch (QuerySyntaxException | TargetParsingException e) {
+      ruleContext.ruleError("cquery failed: " + e.getMessage());
+      return null;
+    }
 
     SkyFunction.Environment env = ruleContext.getAnalysisEnvironment().getSkyframeEnv();
     ImmutableList<ConfiguredTargetKey> rootKeys =
@@ -166,107 +201,38 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
                         .setConfigurationKey(ruleContext.getConfiguration().getKey())
                         .build())
             .collect(ImmutableList.toImmutableList());
-    // The scope node tracks analysis dependencies without exposing their actions to build
-    // traversal. Query traversal separately exposes its declared roots as logical dependencies.
-    GenCqueryScope scope;
+    GenCqueryValue value;
     try {
-      scope =
-          (GenCqueryScope)
+      value =
+          (GenCqueryValue)
               env.getValueOrThrow(
-                  GenCqueryScopeKey.create(rootKeys), GenCqueryScope.ScopeException.class);
-    } catch (GenCqueryScope.ScopeException e) {
-      ruleContext.ruleError(e.getMessage());
+                  GenCqueryKey.create(
+                      new GenCqueryKey.Request(
+                          ruleContext.getLabel(),
+                          ruleContext.getConfiguration().getKey(),
+                          rootKeys,
+                          expression,
+                          ImmutableList.copyOf(targetPatternPackages.build().iterator()),
+                          ImmutableList.copyOf(parser.canonicalize()),
+                          source,
+                          ruleContext.attributes().get("strict", Type.BOOLEAN),
+                          ruleContext.attributes().get("compressed_output", Type.BOOLEAN))),
+                  GenCqueryFunction.QueryException.class);
+    } catch (GenCqueryFunction.QueryException e) {
+      if (e.attribute != null) {
+        ruleContext.attributeError(e.attribute, e.getMessage());
+      } else {
+        ruleContext.ruleError(e.getMessage());
+      }
       return null;
     }
-    if (scope == null) {
-      return null;
-    }
-
-    ParserInput starlarkFile = null;
-    if (source != null) {
-      // Reading a source during analysis must declare a Skyframe dependency on its contents.
-      FileValue file =
-          (FileValue)
-              env.getValue(
-                  FileValue.key(
-                      RootedPath.toRootedPath(
-                          source.getRoot().getRoot(), source.getRootRelativePath())));
-      if (file == null) {
-        return null;
-      }
-      if (!file.isFile()) {
-        ruleContext.attributeError("starlark_file", "must be an existing regular file");
-        return null;
-      }
-      try {
-        // Use the same byte-preserving strings as BUILD files, labels, and provider values.
-        starlarkFile =
-            ParserInput.fromCharArray(
-                FileSystemUtils.readContentAsLatin1(source.getPath()), source.getExecPathString());
-      } catch (IOException e) {
-        ruleContext.attributeError("starlark_file", "cannot read file: " + e.getMessage());
-        return null;
-      }
-    }
-
-    StoredEventHandler events = new StoredEventHandler();
-    GenQueryResult result;
-    try (ScopedEnvironment queryEnvironment =
-            new ScopedEnvironment(ruleContext, scope, options, events);
-        GenQueryOutputStream out =
-            new GenQueryOutputStream(
-                ruleContext.attributes().get("compressed_output", Type.BOOLEAN))) {
-      Function<BuildConfigurationKey, BuildConfigurationValue> configurations =
-          key -> (BuildConfigurationValue) scope.getValue(key);
-      // Write Bazel's internal byte strings without applying another UTF-8 encoding.
-      CqueryThreadsafeCallback formatter =
-          options.getOutputFormat().equals("starlark")
-              ? new StarlarkOutputFormatterCallback(
-                  events,
-                  options,
-                  out,
-                  configurations,
-                  queryEnvironment.getAccessor(),
-                  ruleContext.getAnalysisEnvironment().getStarlarkSemantics(),
-                  starlarkFile,
-                  starlarkFile == null ? "starlark_expr" : "starlark_file",
-                  ISO_8859_1)
-              : new LabelAndConfigurationOutputFormatterCallback(
-                  events,
-                  options,
-                  out,
-                  configurations,
-                  queryEnvironment.getAccessor(),
-                  options.getOutputFormat().equals("label_kind"),
-                  queryEnvironment.getLabelPrinter(),
-                  ISO_8859_1);
-      QueryExpression expression =
-          QueryExpression.parse(
-              ruleContext.attributes().get("expression", Type.STRING), queryEnvironment);
-      var targets = QueryUtil.newOrderedAggregateAllOutputFormatterCallback(queryEnvironment);
-      queryEnvironment.evaluateQuery(expression, targets);
-      formatter.start();
-      formatter.processOutputAndWrite(
-          expression.isTopLevelSomePathFunction()
-              ? targets.getResult()
-              : ImmutableList.sortedCopyOf(TARGET_ORDER, targets.getResult()));
-      formatter.close(/* failFast= */ events.hasErrors());
-      out.close();
-      result = out.getResult();
-    } catch (QueryException | QuerySyntaxException | IOException e) {
-      ruleContext.ruleError("cquery failed: " + e.getMessage());
-      return null;
-    } finally {
-      events.replayOn(ruleContext.getAnalysisEnvironment().getEventHandler());
-    }
-    if (events.hasErrors()) {
-      ruleContext.ruleError("cquery output could not be evaluated");
+    if (value == null) {
       return null;
     }
 
     Artifact output = ruleContext.createOutputArtifact();
     ruleContext.registerAction(
-        new GenQuery.QueryResultAction(ruleContext.getActionOwner(), output, result));
+        new GenQuery.QueryResultAction(ruleContext.getActionOwner(), output, value.getResult()));
     var files = NestedSetBuilder.create(Order.STABLE_ORDER, output);
     return new RuleConfiguredTargetBuilder(ruleContext)
         .setFilesToBuild(files)
@@ -281,13 +247,110 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
         .build();
   }
 
+  @Override
+  public GenQueryResult evaluate(
+      GenCqueryKey.Request request,
+      RepositoryMapping repositoryMapping,
+      StarlarkSemantics semantics,
+      GenCqueryScope scope,
+      @Nullable ParserInput starlarkFile,
+      ExtendedEventHandler eventHandler)
+      throws InterruptedException, GenCqueryFunction.QueryException {
+    OptionsParser parser =
+        OptionsParser.builder()
+            .optionsClasses(CqueryOptions.class)
+            .allowResidue(false)
+            .withConversionContext(
+                Label.RepoContext.of(request.owner().getRepository(), repositoryMapping))
+            .build();
+    try {
+      parser.parse(request.options());
+    } catch (OptionsParsingException e) {
+      throw new IllegalStateException("validated query options could not be parsed", e);
+    }
+    CqueryOptions options = parser.getOptions(CqueryOptions.class);
+    StoredEventHandler events = new StoredEventHandler();
+    GenQueryResult result;
+    try (ScopedEnvironment queryEnvironment =
+            new ScopedEnvironment(request, repositoryMapping, semantics, scope, options, events);
+        GenQueryOutputStream out = new GenQueryOutputStream(request.compressedOutput())) {
+      Function<BuildConfigurationKey, BuildConfigurationValue> configurations =
+          key -> (BuildConfigurationValue) scope.getValue(key);
+      // Write Bazel's internal byte strings without applying another UTF-8 encoding.
+      CqueryThreadsafeCallback formatter =
+          options.getOutputFormat().equals("starlark")
+              ? new StarlarkOutputFormatterCallback(
+                  events,
+                  options,
+                  out,
+                  configurations,
+                  queryEnvironment.getAccessor(),
+                  semantics,
+                  starlarkFile,
+                  starlarkFile == null ? "starlark_expr" : "starlark_file",
+                  ISO_8859_1)
+              : new LabelAndConfigurationOutputFormatterCallback(
+                  events,
+                  options,
+                  out,
+                  configurations,
+                  queryEnvironment.getAccessor(),
+                  options.getOutputFormat().equals("label_kind"),
+                  queryEnvironment.getLabelPrinter(),
+                  ISO_8859_1);
+      QueryExpression expression = QueryExpression.parse(request.expression(), queryEnvironment);
+      Iterable<CqueryNode> orderedTargets;
+      if (expression.isTopLevelSomePathFunction()) {
+        var targets = QueryUtil.newOrderedAggregateAllOutputFormatterCallback(queryEnvironment);
+        queryEnvironment.evaluateQuery(expression, targets);
+        orderedTargets = targets.getResult();
+      } else {
+        var targets = queryEnvironment.createThreadSafeMutableSet();
+        queryEnvironment.evaluateQuery(
+            expression,
+            new ThreadSafeOutputFormatterCallback<>() {
+              @Override
+              public void processOutput(Iterable<CqueryNode> partialResult) {
+                Iterables.addAll(targets, partialResult);
+              }
+            });
+        // Build each canonical label string once, and keep this sort-key cache out of formatting.
+        var labels = new HashMap<Label, String>();
+        for (CqueryNode target : targets) {
+          labels.computeIfAbsent(target.getOriginalLabel(), Label::toString);
+        }
+        orderedTargets =
+            ImmutableList.sortedCopyOf(
+                Comparator.comparing((CqueryNode target) -> labels.get(target.getOriginalLabel()))
+                    .thenComparing(CONFIGURATION_ORDER),
+                targets);
+      }
+      formatter.start();
+      formatter.processOutputAndWrite(orderedTargets);
+      formatter.close(/* failFast= */ events.hasErrors());
+      out.close();
+      result = out.getResult();
+    } catch (QueryException | QuerySyntaxException | IOException e) {
+      throw new GenCqueryFunction.QueryException("cquery failed: " + e.getMessage());
+    } finally {
+      events.replayOn(eventHandler);
+    }
+    if (events.hasErrors()) {
+      throw new GenCqueryFunction.QueryException("cquery output could not be evaluated");
+    }
+
+    return result;
+  }
+
   /** Uses cquery's evaluator while resolving target literals exclusively within the snapshot. */
   private static final class ScopedEnvironment extends ConfiguredTargetQueryEnvironment {
     private final GenCqueryScope scope;
     private final boolean strict;
 
     ScopedEnvironment(
-        RuleContext ruleContext,
+        GenCqueryKey.Request request,
+        RepositoryMapping repositoryMapping,
+        StarlarkSemantics semantics,
         GenCqueryScope scope,
         CqueryOptions options,
         StoredEventHandler events) {
@@ -299,17 +362,13 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
           scope.getConfigurations(),
           /* topLevelAspects= */ ImmutableMap.of(),
           new TargetPattern.Parser(
-              PathFragment.EMPTY_FRAGMENT,
-              ruleContext.getRepository(),
-              ruleContext.getRule().getPackageMetadata().repositoryMapping()),
+              PathFragment.EMPTY_FRAGMENT, request.owner().getRepository(), repositoryMapping),
           new PathPackageLocator(/* outputBase= */ null, ImmutableList.of(), ImmutableList.of()),
           () -> scope,
           options,
           /* topLevelArtifactContext= */ null,
-          options.getLabelPrinter(
-              ruleContext.getAnalysisEnvironment().getStarlarkSemantics(),
-              ruleContext.getRule().getPackageMetadata().repositoryMapping()));
-      this.strict = ruleContext.attributes().get("strict", Type.BOOLEAN);
+          options.getLabelPrinterLegacy(semantics));
+      this.strict = request.strict();
       this.scope = scope;
     }
 
@@ -361,13 +420,34 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
         QueryExpression owner, String pattern, Callback<CqueryNode> callback) {
       try {
         TargetPattern parsed = getPattern(pattern);
-        if (parsed.getType() != TargetPattern.Type.SINGLE_TARGET) {
+        Label label = null;
+        if (parsed.getType() == TargetPattern.Type.SINGLE_TARGET) {
+          label = parsed.getSingleTargetLabel();
+        } else if (parsed.getType() == TargetPattern.Type.TARGETS_IN_PACKAGE
+            && (pattern.startsWith("//") || pattern.startsWith("@"))) {
+          // Absolute wildcard spellings can name concrete targets, such as //pkg:all. Resolve
+          // that ambiguity from tracked package data before enforcing the configured scope.
+          PackageValue pkg = (PackageValue) scope.getValue(parsed.getDirectory());
+          String name =
+              Label.create(parsed.getDirectory(), pattern.substring(pattern.lastIndexOf(':') + 1))
+                  .getName();
+          var target = pkg == null ? null : pkg.getPackage().getTargets().get(name);
+          if (target != null) {
+            label = target.getLabel();
+            eventHandler.handle(
+                Event.warn(
+                    String.format(
+                        "The target pattern '%s' is ambiguous: ':%s' is both a wildcard, and the"
+                            + " name of an existing %s; using the latter interpretation",
+                        pattern, name, target.getTargetKind())));
+          }
+        }
+        if (label == null) {
           throw new QueryException(
               owner,
               "target patterns are not allowed in gencquery: " + pattern,
               Query.Code.SYNTAX_ERROR);
         }
-        Label label = parsed.getSingleTargetLabel();
         List<CqueryNode> targets = scope.getTargets(label);
         if (targets.isEmpty()) {
           String message = "target '" + label + "' is not within the scope of the query";
@@ -381,6 +461,9 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
       } catch (TargetParsingException e) {
         return immediateFailedFuture(
             new QueryException(owner, e.getMessage(), e.getDetailedExitCode().getFailureDetail()));
+      } catch (LabelSyntaxException e) {
+        return immediateFailedFuture(
+            new QueryException(owner, e.getMessage(), Query.Code.SYNTAX_ERROR));
       } catch (QueryException e) {
         return immediateFailedFuture(e);
       } catch (InterruptedException e) {

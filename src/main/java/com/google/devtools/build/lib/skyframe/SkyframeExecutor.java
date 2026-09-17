@@ -182,8 +182,9 @@ import com.google.devtools.build.lib.query2.common.QueryTransitivePackagePreload
 import com.google.devtools.build.lib.query2.common.UniverseScope;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.rules.AliasConfiguredTarget;
-import com.google.devtools.build.lib.rules.genquery.GenCqueryScope;
-import com.google.devtools.build.lib.rules.genquery.GenCqueryScopeKey;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryFunction;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryKey;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryValue;
 import com.google.devtools.build.lib.rules.genquery.GenQueryPackageProviderFactory;
 import com.google.devtools.build.lib.runtime.KeepGoingOption;
 import com.google.devtools.build.lib.runtime.KeepStateAfterBuildOption;
@@ -899,11 +900,16 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
             this::getExistingPackage));
     map.put(SkyFunctions.LOAD_ASPECTS, new LoadAspectsFunction());
     map.put(GenQueryPackageProviderFactory.GENQUERY_SCOPE, GenQueryPackageProviderFactory.FUNCTION);
-    map.put(
-        GenCqueryScopeKey.FUNCTION_NAME,
-        new GenCqueryScope.Function(
-            () -> SkyframeExecutorWrappingWalkableGraph.of(this),
-            this::tracksStateForIncrementality));
+    var configuredQueryRule = ruleClassProvider.getRuleClassMap().get("gencquery");
+    if (configuredQueryRule != null) {
+      map.put(
+          GenCqueryKey.FUNCTION_NAME,
+          new GenCqueryFunction(
+              (GenCqueryFunction.QueryEvaluator) configuredQueryRule.getConfiguredTargetFactory(),
+              () -> SkyframeExecutorWrappingWalkableGraph.of(this),
+              this::tracksStateForIncrementality,
+              cpuBoundSemaphore));
+    }
     map.put(
         SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING,
         new ActionLookupConflictFindingFunction(this::getRemoteAnalysisCacheReaderDepsProvider));
@@ -1198,7 +1204,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
 
   private static boolean isAnalysisPhaseKey(SkyKey key) {
     return (key instanceof ActionLookupKey && !(key instanceof ActionTemplateExpansionKey))
-        || key instanceof GenCqueryScopeKey;
+        || key instanceof GenCqueryKey;
   }
 
   protected SkyframeProgressReceiver newSkyframeProgressReceiver() {
@@ -1441,7 +1447,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       }
     }
     if (discardType.discardsAnalysis()) {
-      if (functionName.equals(SkyFunctions.CONFIGURED_TARGET)) {
+      if (entry.getValue() instanceof GenCqueryValue query) {
+        query.clear();
+      } else if (functionName.equals(SkyFunctions.CONFIGURED_TARGET)) {
         ConfiguredTargetValue ctValue = (ConfiguredTargetValue) entry.getValue();
         if (ctValue == null) {
           return false; // Not successfully analyzed.

@@ -18,6 +18,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.common.base.MoreObjects.ToStringHelper;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.BasicActionLookupValue;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
@@ -59,6 +60,24 @@ public class AspectValue extends BasicActionLookupValue
   // These variables are only non-final because they may be clear()ed to save memory. They are null
   // only after they are cleared except for transitivePackagesForPackageRootResolution.
   @Nullable private Aspect aspect;
+  @Nullable private transient QueryDependencyExclusions queryDependencyExclusions;
+
+  private record QueryDependencyExclusions(AspectKey key, ImmutableSet<SkyKey> edges) {}
+
+  /** Sets local edge metadata before this newly created value is published to Skyframe. */
+  public final void initializeQueryDependencyExclusions(AspectKey key, ImmutableSet<SkyKey> edges) {
+    if (!edges.isEmpty()) {
+      this.queryDependencyExclusions = new QueryDependencyExclusions(key, edges);
+    }
+  }
+
+  @Override
+  public final ImmutableSet<SkyKey> getQueryDependencyExclusions(SkyKey key) {
+    return queryDependencyExclusions != null && key.equals(queryDependencyExclusions.key())
+        ? queryDependencyExclusions.edges()
+        : ImmutableSet.of();
+  }
+
   @Nullable private TransitiveInfoProviderMap providers;
 
   // We store this in a boolean because the aspect variable from which it comes may be cleared to
@@ -117,6 +136,7 @@ public class AspectValue extends BasicActionLookupValue
     if (clearEverything) {
       aspect = null;
       providers = null;
+      queryDependencyExclusions = null;
     }
   }
 

@@ -70,12 +70,14 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
   @Test
   public void testGenCqueryScopeEdgesPreserveQueryDepth() throws Exception {
     writeFile("test/input.txt", "input");
+    writeFile("permissions/BUILD", "package_group(name = 'readers', packages = ['//...'])");
     writeFile(
         "test/BUILD",
         """
         filegroup(name = "leaf")
         filegroup(name = "root", srcs = [":leaf"])
-        gencquery(name = "q", expression = "deps(//test:root)", scope = [":root", "input.txt"])
+        gencquery(name = "q", expression = "deps(//test:root)", scope = [":root", "input.txt"],
+                 visibility = ["//permissions:readers"])
         gencquery(name = "other", expression = "//test:root", scope = [":root", "input.txt"])
         """);
     helper.setUniverseScope("//test:q,//test:other");
@@ -83,11 +85,18 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
         .containsExactly("//test:input.txt", "//test:q", "//test:other");
     helper.setQuerySettings(Setting.NO_IMPLICIT_DEPS);
     assertThat(evalToListOfStrings("deps(//test:q, 1)"))
-        .containsExactly("//test:q", "//test:root", "//test:input.txt");
+        .containsExactly("//test:q", "//test:root", "//test:input.txt", "//permissions:readers");
     assertThat(evalToListOfStrings("rdeps(deps(//test:q + //test:other), //test:leaf, 1)"))
         .containsExactly("//test:leaf", "//test:root");
     assertThat(evalToListOfStrings("rdeps(deps(//test:q + //test:other), //test:root, 1)"))
         .containsExactly("//test:root", "//test:q", "//test:other");
+
+    // The report can be invalidated independently of its still-clean query helper.
+    overwriteFile(
+        "permissions/BUILD", "package_group(name = 'readers', packages = ['//test/...'])");
+    helper.setUniverseScope("//test:root");
+    assertThat(evalToListOfStrings("rdeps(//test:root, //test:root)"))
+        .containsExactly("//test:root");
 
     // A later query can reanalyze the root while leaving the old reports and scope invalidated.
     overwriteFile("test/BUILD", "filegroup(name = 'root')");
