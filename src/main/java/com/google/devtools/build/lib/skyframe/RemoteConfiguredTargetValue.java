@@ -73,7 +73,7 @@ public sealed class RemoteConfiguredTargetValue
   }
 
   /** Attaches the edges belonging to this cache entry without modifying a shared decoded value. */
-  public RemoteConfiguredTargetValue withQueryDependencies(
+  RemoteConfiguredTargetValue withQueryDependencies(
       SkyKey key, ImmutableList<SkyKey> dependencies) {
     return configuredTarget instanceof RuleConfiguredTarget ruleConfiguredTarget
         ? new RemoteRuleConfiguredTargetValue(ruleConfiguredTarget, targetData, key, dependencies)

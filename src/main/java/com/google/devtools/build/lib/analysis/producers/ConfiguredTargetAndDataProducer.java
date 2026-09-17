@@ -97,6 +97,9 @@ public final class ConfiguredTargetAndDataProducer
 
   @Override
   public StateMachine step(Tasks tasks) throws InterruptedException {
+    if (baseTargetPrerequisitesSupplier == null) {
+      transitiveState.recordDirectQueryDependency(key);
+    }
     var cachedConfiguredTargetValue =
         baseTargetPrerequisitesSupplier == null
             ? null
