@@ -540,6 +540,10 @@ and registers an action that writes the result. It does not execute the scope
 targets' actions. Other rules can use `:app-deps.txt` in attributes such as
 `srcs` or `data`.
 
+Actions belonging only to the query scope are excluded from build action-conflict
+checks. If a scope target is also requested for building, its actions undergo the
+usual checks.
+
 Scope targets' compatibility and transitive visibility do not constrain consumers
 of the report. Incompatible targets are queryable, with only the dependencies
 Bazel analyzes when determining their incompatibility.
