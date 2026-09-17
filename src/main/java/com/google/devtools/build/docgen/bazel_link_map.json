@@ -11,6 +11,7 @@
     "common-definitions": "/reference/be/common-definitions",
     "config": "/rules/config",
     "configurable-attributes": "/docs/configurable-attributes",
+    "cquery": "/query/cquery",
     "exec-groups": "/reference/exec-groups",
     "functions": "/reference/be/functions",
     "guide": "/contribute/guide",
