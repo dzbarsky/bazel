@@ -433,7 +433,12 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       if (rdepKey instanceof GenCqueryScopeKey scope) {
         // Keep the key of each delegation layer: roots are declared in the incoming configuration.
         if (scope.containsRoot(dependencyKey)) {
-          Iterables.addAll(output, graph.getReverseDeps(ImmutableList.of(scope)).get(scope));
+          // Invalidated scopes outside this query's universe are absent from the lookup.
+          Iterables.addAll(
+              output,
+              graph
+                  .getReverseDeps(ImmutableList.of(scope))
+                  .getOrDefault(scope, ImmutableList.of()));
         }
         continue;
       }
@@ -763,14 +768,14 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
      */
     private final ImmutableSortedSet<BuildConfigurationValue> nonNullConfigs;
 
-    /** A list of null configured top-level targets. */
-    private final ImmutableList<Label> nulls;
+    /** Null-configured top-level targets, indexed for repeated configuration selection. */
+    private final ImmutableSet<Label> nulls;
 
     public TopLevelConfigurations(
         Collection<TargetAndConfiguration> topLevelTargetsAndConfigurations) {
       ImmutableMap.Builder<Label, BuildConfigurationValue> nonNullsBuilder =
           ImmutableMap.builderWithExpectedSize(topLevelTargetsAndConfigurations.size());
-      ImmutableList.Builder<Label> nullsBuilder = new ImmutableList.Builder<>();
+      ImmutableSet.Builder<Label> nullsBuilder = ImmutableSet.builder();
       for (TargetAndConfiguration targetAndConfiguration : topLevelTargetsAndConfigurations) {
         if (targetAndConfiguration.getConfiguration() == null) {
           nullsBuilder.add(targetAndConfiguration.getLabel());

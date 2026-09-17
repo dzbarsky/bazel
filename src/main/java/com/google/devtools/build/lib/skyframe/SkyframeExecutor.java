@@ -1172,11 +1172,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       EmittedEventState emittedEventState);
 
   /**
-   * Use the fact that analysis of a target must occur before execution of that target, and in a
-   * separate Skyframe evaluation, to avoid propagating events from configured target nodes (and
-   * more generally action lookup nodes) to action execution nodes. We take advantage of the fact
-   * that if a node depends on an action lookup node and is not itself an action lookup node, then
-   * it is an execution-phase node: the action lookup nodes are terminal in the analysis phase.
+   * Avoid propagating analysis events into action execution nodes. Analysis nodes include action
+   * lookup nodes (except action-template expansion) and configured-query scopes, which analyze
+   * targets without bringing their actions into the build's action dependency graph.
    *
    * <p>Skymeld: propagate events to BuildDriverKey nodes, since they cover both analysis &
    * execution.
@@ -1191,15 +1189,16 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         @Override
         public boolean shouldPropagate(SkyKey depKey, SkyKey primaryKey) {
           // Do not propagate events from analysis phase nodes to execution phase nodes.
-          return isAnalysisPhaseActionLookupKey(primaryKey)
-              || !isAnalysisPhaseActionLookupKey(depKey)
+          return isAnalysisPhaseKey(primaryKey)
+              || !isAnalysisPhaseKey(depKey)
               // Skymeld only.
               || primaryKey instanceof BuildDriverKey;
         }
       };
 
-  private static boolean isAnalysisPhaseActionLookupKey(SkyKey key) {
-    return key instanceof ActionLookupKey && !(key instanceof ActionTemplateExpansionKey);
+  private static boolean isAnalysisPhaseKey(SkyKey key) {
+    return (key instanceof ActionLookupKey && !(key instanceof ActionTemplateExpansionKey))
+        || key instanceof GenCqueryScopeKey;
   }
 
   protected SkyframeProgressReceiver newSkyframeProgressReceiver() {

@@ -247,7 +247,9 @@ public final class GenCquery implements RuleConfiguredTargetFactory {
       queryEnvironment.evaluateQuery(expression, targets);
       formatter.start();
       formatter.processOutputAndWrite(
-          ImmutableList.sortedCopyOf(TARGET_ORDER, targets.getResult()));
+          expression.isTopLevelSomePathFunction()
+              ? targets.getResult()
+              : ImmutableList.sortedCopyOf(TARGET_ORDER, targets.getResult()));
       formatter.close(/* failFast= */ events.hasErrors());
       out.close();
       result = out.getResult();
