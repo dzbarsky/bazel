@@ -366,8 +366,12 @@ public class DiskCacheClient {
     return immediateFuture(ImmutableSet.copyOf(digests));
   }
 
-  public Path getTempPath() {
-    return tmpRoot.getChild(UUID.randomUUID().toString());
+  public Path getTempPath() throws IOException {
+    String name = UUID.randomUUID().toString();
+    // Spread concurrent writes across directories to reduce directory-lock contention.
+    Path directory = tmpRoot.getChild(name.substring(0, 1));
+    directory.createDirectoryAndParents();
+    return directory.getChild(name);
   }
 
   public Path toPath(Digest digest, Store store) {
