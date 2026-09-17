@@ -68,6 +68,29 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTest {
   @Test
+  public void testGenCqueryScopeEdgesPreserveQueryDepth() throws Exception {
+    writeFile("test/input.txt", "input");
+    writeFile(
+        "test/BUILD",
+        """
+        filegroup(name = "leaf")
+        filegroup(name = "root", srcs = [":leaf"])
+        gencquery(name = "q", expression = "deps(//test:root)", scope = [":root", "input.txt"])
+        gencquery(name = "other", expression = "//test:root", scope = [":root", "input.txt"])
+        """);
+    helper.setUniverseScope("//test:q,//test:other");
+    assertThat(evalToListOfStrings("rdeps(deps(//test:q + //test:other), //test:input.txt, 1)"))
+        .containsExactly("//test:input.txt", "//test:q", "//test:other");
+    helper.setQuerySettings(Setting.NO_IMPLICIT_DEPS);
+    assertThat(evalToListOfStrings("deps(//test:q, 1)"))
+        .containsExactly("//test:q", "//test:root", "//test:input.txt");
+    assertThat(evalToListOfStrings("rdeps(deps(//test:q + //test:other), //test:leaf, 1)"))
+        .containsExactly("//test:leaf", "//test:root");
+    assertThat(evalToListOfStrings("rdeps(deps(//test:q + //test:other), //test:root, 1)"))
+        .containsExactly("//test:root", "//test:q", "//test:other");
+  }
+
+  @Test
   public void testConfigurationRespected() throws Exception {
     writeBuildFilesWithConfigurableAttributesUnconditionally();
     assertThat(eval("deps(//configurable:main) ^ //configurable:adep")).isEmpty();
