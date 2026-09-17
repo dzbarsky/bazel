@@ -77,6 +77,7 @@ final class PersistentStringIndexer implements StringIndexer {
   // synchronized blocks. Reads are done lock-free.
   private final PersistentIndexMap stringToInt;
   private volatile AtomicReferenceArray<String> intToString;
+  private boolean dirty;
 
   private PersistentStringIndexer(
       PersistentIndexMap stringToInt, AtomicReferenceArray<String> intToString) {
@@ -88,6 +89,7 @@ final class PersistentStringIndexer implements StringIndexer {
   public void clear() {
     lock.lock();
     try {
+      dirty = true;
       stringToInt.clear();
       intToString = new AtomicReferenceArray<>(INITIAL_CAPACITY);
     } finally {
@@ -114,6 +116,7 @@ final class PersistentStringIndexer implements StringIndexer {
       if (existing != null) {
         return existing; // Another thread won the race.
       }
+      dirty = true;
       int capacity = intToString.length();
       if (i == capacity) {
         intToString = copyOf(intToString, capacity * 2);
@@ -154,7 +157,17 @@ final class PersistentStringIndexer implements StringIndexer {
   long save() throws IOException {
     lock.lock();
     try {
-      return stringToInt.save();
+      if (!dirty) {
+        long size = stringToInt.persistedSize();
+        if (size > 0) {
+          return size;
+        }
+      }
+      // A failed first save can leave a data file but still need journal cleanup.
+      dirty = true;
+      long size = stringToInt.save();
+      dirty = false;
+      return size;
     } finally {
       lock.unlock();
     }
@@ -244,6 +257,10 @@ final class PersistentStringIndexer implements StringIndexer {
     @Override
     public Integer remove(Object object) {
       throw new UnsupportedOperationException();
+    }
+
+    long persistedSize() throws IOException {
+      return cacheSize();
     }
 
     void flush() {

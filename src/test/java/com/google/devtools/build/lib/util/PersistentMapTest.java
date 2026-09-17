@@ -96,6 +96,18 @@ public final class PersistentMapTest {
   }
 
   @Test
+  public void flushWithoutUpdatesDoesNotCreateJournal() throws Exception {
+    map.flushJournal();
+    assertThat(journalFile.exists()).isFalse();
+    map.put("foo", "bar");
+    assertThat(journalFile.exists()).isTrue();
+    map.save();
+    assertThat(journalFile.exists()).isFalse();
+    map.flushJournal();
+    assertThat(journalFile.exists()).isFalse();
+  }
+
+  @Test
   public void map() throws Exception {
     createMap();
     map.put("foo", "bar");

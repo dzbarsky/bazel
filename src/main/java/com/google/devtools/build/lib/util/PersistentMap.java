@@ -185,6 +185,9 @@ public abstract class PersistentMap<K, V> extends ForwardingConcurrentMap<K, V> 
 
   /** Flushes the in-memory journal to disk. */
   public synchronized void flushJournal() {
+    if (journal.isEmpty()) {
+      return;
+    }
     // Append to a preexisting journal file, which may have been left around after the last save()
     // because shouldKeepJournal() was true.
     try (var journalOut = codec.createWriter(journalFile, version, /* overwrite= */ false)) {

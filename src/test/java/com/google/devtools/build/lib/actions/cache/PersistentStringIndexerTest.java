@@ -182,6 +182,73 @@ public final class PersistentStringIndexerTest {
   }
 
   @Test
+  public void testUnchangedIndexSaveDoesNotRewriteDataFile() throws Exception {
+    assertIndex(0, "entry");
+    long size = indexer.save();
+    assertThat(journalPath.exists()).isFalse();
+    dataPath.setLastModifiedTime(1L);
+
+    indexer.flush();
+    assertThat(indexer.save()).isEqualTo(size);
+    assertThat(dataPath.getLastModifiedTime()).isEqualTo(1L);
+    assertThat(journalPath.exists()).isFalse();
+
+    indexer = PersistentStringIndexer.create(dataPath, journalPath, clock);
+    assertSize(1);
+    assertContent();
+    assertThat(journalPath.exists()).isFalse();
+  }
+
+  @Test
+  public void testFailedClearIsReportedAndRetried() throws Exception {
+    assertIndex(0, "before");
+    indexer.save();
+    dataPath.getParentDirectory().getChild("test.tmp").createDirectory();
+
+    indexer.clear();
+    assertThrows(IOException.class, () -> indexer.save());
+    indexer.save();
+
+    indexer = PersistentStringIndexer.create(dataPath, journalPath, clock);
+    assertSize(0);
+    assertThat(indexer.getIndex("before")).isNull();
+  }
+
+  @Test
+  public void testFailedJournalFlushPersistsNewStringOnSaveRetry() throws Exception {
+    assertIndex(0, "existing");
+    indexer.save();
+    journalPath.createDirectoryAndParents();
+
+    clock.advance(4);
+    assertIndex(1, "added");
+    assertThrows(IOException.class, () -> indexer.save());
+
+    assertThat(journalPath.delete()).isTrue();
+    indexer.save();
+    indexer = PersistentStringIndexer.create(dataPath, journalPath, clock);
+    assertThat(indexer.getIndex("existing")).isEqualTo(0);
+    assertThat(indexer.getIndex("added")).isEqualTo(1);
+  }
+
+  @Test
+  public void testFailedFirstSaveRetriesJournalCleanup() throws Exception {
+    journalPath.createDirectoryAndParents();
+    Path blocker = journalPath.getChild("blocker");
+    FileSystemUtils.writeContentAsLatin1(blocker, "");
+
+    assertThrows(IOException.class, () -> indexer.save());
+    assertThat(dataPath.exists()).isTrue();
+    assertThrows(IOException.class, () -> indexer.save());
+
+    assertThat(blocker.delete()).isTrue();
+    indexer.save();
+    assertThat(journalPath.exists()).isFalse();
+    indexer = PersistentStringIndexer.create(dataPath, journalPath, clock);
+    assertSize(0);
+  }
+
+  @Test
   public void testJournalRecoveryWithoutMainDataFile() throws Exception {
     assertThat(dataPath.exists()).isFalse();
     assertThat(journalPath.exists()).isFalse();
