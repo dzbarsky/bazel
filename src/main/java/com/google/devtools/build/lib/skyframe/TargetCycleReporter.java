@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.PackageGroup;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.pkgcache.PackageProvider;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryKey;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.skyframe.CycleInfo;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -46,6 +47,25 @@ class TargetCycleReporter extends AbstractLabelCycleReporter {
 
   TargetCycleReporter(PackageProvider packageProvider) {
     super(packageProvider);
+  }
+
+  @Override
+  public boolean maybeReportCycle(
+      SkyKey topLevelKey,
+      CycleInfo cycleInfo,
+      boolean alreadyReported,
+      ExtendedEventHandler eventHandler) {
+    if (Iterables.any(
+        Iterables.concat(cycleInfo.getPathToCycle(), cycleInfo.getCycle()),
+        key -> key instanceof GenCqueryKey)) {
+      // Scope nodes group analysis dependencies; diagnostics should show the target edges they
+      // represent. A scope can occur both on the path to a cycle and inside a query's own cycle.
+      cycleInfo =
+          CycleInfo.createCycleInfo(
+              Iterables.filter(cycleInfo.getPathToCycle(), key -> !(key instanceof GenCqueryKey)),
+              Iterables.filter(cycleInfo.getCycle(), key -> !(key instanceof GenCqueryKey)));
+    }
+    return super.maybeReportCycle(topLevelKey, cycleInfo, alreadyReported, eventHandler);
   }
 
   @Override

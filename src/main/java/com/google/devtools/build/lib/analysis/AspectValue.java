@@ -18,6 +18,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.common.base.MoreObjects.ToStringHelper;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.BasicActionLookupValue;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
@@ -27,6 +28,7 @@ import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.serialization.DeserializedSkyValue;
 import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.skyframe.SkyKey;
 import javax.annotation.Nullable;
 
 /** An aspect in the context of the Skyframe graph. */
@@ -58,6 +60,24 @@ public class AspectValue extends BasicActionLookupValue
   // These variables are only non-final because they may be clear()ed to save memory. They are null
   // only after they are cleared except for transitivePackagesForPackageRootResolution.
   @Nullable private Aspect aspect;
+  @Nullable private transient QueryDependencyExclusions queryDependencyExclusions;
+
+  private record QueryDependencyExclusions(AspectKey key, ImmutableSet<SkyKey> edges) {}
+
+  /** Sets local edge metadata before this newly created value is published to Skyframe. */
+  public final void initializeQueryDependencyExclusions(AspectKey key, ImmutableSet<SkyKey> edges) {
+    if (!edges.isEmpty()) {
+      this.queryDependencyExclusions = new QueryDependencyExclusions(key, edges);
+    }
+  }
+
+  @Override
+  public final ImmutableSet<SkyKey> getQueryDependencyExclusions(SkyKey key) {
+    return queryDependencyExclusions != null && key.equals(queryDependencyExclusions.key())
+        ? queryDependencyExclusions.edges()
+        : ImmutableSet.of();
+  }
+
   @Nullable private TransitiveInfoProviderMap providers;
 
   // We store this in a boolean because the aspect variable from which it comes may be cleared to
@@ -116,6 +136,7 @@ public class AspectValue extends BasicActionLookupValue
     if (clearEverything) {
       aspect = null;
       providers = null;
+      queryDependencyExclusions = null;
     }
   }
 
@@ -210,5 +231,72 @@ public class AspectValue extends BasicActionLookupValue
   public static boolean isForAliasTarget(AspectValue aspectValue) {
     return aspectValue instanceof AspectValueForAlias
         || aspectValue instanceof AspectValueWithTransitivePackagesForAlias;
+  }
+
+  /** Attaches the edges belonging to this cache entry without modifying a shared decoded value. */
+  public final AspectValue withQueryDependencies(SkyKey key, ImmutableList<SkyKey> dependencies) {
+    return isForAliasTarget(this)
+        ? new RemoteAspectValueForAlias(this, key, dependencies)
+        : new RemoteAspectValue(this, key, dependencies);
+  }
+
+  private static final class RemoteAspectValue extends AspectValue implements DeserializedSkyValue {
+    private final SkyKey queryKey;
+    @Nullable private ImmutableList<SkyKey> queryDependencies;
+
+    private RemoteAspectValue(AspectValue value, SkyKey key, ImmutableList<SkyKey> dependencies) {
+      super(
+          value.getActions(),
+          value.getAspect(),
+          value.getProviders(),
+          value.writesOutputToMasterLog);
+      this.queryKey = key;
+      this.queryDependencies = dependencies;
+    }
+
+    @Override
+    @Nullable
+    public ImmutableList<SkyKey> getQueryDependencies(SkyKey key) {
+      return key.equals(queryKey) ? queryDependencies : null;
+    }
+
+    @Override
+    public void clear(boolean clearEverything) {
+      super.clear(clearEverything);
+      if (clearEverything) {
+        queryDependencies = null;
+      }
+    }
+  }
+
+  private static final class RemoteAspectValueForAlias extends AspectValueForAlias
+      implements DeserializedSkyValue {
+    private final SkyKey queryKey;
+    @Nullable private ImmutableList<SkyKey> queryDependencies;
+
+    private RemoteAspectValueForAlias(
+        AspectValue value, SkyKey key, ImmutableList<SkyKey> dependencies) {
+      super(
+          value.getActions(),
+          value.getAspect(),
+          value.getProviders(),
+          value.writesOutputToMasterLog);
+      this.queryKey = key;
+      this.queryDependencies = dependencies;
+    }
+
+    @Override
+    @Nullable
+    public ImmutableList<SkyKey> getQueryDependencies(SkyKey key) {
+      return key.equals(queryKey) ? queryDependencies : null;
+    }
+
+    @Override
+    public void clear(boolean clearEverything) {
+      super.clear(clearEverything);
+      if (clearEverything) {
+        queryDependencies = null;
+      }
+    }
   }
 }

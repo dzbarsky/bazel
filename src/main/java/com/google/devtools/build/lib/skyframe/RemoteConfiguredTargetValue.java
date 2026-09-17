@@ -34,6 +34,7 @@ import com.google.devtools.build.lib.skyframe.serialization.DeferredObjectCodec;
 import com.google.devtools.build.lib.skyframe.serialization.DeserializedSkyValue;
 import com.google.devtools.build.lib.skyframe.serialization.SerializationContext;
 import com.google.devtools.build.lib.skyframe.serialization.SerializationException;
+import com.google.devtools.build.skyframe.SkyKey;
 import com.google.errorprone.annotations.Keep;
 import com.google.protobuf.CodedInputStream;
 import com.google.protobuf.CodedOutputStream;
@@ -57,9 +58,32 @@ public sealed class RemoteConfiguredTargetValue
   @Nullable // Null after clearing.
   private TargetData targetData;
 
-  private RemoteConfiguredTargetValue(ConfiguredTarget configuredTarget, TargetData targetData) {
+  @Nullable private final SkyKey queryKey;
+  @Nullable private ImmutableList<SkyKey> queryDependencies;
+
+  private RemoteConfiguredTargetValue(
+      ConfiguredTarget configuredTarget,
+      TargetData targetData,
+      @Nullable SkyKey queryKey,
+      @Nullable ImmutableList<SkyKey> queryDependencies) {
     this.configuredTarget = configuredTarget;
     this.targetData = targetData;
+    this.queryKey = queryKey;
+    this.queryDependencies = queryDependencies;
+  }
+
+  /** Attaches the edges belonging to this cache entry without modifying a shared decoded value. */
+  RemoteConfiguredTargetValue withQueryDependencies(
+      SkyKey key, ImmutableList<SkyKey> dependencies) {
+    return configuredTarget instanceof RuleConfiguredTarget ruleConfiguredTarget
+        ? new RemoteRuleConfiguredTargetValue(ruleConfiguredTarget, targetData, key, dependencies)
+        : new RemoteConfiguredTargetValue(configuredTarget, targetData, key, dependencies);
+  }
+
+  @Override
+  @Nullable
+  public final ImmutableList<SkyKey> getQueryDependencies(SkyKey key) {
+    return key.equals(queryKey) ? queryDependencies : null;
   }
 
   @Nullable // Null after clearing everything.
@@ -79,6 +103,7 @@ public sealed class RemoteConfiguredTargetValue
     if (clearEverything) {
       configuredTarget = null;
       targetData = null;
+      queryDependencies = null;
     }
   }
 
@@ -101,8 +126,11 @@ public sealed class RemoteConfiguredTargetValue
     private final ImmutableList<ActionAnalysisMetadata> actions;
 
     RemoteRuleConfiguredTargetValue(
-        RuleConfiguredTarget ruleConfiguredTarget, TargetData targetData) {
-      super(ruleConfiguredTarget, targetData);
+        RuleConfiguredTarget ruleConfiguredTarget,
+        TargetData targetData,
+        @Nullable SkyKey queryKey,
+        @Nullable ImmutableList<SkyKey> queryDependencies) {
+      super(ruleConfiguredTarget, targetData, queryKey, queryDependencies);
       this.actions = ruleConfiguredTarget.getActions();
     }
 
@@ -208,8 +236,8 @@ public sealed class RemoteConfiguredTargetValue
         checkNotNull(configuredTarget);
         checkNotNull(targetData);
         return configuredTarget instanceof RuleConfiguredTarget ruleConfiguredTarget
-            ? new RemoteRuleConfiguredTargetValue(ruleConfiguredTarget, targetData)
-            : new RemoteConfiguredTargetValue(configuredTarget, targetData);
+            ? new RemoteRuleConfiguredTargetValue(ruleConfiguredTarget, targetData, null, null)
+            : new RemoteConfiguredTargetValue(configuredTarget, targetData, null, null);
       }
 
       private static void setConfiguredTarget(DeserializationBuilder builder, Object value) {

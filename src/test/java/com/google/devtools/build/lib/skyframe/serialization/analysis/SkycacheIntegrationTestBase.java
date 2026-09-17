@@ -342,21 +342,19 @@ project = project_pb2.Project.create(project_directories = []) # empty
         .containsAtLeast(
             "com.google.devtools.build.lib.actions.Artifact.DerivedArtifact",
             "com.google.devtools.build.lib.actions.Artifact.SourceArtifact",
-            "com.google.devtools.build.lib.analysis.ConfiguredTargetValue",
+            "com.google.devtools.build.lib.skyframe.serialization.analysis.AnalysisCacheEntry",
             "com.google.devtools.build.lib.cmdline.Label",
             "java.lang.Object[]");
 
     assertWithMessage(
             "ConfiguredTargetValue subtypes should be represented in the profile as"
                 + " ConfiguredTargetValue")
-        .that(topLevelClassNames)
-        .doesNotContain("com.google.devtools.build.lib.skyframe.RuleConfiguredTargetValue");
-
-    assertWithMessage(
-            "ConfiguredTargetValue subtypes should be represented in the profile as"
-                + " ConfiguredTargetValue")
-        .that(topLevelClassNames)
-        .doesNotContain("com.google.devtools.build.lib.skyframe.NonRuleConfiguredTargetValue");
+        .that(classNames.values())
+        .contains("com.google.devtools.build.lib.analysis.ConfiguredTargetValue");
+    assertThat(classNames.values())
+        .containsNoneOf(
+            "com.google.devtools.build.lib.skyframe.RuleConfiguredTargetValue",
+            "com.google.devtools.build.lib.skyframe.NonRuleConfiguredTargetValue");
   }
 
   @Override
@@ -471,6 +469,110 @@ genrule(
     assertUploadSuccess("//foo:A");
     var exception = assertThrows(AbruptExitException.class, () -> buildTarget("//foo:A"));
     assertThat(exception).hasMessageThat().contains(BuildView.UPLOAD_BUILDS_MUST_BE_COLD);
+  }
+
+  @Test
+  public void gencqueryIncludesDependenciesOfCachedReports() throws Exception {
+    write(
+        "scope/BUILD",
+        "package(default_visibility = ['//visibility:public'])",
+        "filegroup(name = 'leaf')",
+        "filegroup(name = 'root', srcs = [':leaf'])",
+        "gencquery(name = 'inner', expression = 'deps(//scope:root)', scope = [':root'])");
+    write(
+        "queries/BUILD",
+        "gencquery(name = 'seed', expression = '//scope:inner', scope = ['//scope:inner'])",
+        "gencquery(name = 'report', expression = 'filter(\"^//scope:\", deps(//scope:inner))',"
+            + " scope = ['//scope:inner'], output = 'starlark')");
+    addOptions("--experimental_active_directories=queries");
+    assertUploadSuccess("//queries:seed");
+    getSkyframeExecutor().resetEvaluator();
+    assertDownloadSuccess("//queries:report");
+    assertThat(
+            getCommandEnvironment().getRemoteAnalysisCachingEventListener().getCacheHits().stream()
+                .filter(key -> key instanceof ActionLookupKey)
+                .map(key -> ((ActionLookupKey) key).getLabel()))
+        .contains(parseCanonicalUnchecked("//scope:inner"));
+    assertThat(
+            readContentAsByteArray(getArtifacts("//queries:report").iterator().next())
+                .toStringUtf8())
+        .isEqualTo("@@//scope:inner\n@@//scope:leaf\n@@//scope:root\n");
+  }
+
+  @Test
+  public void gencqueryIncludesCachedAspectAndAliasDependencies() throws Exception {
+    write(
+        "scope/defs.bzl",
+        """
+        def _aspect_impl(target, ctx):
+            return []
+        hidden = aspect(implementation = _aspect_impl, attrs = {
+            "_dep": attr.label(default = "//scope:hidden"),
+        })
+        def _impl(ctx):
+            return []
+        root = rule(implementation = _impl, attrs = {
+            "dep": attr.label(aspects = [hidden]),
+        })
+        """);
+    write(
+        "scope/BUILD",
+        """
+        load(":defs.bzl", "root")
+        package(default_visibility = ["//visibility:public"])
+        filegroup(name = "leaf")
+        filegroup(name = "hidden")
+        alias(name = "alias", actual = ":leaf")
+        root(name = "root", dep = ":alias")
+        """);
+    write(
+        "queries/BUILD",
+        """
+        gencquery(name = "forward", expression = "filter('^//scope:', deps(//scope:root))",
+                 scope = ["//scope:root"], output = "starlark",
+                 starlark_expr = "str(target.label) if hasattr(target, 'label') else 'aspect'",
+                 opts = ["--experimental_explicit_aspects"])
+        gencquery(name = "reverse",
+                 expression = "rdeps(deps(//scope:root), //scope:hidden)",
+                 scope = ["//scope:root"], output = "starlark")
+        """);
+    // Upload the entire scope, including aspects, before either report has been analyzed.
+    addOptions("--experimental_active_directories=");
+    assertUploadSuccess("//scope:root");
+    addOptions(OFF_MODE_OPTION);
+    buildTarget("//queries:forward", "//queries:reverse");
+    var forward = readContentAsByteArray(getArtifacts("//queries:forward").iterator().next());
+    var reverse = readContentAsByteArray(getArtifacts("//queries:reverse").iterator().next());
+    assertThat(forward.toStringUtf8()).contains("@@//scope:hidden\n");
+    assertThat(reverse.toStringUtf8()).contains("@@//scope:root\n");
+
+    getSkyframeExecutor().resetEvaluator();
+    assertDownloadSuccess("//queries:forward", "//queries:reverse");
+    assertThat(
+            getCommandEnvironment().getRemoteAnalysisCachingEventListener().getCacheHits().stream()
+                .map(key -> key.functionName()))
+        .contains(SkyFunctions.ASPECT);
+    assertThat(readContentAsByteArray(getArtifacts("//queries:forward").iterator().next()))
+        .isEqualTo(forward);
+    assertThat(readContentAsByteArray(getArtifacts("//queries:reverse").iterator().next()))
+        .isEqualTo(reverse);
+
+    // The reports themselves can also be restored as ordinary cached build outputs.
+    getSkyframeExecutor().resetEvaluator();
+    assertUploadSuccess("//queries:forward", "//queries:reverse");
+    getSkyframeExecutor().resetEvaluator();
+    assertDownloadSuccess("//queries:forward", "//queries:reverse");
+    assertThat(
+            getCommandEnvironment().getRemoteAnalysisCachingEventListener().getCacheHits().stream()
+                .filter(key -> key instanceof ActionLookupKey)
+                .map(key -> ((ActionLookupKey) key).getLabel()))
+        .containsAtLeast(
+            parseCanonicalUnchecked("//queries:forward"),
+            parseCanonicalUnchecked("//queries:reverse"));
+    assertThat(readContentAsByteArray(getArtifacts("//queries:forward").iterator().next()))
+        .isEqualTo(forward);
+    assertThat(readContentAsByteArray(getArtifacts("//queries:reverse").iterator().next()))
+        .isEqualTo(reverse);
   }
 
   @Test

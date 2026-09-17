@@ -18,7 +18,9 @@ import static java.util.Objects.requireNonNull;
 import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.AspectValue;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.serialization.DependOnFutureShim.DefaultDependOnFutureShim;
 import com.google.devtools.build.lib.skyframe.serialization.DeserializedSkyValue;
 import com.google.devtools.build.lib.skyframe.serialization.SerializationException;
@@ -29,6 +31,7 @@ import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.Re
 import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.RetrievalResult;
 import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.RetrievedValue;
 import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.SerializableSkyKeyComputeState;
+import com.google.devtools.build.lib.skyframe.serialization.analysis.AnalysisCacheEntry;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCacheReaderDepsProvider;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.proto.MissReason;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
@@ -83,13 +86,37 @@ public final class SkyValueRetrieverUtils {
               key,
               state,
               /* frontierNodeVersion= */ analysisCachingDeps.getSkyValueVersion());
+      if ((key instanceof ConfiguredTargetKey || key instanceof AspectKey)
+          && retrievalResult instanceof RetrievedValue(SkyValue value)) {
+        // An incomplete analysis entry is a cache miss, never an installed value with an empty
+        // query graph. Execution entries retain their existing format.
+        if (!(value instanceof AnalysisCacheEntry entry) || entry.queryDependencies() == null) {
+          throw new SerializationException("Analysis cache entry is missing query dependencies");
+        }
+        if (key instanceof ConfiguredTargetKey
+            && entry.value() instanceof RemoteConfiguredTargetValue target) {
+          retrievalResult =
+              new RetrievedValue(target.withQueryDependencies(key, entry.queryDependencies()));
+        } else if (key instanceof AspectKey && entry.value() instanceof AspectValue aspect) {
+          retrievalResult =
+              new RetrievedValue(aspect.withQueryDependencies(key, entry.queryDependencies()));
+        } else {
+          throw new SerializationException("Analysis cache entry has an incompatible value");
+        }
+      }
       analysisCachingDeps.recordRetrievalResult(retrievalResult, key);
     } catch (SerializationException e) {
       // TODO: b/445242928 - also log this in BEP
       //
       // Don't crash the build if deserialization failed. Gracefully fallback to local evaluation.
       analysisCachingDeps.recordSerializationException(e, key);
-      retrievalResult = new NoCachedData(e.getReason());
+      var miss = new NoCachedData(e.getReason());
+      // Validation can reject a decoded value after the retriever has memoized it. Do not retain
+      // or repeatedly reject that payload on local-analysis restarts.
+      if (state.getState() instanceof RetrievedValue) {
+        state.setState(miss);
+      }
+      retrievalResult = miss;
     } catch (RuntimeException | InterruptedException e) {
       throw e;
     } finally {

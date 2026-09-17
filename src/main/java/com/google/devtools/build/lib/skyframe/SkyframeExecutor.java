@@ -182,6 +182,9 @@ import com.google.devtools.build.lib.query2.common.QueryTransitivePackagePreload
 import com.google.devtools.build.lib.query2.common.UniverseScope;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.rules.AliasConfiguredTarget;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryFunction;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryKey;
+import com.google.devtools.build.lib.rules.genquery.GenCqueryValue;
 import com.google.devtools.build.lib.rules.genquery.GenQueryPackageProviderFactory;
 import com.google.devtools.build.lib.runtime.KeepGoingOption;
 import com.google.devtools.build.lib.runtime.KeepStateAfterBuildOption;
@@ -897,6 +900,16 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
             this::getExistingPackage));
     map.put(SkyFunctions.LOAD_ASPECTS, new LoadAspectsFunction());
     map.put(GenQueryPackageProviderFactory.GENQUERY_SCOPE, GenQueryPackageProviderFactory.FUNCTION);
+    var configuredQueryRule = ruleClassProvider.getRuleClassMap().get("gencquery");
+    if (configuredQueryRule != null) {
+      map.put(
+          GenCqueryKey.FUNCTION_NAME,
+          new GenCqueryFunction(
+              (GenCqueryFunction.QueryEvaluator) configuredQueryRule.getConfiguredTargetFactory(),
+              () -> SkyframeExecutorWrappingWalkableGraph.of(this),
+              this::tracksStateForIncrementality,
+              cpuBoundSemaphore));
+    }
     map.put(
         SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING,
         new ActionLookupConflictFindingFunction(this::getRemoteAnalysisCacheReaderDepsProvider));
@@ -1165,11 +1178,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       EmittedEventState emittedEventState);
 
   /**
-   * Use the fact that analysis of a target must occur before execution of that target, and in a
-   * separate Skyframe evaluation, to avoid propagating events from configured target nodes (and
-   * more generally action lookup nodes) to action execution nodes. We take advantage of the fact
-   * that if a node depends on an action lookup node and is not itself an action lookup node, then
-   * it is an execution-phase node: the action lookup nodes are terminal in the analysis phase.
+   * Avoid propagating analysis events into action execution nodes. Analysis nodes include action
+   * lookup nodes (except action-template expansion) and configured-query scopes, which analyze
+   * targets without bringing their actions into the build's action dependency graph.
    *
    * <p>Skymeld: propagate events to BuildDriverKey nodes, since they cover both analysis &
    * execution.
@@ -1184,15 +1195,16 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         @Override
         public boolean shouldPropagate(SkyKey depKey, SkyKey primaryKey) {
           // Do not propagate events from analysis phase nodes to execution phase nodes.
-          return isAnalysisPhaseActionLookupKey(primaryKey)
-              || !isAnalysisPhaseActionLookupKey(depKey)
+          return isAnalysisPhaseKey(primaryKey)
+              || !isAnalysisPhaseKey(depKey)
               // Skymeld only.
               || primaryKey instanceof BuildDriverKey;
         }
       };
 
-  private static boolean isAnalysisPhaseActionLookupKey(SkyKey key) {
-    return key instanceof ActionLookupKey && !(key instanceof ActionTemplateExpansionKey);
+  private static boolean isAnalysisPhaseKey(SkyKey key) {
+    return (key instanceof ActionLookupKey && !(key instanceof ActionTemplateExpansionKey))
+        || key instanceof GenCqueryKey;
   }
 
   protected SkyframeProgressReceiver newSkyframeProgressReceiver() {
@@ -1435,7 +1447,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       }
     }
     if (discardType.discardsAnalysis()) {
-      if (functionName.equals(SkyFunctions.CONFIGURED_TARGET)) {
+      if (entry.getValue() instanceof GenCqueryValue query) {
+        query.clear();
+      } else if (functionName.equals(SkyFunctions.CONFIGURED_TARGET)) {
         ConfiguredTargetValue ctValue = (ConfiguredTargetValue) entry.getValue();
         if (ctValue == null) {
           return false; // Not successfully analyzed.
@@ -4293,9 +4307,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         }
         var subtasks = new ArrayList<VisitActionLookupKey>();
         for (SkyKey dep : directDeps) {
-          // Besides PlatformFunction, the subgraph of dependencies of ActionLookupKeys never has
-          // a non-ActionLookupKey depending on an ActionLookupKey. So we can skip any other
-          // non-ActionLookupKeys in the traversal as an optimization.
+          // Follow build action dependencies. Query scope nodes analyze configured targets without
+          // making their actions part of the build; platform dependencies still need unwrapping.
           if (dep.functionName().equals(SkyFunctions.PLATFORM)) {
             var platformLabel = ((PlatformValue.Key) dep.argument()).label();
             dep = PlatformFunction.configuredTargetDep(platformLabel);
