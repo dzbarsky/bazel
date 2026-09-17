@@ -166,6 +166,51 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
+  public void testIncompatibleScopeTargetsCanBeInspected() throws Exception {
+    write(
+        "pkg/BUILD",
+        """
+        constraint_setting(name = "setting")
+        constraint_value(name = "unavailable", constraint_setting = ":setting")
+        filegroup(name = "portable")
+        filegroup(name = "incompatible", srcs = [":portable"],
+                  target_compatible_with = [":unavailable"])
+        gencquery(name = "portable_report", expression = "//pkg:portable",
+                  scope = [":portable", ":incompatible"], output = "starlark")
+        gencquery(name = "incompatible_report", expression = "kind('filegroup', deps(//pkg:incompatible))",
+                  scope = [":incompatible"], output = "starlark")
+        """);
+    assertQueryResult("//pkg:portable_report", "@@//pkg:portable");
+    assertQueryResult("//pkg:incompatible_report", "@@//pkg:incompatible");
+  }
+
+  @Test
+  public void testReportDoesNotInheritScopeTransitiveVisibility() throws Exception {
+    addOptions("--experimental_enforce_transitive_visibility");
+    write(
+        "private/BUILD",
+        """
+        package(transitive_visibility = ":allowed")
+        package_group(name = "allowed", packages = ["//private"])
+        filegroup(name = "root", visibility = ["//visibility:public"])
+        """);
+    write(
+        "reports/BUILD",
+        """
+        gencquery(name = "q", expression = "//private:root", scope = ["//private:root"],
+                  output = "starlark", visibility = ["//visibility:public"])
+        """);
+    write(
+        "consumer/BUILD",
+        """
+        filegroup(name = "report", srcs = ["//reports:q"])
+        filegroup(name = "direct", srcs = ["//private:root"])
+        """);
+    assertQueryResult("//consumer:report", "@@//private:root");
+    assertFailure("//consumer:direct", "Transitive visibility error");
+  }
+
+  @Test
   public void testScopeCoverageDoesNotPropagateToConsumers() throws Exception {
     addOptions("--collect_code_coverage");
     write(
@@ -430,6 +475,52 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
     // config(..., target) must select the analyzed root without applying its transition again.
     assertQueryResult("//pkg:target", "one");
     assertQueryResult("//pkg:labels", "@@//pkg:leaf", "@@//pkg:leaf");
+  }
+
+  @Test
+  public void testConfigurationSelectionPreservesExecutionPlatforms() throws Exception {
+    write("pkg/a.txt", "a");
+    write("pkg/b.txt", "b");
+    write(
+        "pkg/rules.bzl",
+        """
+        def _toolchain(ctx):
+            return [platform_common.ToolchainInfo(),
+                    DefaultInfo(files = depset([ctx.file.tool]))]
+        implementation = rule(implementation = _toolchain, attrs = {
+            "tool": attr.label(allow_single_file = True, cfg = "exec"),
+        })
+        def _consumer(ctx):
+            return []
+        consumer = rule(implementation = _consumer, toolchains = ["//pkg:type"])
+        """);
+    write(
+        "pkg/BUILD",
+        """
+        load(":rules.bzl", "consumer", "implementation")
+        constraint_setting(name = "os")
+        constraint_value(name = "a", constraint_setting = ":os")
+        constraint_value(name = "b", constraint_setting = ":os")
+        platform(name = "exec_a", constraint_values = [":a"])
+        platform(name = "exec_b", constraint_values = [":b"])
+        config_setting(name = "on_a", constraint_values = [":a"])
+        filegroup(name = "tool", srcs = select({":on_a": ["a.txt"], "//conditions:default": ["b.txt"]}))
+        toolchain_type(name = "type")
+        implementation(name = "implementation", tool = ":tool")
+        toolchain(name = "registered", toolchain_type = ":type", toolchain = ":implementation")
+        consumer(name = "left", exec_compatible_with = [":a"])
+        consumer(name = "right", exec_compatible_with = [":b"])
+        gencquery(name = "all", expression = "//pkg:implementation", scope = [":left", ":right"],
+                  output = "starlark", starlark_expr = "target.files.to_list()[0].basename")
+        gencquery(name = "selected", expression = "config(//pkg:implementation, target)",
+                  scope = [":left", ":right"], output = "starlark",
+                  starlark_expr = "target.files.to_list()[0].basename")
+        """);
+    addOptions(
+        "--extra_toolchains=//pkg:registered",
+        "--extra_execution_platforms=//pkg:exec_a,//pkg:exec_b");
+    assertQueryResult("//pkg:all", "a.txt", "b.txt");
+    assertQueryResult("//pkg:selected", "a.txt", "b.txt");
   }
 
   @Test
