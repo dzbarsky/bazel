@@ -145,12 +145,14 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
         accessor,
         starlarkSemantics,
         readStarlarkFile(options),
+        options.file.isEmpty() ? "--starlark:expr" : "--starlark:file",
         Charset.defaultCharset());
   }
 
   /**
    * Creates a formatter with tracked inputs supplied by the caller. In particular, this constructor
-   * never reads a path from {@code --starlark:file}.
+   * never reads a path from {@code --starlark:file}. The input description identifies the flag or
+   * attribute in diagnostics.
    */
   public StarlarkOutputFormatterCallback(
       ExtendedEventHandler eventHandler,
@@ -160,6 +162,7 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
       TargetAccessor<CqueryNode> accessor,
       StarlarkSemantics starlarkSemantics,
       @Nullable ParserInput starlarkFile,
+      String inputDescription,
       Charset charset)
       throws QueryException, InterruptedException {
     super(
@@ -173,21 +176,19 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
     this.starlarkSemantics = starlarkSemantics;
 
     ParserInput input;
-    String exceptionMessagePrefix;
+    String exceptionMessagePrefix = "invalid " + inputDescription + ": ";
     if (starlarkFile != null) {
       if (!options.expr.isEmpty()) {
         throw new QueryException(
-            "You must not specify both --starlark:expr and --starlark:file",
+            "You must not specify both a Starlark expression and a Starlark file",
             Query.Code.ILLEGAL_FLAG_COMBINATION);
       }
-      exceptionMessagePrefix = "invalid --starlark:file: ";
       input = starlarkFile;
     } else {
-      exceptionMessagePrefix = "invalid --starlark:expr: ";
       String expr = options.expr.isEmpty() ? "str(target.label)" : options.expr;
       // Validate that options.expr is a pure expression (for example, that it does not attempt
       // to escape its scope via unbalanced parens).
-      ParserInput exprParserInput = ParserInput.fromString(expr, "--starlark:expr");
+      ParserInput exprParserInput = ParserInput.fromString(expr, inputDescription);
       try {
         Expression.parse(exprParserInput);
       } catch (SyntaxError.Exception ex) {
@@ -198,7 +199,7 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
       // Create a synthetic file that defines a function with single parameter "target",
       // whose body is provided by the user's expression. Dynamic errors will have the wrong column.
       String fileBody = "def format(target): return (" + expr + ")";
-      input = ParserInput.fromString(fileBody, "--starlark:expr");
+      input = ParserInput.fromString(fileBody, inputDescription);
     }
 
     StarlarkFile file = StarlarkFile.parse(input, FileOptions.DEFAULT);

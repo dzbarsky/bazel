@@ -473,18 +473,26 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
-  @TestParameters("{expression: '1 // 0', message: 'Starlark evaluation error'}")
-  @TestParameters("{expression: '(', message: 'invalid --starlark:expr'}")
-  public void testStarlarkFormattingErrorsFailTheBuild(String expression, String message)
-      throws Exception {
+  @TestParameters("{expression: '1 // 0', fromFile: false, message: 'Starlark evaluation error'}")
+  @TestParameters("{expression: '(', fromFile: false, message: 'invalid starlark_expr'}")
+  @TestParameters("{expression: '1 // 0', fromFile: true, message: 'Starlark evaluation error'}")
+  @TestParameters("{expression: '(', fromFile: true, message: 'invalid starlark_file'}")
+  public void testStarlarkFormattingErrorsFailTheBuild(
+      String expression, boolean fromFile, String message) throws Exception {
+    String formatter = "starlark_expr = '" + expression + "'";
+    if (fromFile) {
+      write("pkg/format.cquery", "def format(target): return " + expression);
+      formatter = "starlark_file = ':format.cquery'";
+    }
     write(
         "pkg/BUILD",
         "filegroup(name = 'root')",
         "gencquery(name = 'q', expression = '//pkg:root', scope = [':root'], output = 'starlark', "
-            + "starlark_expr = '"
-            + expression
-            + "')");
+            + formatter
+            + ")");
     assertFailure("//pkg:q", message);
+    assertContainsEvent(fromFile ? "pkg/format.cquery" : "starlark_expr");
+    assertDoesNotContainEvent("--starlark:");
   }
 
   @Test
