@@ -15,9 +15,15 @@
 package com.google.devtools.build.lib.rules.genquery;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
+import com.google.devtools.build.lib.analysis.ConfiguredObjectValue;
 import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.query2.common.CqueryNode;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
@@ -25,6 +31,7 @@ import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.skyframe.AbstractSkyKey;
 import com.google.devtools.build.skyframe.SkyFunction;
+import com.google.devtools.build.skyframe.SkyFunction.Environment.SkyKeyComputeState;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -32,8 +39,8 @@ import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
 import com.google.devtools.build.skyframe.WalkableGraph;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -61,9 +68,7 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
     @AutoCodec.Instantiator
     public static Key create(ImmutableList<ConfiguredTargetKey> arg) {
       return interner.intern(
-          new Key(
-              ImmutableList.sortedCopyOf(
-                  Comparator.comparing(ConfiguredTargetKey::toString), arg)));
+          new Key(ImmutableList.sortedCopyOf(ConfiguredTargetKey.ORDERING, arg)));
     }
 
     @Override
@@ -75,15 +80,47 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
     public SkyKeyInterner<Key> getSkyKeyInterner() {
       return interner;
     }
+
+    @Override
+    public boolean skipsBatchPrefetch() {
+      // Traversal state retains completed values; fetching them again on every layer is quadratic
+      // for a deep cached graph.
+      return true;
+    }
   }
 
+  private final ImmutableList<ConfiguredTargetKey> rootKeys;
   private final ImmutableMap<SkyKey, SkyValue> values;
   private final ImmutableMap<SkyKey, Iterable<SkyKey>> directDeps;
   private final ImmutableMap<SkyKey, Iterable<SkyKey>> reverseDeps;
+  private final ImmutableListMultimap<Label, SkyKey> targetKeysByLabel;
+  private final ImmutableMap<String, BuildConfigurationValue> configurations;
 
-  private GenCqueryScope(Map<SkyKey, SkyValue> values, Map<SkyKey, Iterable<SkyKey>> directDeps) {
+  private GenCqueryScope(
+      ImmutableList<ConfiguredTargetKey> rootKeys,
+      Map<SkyKey, SkyValue> values,
+      Map<SkyKey, Iterable<SkyKey>> directDeps) {
+    this.rootKeys = rootKeys;
     this.values = ImmutableMap.copyOf(values);
     this.directDeps = ImmutableMap.copyOf(directDeps);
+    // Reports with the same roots share both the graph and its indexes. Delegating Skyframe keys
+    // can point to the same configured target, so index each full target identity only once.
+    Set<SkyKey> indexedTargets = new HashSet<>();
+    ImmutableListMultimap.Builder<Label, SkyKey> targets = ImmutableListMultimap.builder();
+    ImmutableMap.Builder<String, BuildConfigurationValue> configurations = ImmutableMap.builder();
+    for (var entry : values.entrySet()) {
+      SkyValue value = entry.getValue();
+      if (value instanceof ConfiguredTargetValue configured) {
+        CqueryNode target = configured.getConfiguredTarget();
+        if (indexedTargets.add(target.getLookupKey())) {
+          targets.put(target.getOriginalLabel(), entry.getKey());
+        }
+      } else if (value instanceof BuildConfigurationValue configuration) {
+        configurations.put(configuration.checksum(), configuration);
+      }
+    }
+    this.targetKeysByLabel = targets.build();
+    this.configurations = configurations.buildOrThrow();
     Map<SkyKey, List<SkyKey>> reverseDeps = new LinkedHashMap<>();
     directDeps.forEach(
         (key, deps) -> {
@@ -97,8 +134,20 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
     this.reverseDeps = builder.buildOrThrow();
   }
 
-  public ImmutableMap<SkyKey, SkyValue> getValues() {
-    return values;
+  List<CqueryNode> getTargets(Label label) {
+    // Index keys, not configured target objects, so clearing analysis values still releases their
+    // providers and actions. Only materialize targets while evaluating a query.
+    return Lists.transform(
+        targetKeysByLabel.get(label),
+        key -> ((ConfiguredTargetValue) values.get(key)).getConfiguredTarget());
+  }
+
+  ImmutableMap<String, BuildConfigurationValue> getConfigurations() {
+    return configurations;
+  }
+
+  public ImmutableList<ConfiguredTargetKey> getRootKeys() {
+    return rootKeys;
   }
 
   @Override
@@ -186,6 +235,17 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
       this.tracksIncrementalState = tracksIncrementalState;
     }
 
+    private static final class State implements SkyKeyComputeState {
+      final Map<SkyKey, SkyValue> values = new LinkedHashMap<>();
+      final Map<SkyKey, Iterable<SkyKey>> directDeps = new LinkedHashMap<>();
+      final Set<SkyKey> metadataKeys = new LinkedHashSet<>();
+      final Set<SkyKey> pending;
+
+      State(Key key) {
+        pending = new LinkedHashSet<>(key.argument());
+      }
+    }
+
     @Override
     @Nullable
     public SkyValue compute(SkyKey skyKey, Environment env)
@@ -195,27 +255,26 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
             new ScopeException("gencquery requires --track_incremental_state"));
       }
       WalkableGraph graph = graphSupplier.get();
-      Map<SkyKey, SkyValue> values = new LinkedHashMap<>();
-      Map<SkyKey, Iterable<SkyKey>> directDeps = new LinkedHashMap<>();
-      Set<SkyKey> metadataKeys = new LinkedHashSet<>();
-      Set<SkyKey> pending = new LinkedHashSet<>(((Key) skyKey).argument());
-      while (!pending.isEmpty()) {
-        SkyframeLookupResult lookup = env.getValuesAndExceptions(pending);
-        if (env.valuesMissing()) {
-          return null;
-        }
+      // Cache hits can require additional rounds of dependency downloads. Retain completed work
+      // across restarts so each node and its outgoing edges are processed only once.
+      State state = env.getState(() -> new State((Key) skyKey));
+      while (!state.pending.isEmpty()) {
+        SkyframeLookupResult lookup = env.getValuesAndExceptions(state.pending);
         Set<SkyKey> next = new LinkedHashSet<>();
-        for (SkyKey key : pending) {
+        var iterator = state.pending.iterator();
+        while (iterator.hasNext()) {
+          SkyKey key = iterator.next();
           SkyValue value = lookup.get(key);
           if (value == null) {
-            return null;
+            continue;
           }
-          values.put(key, value);
+          iterator.remove();
+          state.values.put(key, value);
           if (value instanceof ConfiguredTargetValue configuredTargetValue) {
             var target = configuredTargetValue.getConfiguredTarget();
-            metadataKeys.add(target.getOriginalLabel().getPackageIdentifier());
+            state.metadataKeys.add(target.getOriginalLabel().getPackageIdentifier());
             if (target.getConfigurationKey() != null) {
-              metadataKeys.add(target.getConfigurationKey());
+              state.metadataKeys.add(target.getConfigurationKey());
             }
           }
           // Never walk reverse edges in the live graph: they may include unrelated builds or the
@@ -224,31 +283,43 @@ public final class GenCqueryScope implements SkyValue, WalkableGraph {
           // Only query results need sorting. Stringifying aspect keys here can exponentially
           // expand their shared base-aspect graphs.
           ImmutableList<SkyKey> deps =
-              ImmutableSet.copyOf(graph.getDirectDeps(key)).stream()
-                  .filter(
-                      dep ->
-                          dep.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
-                              || dep.functionName().equals(SkyFunctions.ASPECT)
-                              || dep.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION))
-                  .collect(ImmutableList.toImmutableList());
-          directDeps.put(key, deps);
+              value instanceof ConfiguredObjectValue configuredValue
+                  ? configuredValue.getQueryDependencies(key)
+                  : null;
+          if (deps == null) {
+            deps =
+                ImmutableSet.copyOf(graph.getDirectDeps(key)).stream()
+                    .filter(
+                        dep ->
+                            dep.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
+                                || dep.functionName().equals(SkyFunctions.ASPECT)
+                                || dep.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION))
+                    .collect(ImmutableList.toImmutableList());
+          }
+          state.directDeps.put(key, deps);
           next.addAll(deps);
         }
-        next.removeAll(values.keySet());
-        pending = next;
+        next.removeAll(state.values.keySet());
+        state.pending.addAll(next);
+        if (env.valuesMissing()) {
+          return null;
+        }
       }
-      SkyframeLookupResult metadata = env.getValuesAndExceptions(metadataKeys);
+      SkyframeLookupResult metadata = env.getValuesAndExceptions(state.metadataKeys);
+      var iterator = state.metadataKeys.iterator();
+      while (iterator.hasNext()) {
+        SkyKey key = iterator.next();
+        SkyValue value = metadata.get(key);
+        if (value == null) {
+          continue;
+        }
+        iterator.remove();
+        state.values.put(key, value);
+      }
       if (env.valuesMissing()) {
         return null;
       }
-      for (SkyKey key : metadataKeys) {
-        SkyValue value = metadata.get(key);
-        if (value == null) {
-          return null;
-        }
-        values.put(key, value);
-      }
-      return new GenCqueryScope(values, directDeps);
+      return new GenCqueryScope(((Key) skyKey).argument(), state.values, state.directDeps);
     }
   }
 
