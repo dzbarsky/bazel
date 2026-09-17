@@ -34,6 +34,7 @@ import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.ActionLookupSummaryKey;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
+import com.google.devtools.build.lib.analysis.ConfiguredObjectValue;
 import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.compress.CompressionService;
@@ -49,6 +50,7 @@ import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNode;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNodeOrEmpty;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FutureFileOpNode;
+import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.serialization.AsyncSerializationTask;
 import com.google.devtools.build.lib.skyframe.serialization.DeserializedSkyValue;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueService;
@@ -79,6 +81,8 @@ import com.google.protobuf.CodedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
@@ -340,7 +344,17 @@ final class SelectedEntrySerializer {
             serializationStats,
             emitUploadedEvents);
 
+    Map<SkyKey, ImmutableList<SkyKey>> queryDependenciesBeforeDiscard = new HashMap<>();
     if (shouldDiscardMemory) {
+      // Save gencquery's configured edges before clearDirectDeps and release each list after
+      // submitting its entry.
+      for (SkyKey key : dense.uploadOrder()) {
+        InMemoryNodeEntry entry = graph.getIfPresent(key);
+        if (entry != null && entry.getValue() instanceof ConfiguredObjectValue configuredValue) {
+          queryDependenciesBeforeDiscard.put(
+              key, queryDependencies(key, configuredValue, entry.getDirectDeps()));
+        }
+      }
       fileOpNodes.markDirectDepsCleared();
       clearDirectDeps(graph);
     }
@@ -358,7 +372,7 @@ final class SelectedEntrySerializer {
     stopwatch.reset().start();
     try (var _ = Profiler.instance().profile("driveUploads")) {
       for (SkyKey selectedKey : dense.uploadOrder()) {
-        serializer.upload(selectedKey);
+        serializer.upload(selectedKey, queryDependenciesBeforeDiscard.remove(selectedKey));
       }
     }
     serializationStats.driveUploadsTime = stopwatch.elapsed();
@@ -404,7 +418,8 @@ final class SelectedEntrySerializer {
    * <p>Private because it relies on {@link FileOpNodeMemoizingLookup#materializeNodeGraph} having
    * run first, as {@link #uploadSelection} does.
    */
-  private void upload(SkyKey key) throws InterruptedException {
+  private void upload(SkyKey key, @Nullable ImmutableList<SkyKey> savedQueryDependencies)
+      throws InterruptedException {
     InMemoryNodeEntry entry = graph.getIfPresent(key);
     if (entry != null && entry.getValue() instanceof DeserializedSkyValue) {
       return;
@@ -419,15 +434,21 @@ final class SelectedEntrySerializer {
             throw new MissingSkyframeEntryException(actionLookupKey);
           }
           serializationStats.registerAnalysisNode();
+          SkyValue value = entry.getValue();
+          ImmutableList<SkyKey> queryDependencies = savedQueryDependencies;
+          if (value instanceof ConfiguredObjectValue configuredValue && queryDependencies == null) {
+            queryDependencies = queryDependencies(key, configuredValue, entry.getDirectDeps());
+          }
           // materializeNodeGraph already computed this key's node, so its direct deps are unused,
           // and may have been cleared by clearDirectDeps. The async path, which runs before the
           // node is committed, passes its deps via uploadAnalysisEntry instead.
           uploadEntry(
               actionLookupKey,
-              entry.getValue(),
+              value,
               actionLookupKey,
               /* dependencyDeps= */ null,
-              entry.getMaxTransitiveSourceVersion());
+              entry.getMaxTransitiveSourceVersion(),
+              queryDependencies);
         }
         case ActionLookupData lookupData -> {
           serializationStats.registerExecutionNode();
@@ -464,7 +485,11 @@ final class SelectedEntrySerializer {
   public void uploadAnalysisEntry(
       ActionLookupKey key, SkyValue value, Iterable<SkyKey> directDeps, @Nullable Version mtsv) {
     // For analysis phase entries, we register their own dependencies in the invalidation data
-    uploadEntry(key, value, key, directDeps, mtsv);
+    ImmutableList<SkyKey> queryDependencies =
+        value instanceof ConfiguredObjectValue configuredValue
+            ? queryDependencies(key, configuredValue, directDeps)
+            : null;
+    uploadEntry(key, value, key, directDeps, mtsv, queryDependencies);
   }
 
   /**
@@ -494,7 +519,7 @@ final class SelectedEntrySerializer {
     // anymore. In this case, FileOpNodeMemoizingLookup will definitely contain an entry for it,
     // since creating one is a side effect of uploading. If we are not deleting them, it will do
     // a graph lookup anyway.
-    uploadEntry(key, value, dependencyKey, null, /* mtsv= */ null);
+    uploadEntry(key, value, dependencyKey, null, /* mtsv= */ null, /* queryDependencies= */ null);
   }
 
   /**
@@ -507,14 +532,31 @@ final class SelectedEntrySerializer {
    * @param dependencyDeps the dependencies to traverse. These should be the direct deps of {@code
    *     dependencyDeps}. If null, Skyframe will be asked for the deps of {@code key}
    * @param mtsv the max transitive source version of the node, if applicable
+   * @param queryDependencies configured edges saved separately from file invalidation dependencies
    */
   private void uploadEntry(
       SkyKey key,
       SkyValue value,
       ActionLookupKey dependencyKey,
       @Nullable Iterable<SkyKey> dependencyDeps,
-      @Nullable Version mtsv) {
-    new UploadTask(key, value, dependencyKey, dependencyDeps, mtsv).submit();
+      @Nullable Version mtsv,
+      @Nullable ImmutableList<SkyKey> queryDependencies) {
+    new UploadTask(key, value, dependencyKey, dependencyDeps, mtsv, queryDependencies).submit();
+  }
+
+  private static ImmutableList<SkyKey> queryDependencies(
+      SkyKey key, ConfiguredObjectValue value, Iterable<SkyKey> directDeps) {
+    ImmutableList<SkyKey> savedDependencies = value.getQueryDependencies(key);
+    if (savedDependencies != null) {
+      return savedDependencies;
+    }
+    return ImmutableSet.copyOf(directDeps).stream()
+        .filter(
+            dep ->
+                dep.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
+                    || dep.functionName().equals(SkyFunctions.ASPECT)
+                    || dep.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION))
+        .collect(ImmutableList.toImmutableList());
   }
 
   private final class UploadTask
@@ -524,6 +566,7 @@ final class SelectedEntrySerializer {
     private final ActionLookupKey dependencyKey;
     @Nullable private final Iterable<SkyKey> dependencyDeps;
     @Nullable private final Version mtsv;
+    @Nullable private final ImmutableList<SkyKey> queryDependencies;
 
     // Keys are always stored as fingerprints so their detailed profiles are omitted.
     private AsyncSerializationTask keyResultTask;
@@ -534,12 +577,14 @@ final class SelectedEntrySerializer {
         SkyValue value,
         ActionLookupKey dependencyKey,
         @Nullable Iterable<SkyKey> dependencyDeps,
-        @Nullable Version mtsv) {
+        @Nullable Version mtsv,
+        @Nullable ImmutableList<SkyKey> queryDependencies) {
       this.key = key;
       this.value = value;
       this.dependencyKey = dependencyKey;
       this.dependencyDeps = dependencyDeps;
       this.mtsv = mtsv;
+      this.queryDependencies = queryDependencies;
     }
 
     void submit() {
@@ -565,9 +610,10 @@ final class SelectedEntrySerializer {
         fingerprintValueService.getExecutor().execute(keyResultTask);
 
         SkyValue valueToSerialize =
-            mtsv != null && key instanceof ActionLookupKey
-                ? new AnalysisValueWithMtsv(value, mtsv)
-                : value;
+            queryDependencies == null ? value : new AnalysisCacheEntry(value, queryDependencies);
+        if (mtsv != null && key instanceof ActionLookupKey) {
+          valueToSerialize = new AnalysisValueWithMtsv(valueToSerialize, mtsv);
+        }
         this.valueResultTask =
             codecs.serializeMemoizedAsync(
                 compressionService, fingerprintValueService, valueToSerialize, profileCollector);

@@ -176,9 +176,7 @@ public interface ConfiguredAspect extends ProviderCollection {
       if (!ruleContext.getConfiguration().getActionListeners().isEmpty()) {
         addProvider(
             createExtraActionProvider(
-                /* actionsWithoutExtraAction= */ ImmutableSet.of(),
-                ruleContext,
-                /* propagateExtraActionArtifacts= */ true));
+                /* actionsWithoutExtraAction= */ ImmutableSet.of(), ruleContext));
       }
 
       if (!providers.contains(AnalysisFailureInfo.STARLARK_CONSTRUCTOR.getKey())

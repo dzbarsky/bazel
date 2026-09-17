@@ -13,9 +13,12 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis;
 
+import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.packages.Package;
 import com.google.devtools.build.skyframe.NotComparableSkyValue;
+import com.google.devtools.build.skyframe.SkyKey;
+import javax.annotation.Nullable;
 
 /**
  * Super-interface for {@link ConfiguredTargetValue} and {@link RuleConfiguredObjectValue}
@@ -24,6 +27,16 @@ import com.google.devtools.build.skyframe.NotComparableSkyValue;
 public interface ConfiguredObjectValue extends NotComparableSkyValue {
   /** Returns the configured target/aspect for this value. */
   ProviderCollection getConfiguredObject();
+
+  /**
+   * Query graph edges retained for this key with a remotely cached value, or null when its edges
+   * are available in Skyframe. A local node can delegate to a cached value under another key; that
+   * node must use its own edges. These keys do not request dependency evaluation.
+   */
+  @Nullable
+  default ImmutableList<SkyKey> getQueryDependencies(SkyKey key) {
+    return null;
+  }
 
   /**
    * Returns the metadata for the set packages transitively loaded by this value. Must only be used
