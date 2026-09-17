@@ -17,9 +17,12 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.Assert.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
@@ -60,6 +63,7 @@ import com.google.devtools.build.lib.skyframe.PackageLookupFunction.CrossReposit
 import com.google.devtools.build.lib.skyframe.config.BuildConfigurationKey;
 import com.google.devtools.build.lib.testutil.ManualClock;
 import com.google.devtools.build.lib.testutil.TestConstants;
+import com.google.devtools.build.lib.testutil.TestThread;
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.testutil.TimestampGranularityUtils;
 import com.google.devtools.build.lib.util.io.OutErr;
@@ -92,6 +96,7 @@ import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
+import com.google.devtools.build.skyframe.WalkableGraph;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import java.io.IOException;
@@ -100,10 +105,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.annotation.Nullable;
 import org.junit.Before;
@@ -555,6 +562,74 @@ public final class FilesystemValueCheckerTest {
     result = evaluator.evaluate(ImmutableList.of(skyKey), EVALUATION_OPTIONS);
     assertThat(result.hasError()).isFalse();
     assertEmptyDiff(getDirtyFilesystemKeys(evaluator, checker));
+  }
+
+  @Test
+  public void getDirtyKeys_batchesSkipMissingValuesAndIncludeTail() throws Exception {
+    Map<SkyKey, SkyValue> values = new LinkedHashMap<>();
+    ImmutableList.Builder<SkyKey> changedKeys = ImmutableList.builder();
+    for (int i = 0; i < 65; i++) {
+      RootedPath path =
+          RootedPath.toRootedPath(Root.fromPath(pkgRoot), PathFragment.create("file" + i));
+      values.put(path, i == 0 ? null : FileStateValue.NONEXISTENT_FILE_STATE_NODE);
+      if (i == 1 || i == 64) {
+        writeFile(path.asPath(), "contents");
+        changedKeys.add(path);
+      }
+    }
+    FilesystemValueChecker checker =
+        new FilesystemValueChecker(null, SyscallCache.NO_CACHE, XattrProviderOverrider.NO_OVERRIDE, 2);
+
+    var diff =
+        checker.getDirtyKeys(values, DirtinessCheckerUtils.createBasicFilesystemDirtinessChecker());
+
+    assertThat(diff.changedKeysWithoutNewValues()).isEmpty();
+    assertThat(diff.changedKeysWithNewValues().keySet())
+        .containsExactlyElementsIn(changedKeys.build());
+    assertThat(diff.getNumKeysChecked()).isEqualTo(64);
+  }
+
+  @Test
+  public void getNewAndOldValues_cancellationStopsBlockedFetch() throws Exception {
+    WalkableGraph graph = mock(WalkableGraph.class);
+    CountDownLatch fetchStarted = new CountDownLatch(1);
+    CountDownLatch releaseFetch = new CountDownLatch(1);
+    AtomicInteger fetches = new AtomicInteger();
+    when(graph.getValue(any()))
+        .thenAnswer(
+            invocation -> {
+              fetches.incrementAndGet();
+              fetchStarted.countDown();
+              releaseFetch.await();
+              return FileStateValue.NONEXISTENT_FILE_STATE_NODE;
+            });
+    FilesystemValueChecker checker =
+        new FilesystemValueChecker(null, SyscallCache.NO_CACHE, XattrProviderOverrider.NO_OVERRIDE, 1);
+    ImmutableList<SkyKey> keys =
+        ImmutableList.of(
+            RootedPath.toRootedPath(Root.fromPath(pkgRoot), PathFragment.create("first")),
+            RootedPath.toRootedPath(Root.fromPath(pkgRoot), PathFragment.create("second")));
+    TestThread caller =
+        new TestThread(
+            () ->
+                assertThrows(
+                    InterruptedException.class,
+                    () ->
+                        checker.getNewAndOldValues(
+                            graph,
+                            keys,
+                            DirtinessCheckerUtils.createBasicFilesystemDirtinessChecker())));
+    caller.start();
+    try {
+      assertThat(fetchStarted.await(TestUtils.WAIT_TIMEOUT_SECONDS, SECONDS)).isTrue();
+      caller.interrupt();
+      caller.joinAndAssertState(SECONDS.toMillis(TestUtils.WAIT_TIMEOUT_SECONDS));
+      assertThat(fetches.get()).isEqualTo(1);
+    } finally {
+      releaseFetch.countDown();
+      caller.interrupt();
+      caller.join(SECONDS.toMillis(TestUtils.WAIT_TIMEOUT_SECONDS));
+    }
   }
 
   /**

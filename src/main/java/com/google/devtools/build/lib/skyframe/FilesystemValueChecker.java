@@ -677,46 +677,56 @@ public class FilesystemValueChecker {
           }
         };
     try (AutoProfiler prof = AutoProfiler.create(elapsedTimeReceiver)) {
-      for (final SkyKey key : keys) {
-        if (!checker.applies(key)) {
-          continue;
-        }
-        Preconditions.checkState(
-            key.functionName().getHermeticity() == FunctionHermeticity.NONHERMETIC,
-            "Only non-hermetic keys can be dirty roots: %s",
-            key);
+      Iterable<SkyKey> applicableKeys =
+          Iterables.filter(
+              keys,
+              key -> {
+                if (!checker.applies(key)) {
+                  return false;
+                }
+                Preconditions.checkState(
+                    key.functionName().getHermeticity() == FunctionHermeticity.NONHERMETIC,
+                    "Only non-hermetic keys can be dirty roots: %s",
+                    key);
+                return true;
+              });
+      // Keep interruptible graph fetches separate so cancellation cannot start another fetch.
+      int batchSize = fetcher instanceof MapBackedValueFetcher ? 64 : 1;
+      for (List<SkyKey> batch : Iterables.partition(applicableKeys, batchSize)) {
         executor.execute(
             () -> {
-              SkyValue value;
-              try {
-                value = fetcher.get(key);
-              } catch (InterruptedException e) {
-                // Exit fast. Interrupt is handled below on the main thread.
-                return;
-              }
-              if (!checkMissingValues && value == null) {
-                return;
-              }
-              @Nullable
-              Version oldMtsv =
-                  inMemoryGraph != null
-                      ? inMemoryGraph
-                          .get(/* requestor= */ null, Reason.OTHER, key)
-                          .getMaxTransitiveSourceVersion()
-                      : null;
-              numKeysChecked.incrementAndGet();
-              DirtyResult result;
-              try {
-                result = checker.check(key, value, oldMtsv, syscallCache, tsgm);
-              } catch (IOException e) {
-                // Treat IOException as dirty with an unknown value. If this key is requested during
-                // an evaluation, we'll attempt to evaluate it - the error may turn out to be
-                // permanent or transient.
-                result = DirtyResult.dirty();
-              }
-              if (result.isDirty()) {
-                batchResult.add(
-                    key, value, result.getNewValue(), result.getNewMaxTransitiveSourceVersion());
+              for (SkyKey key : batch) {
+                SkyValue value;
+                try {
+                  value = fetcher.get(key);
+                } catch (InterruptedException e) {
+                  // Interrupt is handled below on the main thread.
+                  return;
+                }
+                if (!checkMissingValues && value == null) {
+                  continue;
+                }
+                @Nullable
+                Version oldMtsv =
+                    inMemoryGraph != null
+                        ? inMemoryGraph
+                            .get(/* requestor= */ null, Reason.OTHER, key)
+                            .getMaxTransitiveSourceVersion()
+                        : null;
+                numKeysChecked.incrementAndGet();
+                DirtyResult result;
+                try {
+                  result = checker.check(key, value, oldMtsv, syscallCache, tsgm);
+                } catch (IOException e) {
+                  // Treat IOException as dirty with an unknown value. If this key is requested
+                  // during evaluation, we'll attempt to evaluate it - the error may turn out to be
+                  // permanent or transient.
+                  result = DirtyResult.dirty();
+                }
+                if (result.isDirty()) {
+                  batchResult.add(
+                      key, value, result.getNewValue(), result.getNewMaxTransitiveSourceVersion());
+                }
               }
             });
       }
