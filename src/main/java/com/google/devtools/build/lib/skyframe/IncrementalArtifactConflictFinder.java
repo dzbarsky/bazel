@@ -505,9 +505,8 @@ public final class IncrementalArtifactConflictFinder {
       }
       for (SkyKey dep : directDeps) {
         if (!(dep instanceof ActionLookupKey depKey)) {
-          // The subgraph of dependencies of ActionLookupKeys never has a non-ActionLookupKey
-          // depending on an ActionLookupKey. So we can skip any non-ActionLookupKeys in the
-          // traversal as an optimization.
+          // Query scope nodes may analyze configured targets without making their actions part
+          // of the build. Only follow action dependencies here.
           continue;
         }
         if (dedupSet.add(depKey)) {
