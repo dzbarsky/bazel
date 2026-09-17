@@ -557,7 +557,8 @@ wildcard and recursive target patterns are not supported. Labels in the
 expression are relative to the rule's repository root, so `:app` refers to
 `//:app`, regardless of the package containing the rule.
 
-Results are formatted in label and configuration checksum order. A target in
+Results are formatted in label and configuration checksum order, except that a
+top-level `somepath(...)` expression retains dependency path order. A target in
 multiple configurations or execution-platform instances produces multiple results,
 even if the formatted text is identical. `config()` preserves all instances in
 the selected configuration. Expressions such as `some` and `somepath` retain
