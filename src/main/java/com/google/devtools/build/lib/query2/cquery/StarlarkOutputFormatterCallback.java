@@ -35,12 +35,16 @@ import com.google.devtools.build.lib.server.FailureDetails.ConfigurableQuery;
 import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.StarlarkUtil;
+import com.google.devtools.build.lib.skyframe.config.BuildConfigurationKey;
 import com.google.devtools.common.options.OptionDefinition;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.function.Function;
+import javax.annotation.Nullable;
 import net.starlark.java.annot.Param;
 import net.starlark.java.annot.StarlarkLibrary;
 import net.starlark.java.annot.StarlarkMethod;
@@ -141,35 +145,51 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
       TargetAccessor<CqueryNode> accessor,
       StarlarkSemantics starlarkSemantics)
       throws QueryException, InterruptedException {
-    super(eventHandler, options, out, skyframeExecutor, accessor, /* uniquifyResults= */ false);
+    this(
+        eventHandler,
+        options,
+        out,
+        key -> skyframeExecutor.getConfiguration(eventHandler, key),
+        accessor,
+        starlarkSemantics,
+        readStarlarkFile(options, starlarkSemantics, eventHandler),
+        Charset.defaultCharset());
+  }
+
+  /**
+   * Creates a formatter with tracked inputs supplied by the caller. In particular, this constructor
+   * never reads a path from {@code --starlark:file}.
+   */
+  public StarlarkOutputFormatterCallback(
+      ExtendedEventHandler eventHandler,
+      CqueryOptions options,
+      OutputStream out,
+      Function<BuildConfigurationKey, BuildConfigurationValue> configurationGetter,
+      TargetAccessor<CqueryNode> accessor,
+      StarlarkSemantics starlarkSemantics,
+      @Nullable ParserInput starlarkFile,
+      Charset charset)
+      throws QueryException, InterruptedException {
+    super(
+        eventHandler,
+        options,
+        out,
+        configurationGetter,
+        accessor,
+        /* uniquifyResults= */ false,
+        charset);
     this.starlarkSemantics = starlarkSemantics;
 
-    ParserInput input = null;
+    ParserInput input;
     String exceptionMessagePrefix;
-    if (!options.getFile().isEmpty()) {
+    if (starlarkFile != null) {
       if (!options.getExpr().isEmpty()) {
         throw new QueryException(
             "You must not specify both --starlark:expr and --starlark:file",
             Query.Code.ILLEGAL_FLAG_COMBINATION);
       }
       exceptionMessagePrefix = "invalid --starlark:file: ";
-      try {
-        input =
-            StarlarkUtil.createParserInput(
-                Files.readAllBytes(Path.of(internalToPlatform(options.getFile()))),
-                options.getFile(),
-                starlarkSemantics.get(BuildLanguageOptions.INCOMPATIBLE_ENFORCE_STARLARK_UTF8),
-                eventHandler);
-      } catch (IOException ex) {
-        throw new QueryException(
-            exceptionMessagePrefix
-                + "failed to read "
-                + platformToInternal(Strings.nullToEmpty(ex.getMessage())),
-            Query.Code.QUERY_FILE_READ_FAILURE);
-      } catch (StarlarkUtil.InvalidUtf8Exception ex) {
-        throw new QueryException(
-            exceptionMessagePrefix + ex.getMessage(), Query.Code.QUERY_FILE_READ_FAILURE);
-      }
+      input = starlarkFile;
     } else {
       exceptionMessagePrefix = "invalid --starlark:expr: ";
       String expr = options.getExpr().isEmpty() ? "str(target.label)" : options.getExpr();
@@ -228,6 +248,39 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
       throw new QueryException(
           exceptionMessagePrefix + ex.getMessageWithStack(),
           ConfigurableQuery.Code.STARLARK_EVAL_ERROR);
+    }
+  }
+
+  @Nullable
+  private static ParserInput readStarlarkFile(
+      CqueryOptions options,
+      StarlarkSemantics starlarkSemantics,
+      ExtendedEventHandler eventHandler)
+      throws QueryException {
+    if (options.getFile().isEmpty()) {
+      return null;
+    }
+    if (!options.getExpr().isEmpty()) {
+      throw new QueryException(
+          "You must not specify both --starlark:expr and --starlark:file",
+          Query.Code.ILLEGAL_FLAG_COMBINATION);
+    }
+    String exceptionMessagePrefix = "invalid --starlark:file: ";
+    try {
+      return StarlarkUtil.createParserInput(
+          Files.readAllBytes(Path.of(internalToPlatform(options.getFile()))),
+          options.getFile(),
+          starlarkSemantics.get(BuildLanguageOptions.INCOMPATIBLE_ENFORCE_STARLARK_UTF8),
+          eventHandler);
+    } catch (IOException ex) {
+      throw new QueryException(
+          exceptionMessagePrefix
+          + "failed to read "
+          + platformToInternal(Strings.nullToEmpty(ex.getMessage())),
+          Query.Code.QUERY_FILE_READ_FAILURE);
+    } catch (StarlarkUtil.InvalidUtf8Exception ex) {
+      throw new QueryException(
+          exceptionMessagePrefix + ex.getMessage(), Query.Code.QUERY_FILE_READ_FAILURE);
     }
   }
 
