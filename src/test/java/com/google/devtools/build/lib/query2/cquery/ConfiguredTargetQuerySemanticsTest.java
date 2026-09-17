@@ -88,6 +88,53 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
         .containsExactly("//test:leaf", "//test:root");
     assertThat(evalToListOfStrings("rdeps(deps(//test:q + //test:other), //test:root, 1)"))
         .containsExactly("//test:root", "//test:q", "//test:other");
+
+    // A later query can reanalyze the root while leaving the old reports and scope invalidated.
+    overwriteFile("test/BUILD", "filegroup(name = 'root')");
+    helper.setUniverseScope("//test:root");
+    assertThat(evalToListOfStrings("rdeps(//test:root, //test:root)"))
+        .containsExactly("//test:root");
+  }
+
+  @Test
+  public void testGenCqueryScopePreservesRuleTransitionInstances() throws Exception {
+    ((PostAnalysisQueryHelper<CqueryNode>) helper)
+        .useConfiguration("--platform_suffix=one", "--notrim_test_configuration");
+    overwriteFile(
+        "tools/allowlists/function_transition_allowlist/BUILD",
+        "package_group(name = 'function_transition_allowlist', packages = ['//test/...'])");
+    writeFile(
+        "test/rules.bzl",
+        """
+        def _toggle(settings, attr):
+            suffix = settings["//command_line_option:platform_suffix"]
+            return {"//command_line_option:platform_suffix": "two" if suffix == "one" else "one"}
+        toggle = transition(implementation = _toggle,
+                            inputs = ["//command_line_option:platform_suffix"],
+                            outputs = ["//command_line_option:platform_suffix"])
+        def _impl(ctx):
+            return []
+        toggled = rule(implementation = _impl, cfg = toggle, attrs = {
+            "dep": attr.label(),
+            "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
+        })
+        """);
+    writeFile(
+        "test/BUILD",
+        """
+        load(":rules.bzl", "toggled")
+        toggled(name = "a")
+        toggled(name = "b", dep = ":a")
+        gencquery(name = "q", expression = "//test:a", scope = [":a", ":b"])
+        """);
+    helper.setUniverseScope("//test:q");
+    helper.setQuerySettings(Setting.NO_IMPLICIT_DEPS);
+    assertThat(evalToListOfStrings("deps(//test:q)"))
+        .containsExactly("//test:q", "//test:b", "//test:a", "//test:a");
+    // q has a direct scope edge to a in configuration two. b depends on a in configuration one,
+    // which shares the incoming root's label and configuration but must not acquire an edge to q.
+    assertThat(evalToListOfStrings("rdeps(deps(//test:q), deps(//test:b, 1) except //test:b, 1)"))
+        .containsExactly("//test:a", "//test:b");
   }
 
   @Test
