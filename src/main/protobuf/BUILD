@@ -203,6 +203,27 @@ java_grpc_library(
     deps = [":command_server_java_proto"],
 )
 
+proto_library(
+    name = "execution_log_stream_proto",
+    srcs = ["execution_log_stream.proto"],
+)
+
+java_proto_library(
+    name = "execution_log_stream_java_proto",
+    deps = [":execution_log_stream_proto"],
+)
+
+java_grpc_library(
+    name = "execution_log_stream_java_grpc",
+    srcs = [":execution_log_stream_proto"],
+    deps = [":execution_log_stream_java_proto"],
+)
+
+java_library_srcs(
+    name = "execution_log_stream_java_proto_srcs",
+    deps = [":execution_log_stream_java_proto"],
+)
+
 cc_proto_library(
     name = "command_server_cc_proto",
     deps = [":command_server_proto"],
@@ -435,10 +456,12 @@ filegroup(
         ":cache_salt_java_proto_srcs",
         ":command_line_java_proto_srcs",
         ":command_server_java_proto_srcs",
+        ":execution_log_stream_java_proto_srcs",
         ":failure_details_java_proto_srcs",
         ":invocation_policy_java_proto_srcs",
         ":libbazel_output_service_java_grpc-src.jar",
         ":libcommand_server_java_grpc-src.jar",
+        ":libexecution_log_stream_java_grpc-src.jar",
         ":option_filters_java_proto_srcs",
         ":profile_java_proto_srcs",
         ":remote_execution_log_java_proto_srcs",
