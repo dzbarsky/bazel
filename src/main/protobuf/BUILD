@@ -202,6 +202,22 @@ java_grpc_library(
     deps = [":command_server_java_proto"],
 )
 
+proto_library(
+    name = "execution_log_stream_proto",
+    srcs = ["execution_log_stream.proto"],
+)
+
+java_proto_library(
+    name = "execution_log_stream_java_proto",
+    deps = [":execution_log_stream_proto"],
+)
+
+java_grpc_library(
+    name = "execution_log_stream_java_grpc",
+    srcs = [":execution_log_stream_proto"],
+    deps = [":execution_log_stream_java_proto"],
+)
+
 cc_proto_library(
     name = "command_server_cc_proto",
     deps = [":command_server_proto"],

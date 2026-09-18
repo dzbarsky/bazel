@@ -513,6 +513,17 @@ public class ExecutionOptions extends OptionsBase {
   public PathFragment executionLogCompactFile;
 
   @Option(
+      name = "experimental_execution_log_stream_endpoint",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help =
+          "A gRPC endpoint that receives compact execution-log bytes while actions are still"
+              + " executing. Use with --execution_log_compact_file=true. This is independent of"
+              + " BEP artifact uploads.")
+  public String executionLogStreamEndpoint;
+
+  @Option(
       name = "execution_log_sort",
       defaultValue = "true",
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
