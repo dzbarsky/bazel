@@ -51,16 +51,22 @@ public final class StarlarkTransitionCache {
   private Cache<Key, Value> cache = Caffeine.newBuilder().softValues().build();
 
   /**
-   * Cache of the set of Starlark build settings referenced by a {@link ConfigurationTransition}.
+   * Cache of the set of Starlark build settings referenced by a transition definition.
    *
    * <p>This is a separate cache because even if a transition value is evaluated, its Starlark build
-   * settings are computed multiple times by {@link TransitionApplier}.
+   * settings are computed multiple times by {@link TransitionApplier}. Rule attributes affect
+   * transition results, but not which settings the definition declares. Including attributes in
+   * this cache key retains them and repeatedly compares potentially large attribute lists.
    *
    * <p>Since `--flag_alias` is non-configurable, we can assume that during a single build, the set
    * of starlark build settings for a given transition won't change.
    */
-  private Cache<ConfigurationTransition, ImmutableSet<Label>> starlarkBuildSettingsCache =
+  private Cache<BuildSettingsKey, ImmutableSet<Label>> starlarkBuildSettingsCache =
       Caffeine.newBuilder().softValues().build();
+
+  // Exec transitions ignore flag aliases, even when they wrap an ordinary transition definition.
+  private record BuildSettingsKey(
+      StarlarkDefinedConfigTransition definition, boolean isExecTransition) {}
 
   /**
    * Given a {@link ConfigurationTransition}, decompose (if possible) and find all referenced
@@ -75,9 +81,8 @@ public final class StarlarkTransitionCache {
    */
   public ImmutableSet<Label> getAllStarlarkBuildSettings(
       ConfigurationTransition root, ImmutableMap<String, Label> flagsAliases) {
-    var cachedValue = starlarkBuildSettingsCache.getIfPresent(root);
-    if (cachedValue != null) {
-      return cachedValue;
+    if (root instanceof StarlarkTransition transition) {
+      return getStarlarkBuildSettings(transition, flagsAliases);
     }
 
     ImmutableSet.Builder<Label> keyBuilder = new ImmutableSet.Builder<>();
@@ -85,16 +90,24 @@ public final class StarlarkTransitionCache {
       root.visit(
           (StarlarkTransitionVisitor)
               transition ->
-                  keyBuilder.addAll(
-                      StarlarkTransition.getRelevantStarlarkSettingsFromTransition(
-                          transition, flagsAliases, Settings.INPUTS_AND_OUTPUTS)));
+                  keyBuilder.addAll(getStarlarkBuildSettings(transition, flagsAliases)));
     } catch (TransitionException e) {
       // Not actually thrown in the visitor, but declared.
     }
 
-    ImmutableSet<Label> result = keyBuilder.build();
-    starlarkBuildSettingsCache.put(root, result);
-    return result;
+    return keyBuilder.build();
+  }
+
+  private ImmutableSet<Label> getStarlarkBuildSettings(
+      StarlarkTransition transition, ImmutableMap<String, Label> flagsAliases) {
+    var key =
+        new BuildSettingsKey(
+            transition.getStarlarkDefinedConfigTransition(), transition.isExecTransition());
+    return starlarkBuildSettingsCache.get(
+        key,
+        unused ->
+            StarlarkTransition.getRelevantStarlarkSettingsFromTransition(
+                transition, flagsAliases, Settings.INPUTS_AND_OUTPUTS));
   }
 
   /** Adds the default values for a transition's input build settings to its input build options. */

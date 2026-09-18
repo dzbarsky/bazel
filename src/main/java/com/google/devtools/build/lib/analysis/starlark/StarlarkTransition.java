@@ -46,6 +46,11 @@ public abstract class StarlarkTransition implements ConfigurationTransition {
     this.starlarkDefinedConfigTransition = starlarkDefinedConfigTransition;
   }
 
+  /** Returns the transition definition, without the attributes of a particular rule. */
+  public final StarlarkDefinedConfigTransition getStarlarkDefinedConfigTransition() {
+    return starlarkDefinedConfigTransition;
+  }
+
   @Override
   public String getName() {
     return "Starlark transition:" + starlarkDefinedConfigTransition.getLocation();
