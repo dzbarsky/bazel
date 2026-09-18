@@ -57,6 +57,17 @@ public class AsynchronousMessageOutputStream<T extends Message> implements Messa
   }
 
   public AsynchronousMessageOutputStream(String name, OutputStream out) {
+    this(name, out, /* flushAfterWrite= */ false);
+  }
+
+  /**
+   * Creates an asynchronous message stream.
+   *
+   * <p>{@code flushAfterWrite} is useful for live transports where complete messages should
+   * become visible to the receiver before the stream is closed.
+   */
+  public AsynchronousMessageOutputStream(
+      String name, OutputStream out, boolean flushAfterWrite) {
     writerThread =
         new Thread(
             () -> {
@@ -64,6 +75,9 @@ public class AsynchronousMessageOutputStream<T extends Message> implements Messa
                 byte[] data;
                 while ((data = queue.take()) != POISON_PILL) {
                   out.write(data);
+                  if (flushAfterWrite) {
+                    out.flush();
+                  }
                 }
               } catch (InterruptedException e) {
                 // Exit quietly.
