@@ -275,14 +275,17 @@ public class IncrementalPackageRoots implements PackageRoots {
         lazilyPlantedSymlinksLocalRef = lazilyPlantedSymlinks;
       }
 
-      // Initial capacity: arbitrarily chosen.
       // This list doesn't need to be thread-safe, as items are added sequentially.
-      List<ListenableFuture<Void>> futures = new ArrayList<>(128);
+      List<ListenableFuture<Void>> futures = new ArrayList<>();
       recursiveRegisterAndPlantMissingSymlinks(
           event.transitivePackagesForSymlinkPlanting(),
           donePackagesLocalRef,
           lazilyPlantedSymlinksLocalRef,
           futures);
+
+      if (futures.isEmpty()) {
+        return;
+      }
 
       // Now wait on the futures. After that, we can be sure that the symlinks have been planted.
       try {
@@ -327,6 +330,10 @@ public class IncrementalPackageRoots implements PackageRoots {
         return;
       }
       for (Package.Metadata pkg : packages.getLeaves()) {
+        if (pkg.packageIdentifier().getRepository().isMain()
+            && maybeConflictingBaseNamesLowercase.isEmpty()) {
+          continue;
+        }
         futures.add(
             symlinkPlantingPool.submit(
                 () -> plantSingleSymlinkForPackage(pkg, lazilyPlantedSymlinksRef)));
