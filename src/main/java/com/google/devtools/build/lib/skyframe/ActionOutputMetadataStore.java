@@ -21,7 +21,6 @@ import static java.util.concurrent.TimeUnit.MINUTES;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
@@ -46,7 +45,6 @@ import com.google.devtools.build.lib.vfs.FileStatusWithDigestAdapter;
 import com.google.devtools.build.lib.vfs.OutputPermissions;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.lib.vfs.XattrProvider;
 import java.io.FileNotFoundException;
@@ -490,10 +488,6 @@ final class ActionOutputMetadataStore implements OutputMetadataStore {
           pathNoFollow, /* realPath= */ null, statNoFollow, fileArtifactValue);
     }
 
-    RootedPath rootedPathNoFollow =
-        RootedPath.toRootedPath(
-            artifactPathResolver.transformRoot(artifact.getRoot().getRoot()),
-            artifact.getRootRelativePath());
     if (statNoFollow == null) {
       // Stat the file. All output artifacts of an action are deleted before execution, so if a file
       // exists, it was most likely created by the current action. There is a race condition here if
@@ -505,7 +499,7 @@ final class ActionOutputMetadataStore implements OutputMetadataStore {
 
     if (statNoFollow == null || !statNoFollow.isSymbolicLink()) {
       var fileArtifactValue =
-          fileArtifactValueFromStat(rootedPathNoFollow, statNoFollow, xattrProvider, tsgm);
+          fileArtifactValueFromStat(pathNoFollow, statNoFollow, xattrProvider, tsgm);
       return FileArtifactStatAndValue.create(
           pathNoFollow, /* realPath= */ null, statNoFollow, fileArtifactValue);
     }
@@ -518,17 +512,12 @@ final class ActionOutputMetadataStore implements OutputMetadataStore {
       throw new IOException("symlink cycle");
     }
 
-    RootedPath realRootedPath =
-        RootedPath.toRootedPathMaybeUnderRoot(
-            realPath,
-            ImmutableList.of(artifactPathResolver.transformRoot(artifact.getRoot().getRoot())));
-
     // TODO(bazel-team): consider avoiding a 'stat' here when the symlink target hasn't changed
     // and is a source file (since changes to those are checked separately).
-    FileStatus realStat = realRootedPath.asPath().statIfFound(Symlinks.NOFOLLOW);
+    FileStatus realStat = realPath.statIfFound(Symlinks.NOFOLLOW);
     FileStatusWithDigest realStatWithDigest = FileStatusWithDigestAdapter.maybeAdapt(realStat);
     var fileArtifactValue =
-        fileArtifactValueFromStat(realRootedPath, realStatWithDigest, xattrProvider, tsgm);
+        fileArtifactValueFromStat(realPath, realStatWithDigest, xattrProvider, tsgm);
 
     // If the artifact was materialized in the filesystem as as symlink to another artifact, record
     // the real path in the metadata so that it can be recreated as such later.
@@ -538,7 +527,7 @@ final class ActionOutputMetadataStore implements OutputMetadataStore {
     if (realStat instanceof FileStatusWithMetadata && fileArtifactValue.getResolvedPath() == null) {
       fileArtifactValue =
           FileArtifactValue.createFromExistingWithResolvedPath(
-              fileArtifactValue, realRootedPath.asPath().asFragment());
+              fileArtifactValue, realPath.asFragment());
     }
 
     return FileArtifactStatAndValue.create(pathNoFollow, realPath, statNoFollow, fileArtifactValue);
@@ -564,7 +553,7 @@ final class ActionOutputMetadataStore implements OutputMetadataStore {
   }
 
   private static FileArtifactValue fileArtifactValueFromStat(
-      RootedPath rootedPath,
+      Path path,
       FileStatusWithDigest stat,
       XattrProvider xattrProvider,
       @Nullable TimestampGranularityMonitor tsgm)
@@ -582,7 +571,7 @@ final class ActionOutputMetadataStore implements OutputMetadataStore {
     }
 
     FileStateValue fileStateValue =
-        FileStateValue.createWithStatNoFollow(rootedPath, stat, xattrProvider, tsgm);
+        FileStateValue.createWithStatNoFollow(path, stat, xattrProvider, tsgm);
 
     return FileArtifactValue.createForNormalFile(
         fileStateValue.getDigest(), fileStateValue.getContentsProxy(), stat.getSize());
