@@ -189,6 +189,35 @@ public class CompactSpawnLogContext extends SpawnLogContext {
       ExtendedEventHandler reporter,
       Predicate<Spawn> logSpawnPredicate)
       throws IOException, InterruptedException {
+    this(
+        out,
+        displayName,
+        execRoot,
+        workspaceName,
+        remoteOptions,
+        digestHashFunction,
+        xattrProvider,
+        compressionService,
+        invocationId,
+        reporter,
+        logSpawnPredicate,
+        /* flushAfterWrite= */ false);
+  }
+
+  public CompactSpawnLogContext(
+      BufferedOutputStream out,
+      String displayName,
+      PathFragment execRoot,
+      String workspaceName,
+      @Nullable RemoteOptions remoteOptions,
+      DigestHashFunction digestHashFunction,
+      XattrProvider xattrProvider,
+      CompressionService compressionService,
+      UUID invocationId,
+      ExtendedEventHandler reporter,
+      Predicate<Spawn> logSpawnPredicate,
+      boolean flushAfterWrite)
+      throws IOException, InterruptedException {
     super(logSpawnPredicate);
     this.execRoot = execRoot;
     this.workspaceName = workspaceName;
@@ -198,16 +227,18 @@ public class CompactSpawnLogContext extends SpawnLogContext {
     this.compressionService = compressionService;
     this.invocationId = invocationId;
     this.reporter = reporter;
-    this.outputStream = getOutputStream(out, displayName);
+    this.outputStream = getOutputStream(out, displayName, flushAfterWrite);
 
     logInvocation();
   }
 
-  private MessageOutputStream<ExecLogEntry> getOutputStream(OutputStream out, String name)
+  private MessageOutputStream<ExecLogEntry> getOutputStream(
+      OutputStream out, String name, boolean flushAfterWrite)
       throws IOException {
     // Use an AsynchronousMessageOutputStream so that compression and I/O occur in a separate
     // thread. This ensures concurrent writes don't tear and avoids blocking execution.
-    return new AsynchronousMessageOutputStream<>(name, compressionService.newZstdOutputStream(out));
+    return new AsynchronousMessageOutputStream<>(
+        name, compressionService.newZstdOutputStream(out), flushAfterWrite);
   }
 
   private void logInvocation() throws IOException, InterruptedException {
