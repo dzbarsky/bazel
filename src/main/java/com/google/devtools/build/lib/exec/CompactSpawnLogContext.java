@@ -187,6 +187,33 @@ public class CompactSpawnLogContext extends SpawnLogContext {
       UUID invocationId,
       ExtendedEventHandler reporter)
       throws IOException, InterruptedException {
+    this(
+        out,
+        displayName,
+        execRoot,
+        workspaceName,
+        siblingRepositoryLayout,
+        remoteOptions,
+        digestHashFunction,
+        xattrProvider,
+        invocationId,
+        reporter,
+        /* flushAfterWrite= */ false);
+  }
+
+  public CompactSpawnLogContext(
+      BufferedOutputStream out,
+      String displayName,
+      PathFragment execRoot,
+      String workspaceName,
+      boolean siblingRepositoryLayout,
+      @Nullable RemoteOptions remoteOptions,
+      DigestHashFunction digestHashFunction,
+      XattrProvider xattrProvider,
+      UUID invocationId,
+      ExtendedEventHandler reporter,
+      boolean flushAfterWrite)
+      throws IOException, InterruptedException {
     this.execRoot = execRoot;
     this.workspaceName = workspaceName;
     this.siblingRepositoryLayout = siblingRepositoryLayout;
@@ -195,16 +222,18 @@ public class CompactSpawnLogContext extends SpawnLogContext {
     this.xattrProvider = xattrProvider;
     this.invocationId = invocationId;
     this.reporter = reporter;
-    this.outputStream = getOutputStream(out, displayName);
+    this.outputStream = getOutputStream(out, displayName, flushAfterWrite);
 
     logInvocation();
   }
 
-  private static MessageOutputStream<ExecLogEntry> getOutputStream(OutputStream out, String name)
+  private static MessageOutputStream<ExecLogEntry> getOutputStream(
+      OutputStream out, String name, boolean flushAfterWrite)
       throws IOException {
     // Use an AsynchronousMessageOutputStream so that compression and I/O occur in a separate
     // thread. This ensures concurrent writes don't tear and avoids blocking execution.
-    return new AsynchronousMessageOutputStream<>(name, new ZstdOutputStream(out));
+    return new AsynchronousMessageOutputStream<>(
+        name, new ZstdOutputStream(out), flushAfterWrite);
   }
 
   private void logInvocation() throws IOException, InterruptedException {
