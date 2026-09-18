@@ -1,0 +1,48 @@
+// Copyright 2026 The Bazel Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+
+syntax = "proto3";
+
+package build.bazel.executionlog.v1;
+
+option java_multiple_files = true;
+option java_package = "com.google.devtools.build.lib.exec";
+
+// Receives an execution log while Bazel is still executing actions.
+//
+// The data messages contain consecutive bytes of the zstd-compressed compact
+// execution log. The server can decode complete ExecLogEntry records from the
+// prefix received so far. The final digest covers exactly the data bytes.
+service ExecutionLogService {
+  rpc Stream(stream ExecutionLogStreamRequest) returns (ExecutionLogStreamResponse);
+}
+
+message ExecutionLogStreamRequest {
+  oneof payload {
+    Header header = 1;
+    bytes data = 2;
+    Finish finish = 3;
+  }
+}
+
+message Header {
+  string invocation_id = 1;
+  string log_name = 2;
+  string format = 3;
+  string compression = 4;
+}
+
+message Finish {
+  int64 size_bytes = 1;
+  string sha256 = 2;
+}
+
+message ExecutionLogStreamResponse {
+  int64 committed_size = 1;
+  string sha256 = 2;
+}
