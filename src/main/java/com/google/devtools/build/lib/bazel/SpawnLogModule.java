@@ -139,6 +139,16 @@ public final class SpawnLogModule extends BlazeModule {
         outputPath = getAbsolutePath(logPath, env);
         outputStream = new BufferedOutputStream(outputPath.getOutputStream(), OUTPUT_BUFFER_SIZE);
         displayName = outputPath.toString();
+      } else if (executionOptions.getExecutionLogCompactFile() != null
+          && !executionOptions.getExecutionLogStreamEndpoint().isEmpty()) {
+        outputStream =
+            new BufferedOutputStream(
+                new ExecutionLogGrpcOutputStream(
+                    executionOptions.getExecutionLogStreamEndpoint(),
+                    env.getCommandId().toString(),
+                    logName),
+                OUTPUT_BUFFER_SIZE);
+        displayName = logName + "-live-stream";
       } else if (bepOptions.getStreamingLogFileUploads()) {
         // Path is empty but streaming is enabled.
         BuildEventArtifactUploader uploader =
@@ -160,7 +170,8 @@ public final class SpawnLogModule extends BlazeModule {
                         FailureDetail.newBuilder()
                             .setMessage(
                                 "--execution_log_{compact,binary,json}_file is empty, but"
-                                    + " --experimental_stream_log_file_uploads is not enabled."
+                                    + " neither --experimental_execution_log_stream_endpoint nor"
+                                    + " --experimental_stream_log_file_uploads is enabled."
                                     + " Execution log will not be uploaded to the BEP.")
                             .setExecutionOptions(
                                 FailureDetails.ExecutionOptions.newBuilder()
@@ -203,7 +214,8 @@ public final class SpawnLogModule extends BlazeModule {
                 env.getCommandId(),
                 env.getReporter(),
                 logSpawnPredicate,
-                executionOptions.getExpandParamFiles());
+                executionOptions.getExpandParamFiles(),
+                !executionOptions.getExecutionLogStreamEndpoint().isEmpty() && logPath.isEmpty());
       } else {
         boolean binaryElseJson = executionOptions.getExecutionLogBinaryFile() != null;
         // Use a well-known temporary path to avoid accumulation of potentially large files in /tmp

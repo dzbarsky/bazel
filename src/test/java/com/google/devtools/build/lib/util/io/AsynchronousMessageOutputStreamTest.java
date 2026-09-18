@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -202,5 +203,26 @@ public class AsynchronousMessageOutputStreamTest {
     out.close();
 
     assertThrows(IllegalStateException.class, () -> out.write(generateRandomMessage()));
+  }
+
+  @Test
+  public void testFlushAfterWriteMakesMessagesVisibleBeforeClose() throws Exception {
+    AtomicInteger flushes = new AtomicInteger();
+    OutputStream recordingOutputStream =
+        new ByteArrayOutputStream() {
+          @Override
+          public void flush() {
+            flushes.incrementAndGet();
+          }
+        };
+    AsynchronousMessageOutputStream<Message> out =
+        new AsynchronousMessageOutputStream<>(
+            "", recordingOutputStream, /* flushAfterWrite= */ true);
+
+    out.write(generateRandomMessage());
+    out.write(generateRandomMessage());
+    out.close();
+
+    assertThat(flushes.get()).isAtLeast(2);
   }
 }
