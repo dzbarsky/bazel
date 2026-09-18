@@ -142,6 +142,7 @@ java_library(
 java_library(
     name = "spawn_log_module",
     srcs = [
+        "ExecutionLogGrpcOutputStream.java",
         "SpawnLogModule.java",
     ],
     visibility = [
@@ -165,12 +166,18 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/build/lib/vfs:output_service",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
+        "//src/main/protobuf:execution_log_stream_java_grpc",
+        "//src/main/protobuf:execution_log_stream_java_proto",
         "//src/main/protobuf:failure_details_java_proto",
+        "//third_party/java/grpc:core",
+        "//third_party/java/grpc:stub",
         "//third_party/java/guava:base",
         "//third_party/java/guava:concurrent",
         "//third_party/java/guava:eventbus",
+        "//third_party/java/guava:hash",
         "//third_party/java/guava:primitives",
         "//third_party/java/jsr305_annotations",
+        "//third_party/java/protobuf:protobuf_lite",
     ],
 )
 
