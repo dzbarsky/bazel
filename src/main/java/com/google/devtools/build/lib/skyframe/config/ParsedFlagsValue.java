@@ -157,8 +157,10 @@ public class ParsedFlagsValue implements SkyValue {
 
   private final NativeAndStarlarkFlags flags;
   private final OptionsParsingResult parsingResult;
-  private final LoadingCache<BuildOptions, BuildConfigurationKey> mergeCache =
-      Caffeine.newBuilder().weakKeys().build(this::mergeWithImpl);
+  // Weak keys use identity. Intern equivalent inputs so temporary option copies share entries.
+  // Values are weak too: a no-op merge returns its input key.
+  private final LoadingCache<BuildConfigurationKey, BuildConfigurationKey> mergeCache =
+      Caffeine.newBuilder().weakKeys().weakValues().build(this::mergeWithImpl);
 
   private final ImmutableSet<String> disabledOptions;
 
@@ -207,7 +209,7 @@ public class ParsedFlagsValue implements SkyValue {
    */
   public BuildConfigurationKey mergeWith(BuildOptions source) throws OptionsParsingException {
     try {
-      return mergeCache.get(source);
+      return mergeCache.get(BuildConfigurationKey.create(source));
     } catch (CompletionException e) {
       Throwables.throwIfInstanceOf(e.getCause(), OptionsParsingException.class);
       Throwables.throwIfUnchecked(e.getCause());
@@ -215,8 +217,8 @@ public class ParsedFlagsValue implements SkyValue {
     }
   }
 
-  private BuildConfigurationKey mergeWithImpl(BuildOptions source) throws OptionsParsingException {
-    BuildOptions.Builder builder = source.toBuilder();
+  private BuildConfigurationKey mergeWithImpl(BuildConfigurationKey source) throws OptionsParsingException {
+    BuildOptions.Builder builder = source.getOptions().toBuilder();
 
     // Handle native options.
     for (OptionValueDescription optionValue : parsingResult.allOptionValues()) {
@@ -245,7 +247,7 @@ public class ParsedFlagsValue implements SkyValue {
     }
 
     // Merge Starlark options. The scope info from the source options is already in the builder,
-    // copied by source.toBuilder(). Add the scope info from this instance's parsed scope
+    // copied by toBuilder(). Add the scope info from this instance's parsed scope
     // attributes on top of it, then merge the values: flags reset to their default value are
     // removed by removeStarlarkOption, which also deletes the scope info just added.
     builder.addScopeTypeMap(
