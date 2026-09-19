@@ -156,6 +156,9 @@ public final class RuleConfiguredTargetBuilder {
     if (runfilesSupport != null) {
       // If a binary is built, build its runfiles, too
       addOutputGroup(OutputGroupInfo.HIDDEN_TOP_LEVEL, runfilesTrees);
+      if (!ruleContext.getConfiguration().buildRunfileManifests()) {
+        addOutputGroup(OutputGroupInfo.RUNFILES_FOR_RUN, runfilesSupport.getRunfilesManifestForRun());
+      }
     } else if (providersBuilder.contains(RunfilesProvider.class)) {
       // If we don't have a RunfilesSupport (probably because this is not a binary rule), we still
       // want to build the files this rule contributes to runfiles of dependent rules so that we

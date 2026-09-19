@@ -243,6 +243,7 @@ public final class RunfilesSupport {
 
   private final Artifact runfilesInputManifest;
   private final Artifact runfilesManifest;
+  private final Artifact runfilesManifestForRun;
   private final Artifact runfilesTreeArtifact;
   private final Artifact owningExecutable;
   private final FlatCommandLine args;
@@ -307,22 +308,18 @@ public final class RunfilesSupport {
 
     Artifact runfilesTreeArtifact = declareRunfilesTreeArtifact(ruleContext, executable);
 
-    Artifact runfilesInputManifest;
-    Artifact runfilesManifest;
-    if (buildRunfileManifests) {
-      runfilesInputManifest = createRunfilesInputManifestArtifact(ruleContext, executable);
-      runfilesManifest =
-          createRunfilesAction(
-              ruleContext,
-              runfiles,
-              runfilesTreeArtifact,
-              buildRunfileLinks,
-              runfilesInputManifest,
-              repoMappingManifest);
-    } else {
-      runfilesInputManifest = null;
-      runfilesManifest = null;
-    }
+    Artifact runfilesInputManifest = createRunfilesInputManifestArtifact(ruleContext, executable);
+    // Register staging actions even when ordinary builds omit manifests. The run command requests
+    // them through a separate output group, without changing the target's configuration or inputs.
+    Artifact runfilesManifestForRun =
+        createRunfilesAction(
+            ruleContext,
+            runfiles,
+            runfilesTreeArtifact,
+            !buildRunfileManifests || buildRunfileLinks,
+            runfilesInputManifest,
+            repoMappingManifest);
+    Artifact runfilesManifest = buildRunfileManifests ? runfilesManifestForRun : null;
 
     RunfilesTreeImpl runfilesTree =
         new RunfilesTreeImpl(
@@ -338,8 +335,9 @@ public final class RunfilesSupport {
 
     return new RunfilesSupport(
         runfilesTree,
-        runfilesInputManifest,
+        buildRunfileManifests ? runfilesInputManifest : null,
         runfilesManifest,
+        runfilesManifestForRun,
         runfilesTreeArtifact,
         executable,
         args,
@@ -350,6 +348,7 @@ public final class RunfilesSupport {
       RunfilesTreeImpl runfilesTree,
       Artifact runfilesInputManifest,
       Artifact runfilesManifest,
+      Artifact runfilesManifestForRun,
       Artifact runfilesTreeArtifact,
       Artifact owningExecutable,
       FlatCommandLine args,
@@ -357,6 +356,7 @@ public final class RunfilesSupport {
     this.runfilesTree = runfilesTree;
     this.runfilesInputManifest = runfilesInputManifest;
     this.runfilesManifest = runfilesManifest;
+    this.runfilesManifestForRun = runfilesManifestForRun;
     this.runfilesTreeArtifact = runfilesTreeArtifact;
     this.owningExecutable = owningExecutable;
     this.args = args;
@@ -425,6 +425,11 @@ public final class RunfilesSupport {
   @Nullable
   public Artifact getRunfilesManifest() {
     return runfilesManifest;
+  }
+
+  /** Returns the manifest used to stage this target for {@code bazel run}, regardless of flags. */
+  Artifact getRunfilesManifestForRun() {
+    return runfilesManifestForRun;
   }
 
   /**
