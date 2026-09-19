@@ -999,9 +999,25 @@ abstract class AbstractParallelEvaluator {
       newlyAddedNewDeps = newDeps;
       previouslyRegisteredNewDeps = ImmutableSet.of();
     } else {
-      newlyAddedNewDeps = ImmutableList.copyOf(Sets.difference(newDeps, alreadyRegisteredDeps));
-      previouslyRegisteredNewDeps =
-          ImmutableList.copyOf(Sets.intersection(newDeps, alreadyRegisteredDeps));
+      int newlyAddedCount = 0;
+      for (SkyKey dep : newDeps) {
+        if (!alreadyRegisteredDeps.contains(dep)) {
+          newlyAddedCount++;
+        }
+      }
+      ImmutableList.Builder<SkyKey> newlyAdded =
+          ImmutableList.builderWithExpectedSize(newlyAddedCount);
+      ImmutableList.Builder<SkyKey> previouslyRegistered =
+          ImmutableList.builderWithExpectedSize(newDeps.size() - newlyAddedCount);
+      for (SkyKey dep : newDeps) {
+        if (alreadyRegisteredDeps.contains(dep)) {
+          previouslyRegistered.add(dep);
+        } else {
+          newlyAdded.add(dep);
+        }
+      }
+      newlyAddedNewDeps = newlyAdded.build();
+      previouslyRegisteredNewDeps = previouslyRegistered.build();
     }
 
     InterruptibleSupplier<NodeBatch> newlyAddedNewDepNodes =
