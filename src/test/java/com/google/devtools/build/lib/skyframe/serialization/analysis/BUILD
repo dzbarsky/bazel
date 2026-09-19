@@ -115,6 +115,7 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/build/skyframe",
         "//src/main/java/com/google/devtools/common/options",
+        "//src/main/protobuf:analysis_v2_java_proto",
         "//src/main/protobuf:file_invalidation_data_java_proto",
         "//src/test/java/com/google/devtools/build/skyframe:testutil",
         "//third_party:guava",

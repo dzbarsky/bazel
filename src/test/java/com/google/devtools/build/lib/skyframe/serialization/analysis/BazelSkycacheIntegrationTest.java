@@ -29,6 +29,7 @@ import com.google.common.eventbus.EventBus;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.FileStateValue;
+import com.google.devtools.build.lib.analysis.AnalysisProtosV2.ActionGraphContainer;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
 import com.google.devtools.build.lib.runtime.MemoryPressureEvent;
@@ -218,6 +219,148 @@ public final class BazelSkycacheIntegrationTest extends SkycacheIntegrationTestB
   @Override
   protected BlazeRuntime.Builder getRuntimeBuilder() throws Exception {
     return super.getRuntimeBuilder().addBlazeModule(new ModuleWithOverrides());
+  }
+
+  @Test
+  public void genaqueryUsesCachedActionsAndTracksTemplateContents(
+      @TestParameter boolean cacheReport) throws Exception {
+    allowExternalRepositories = false;
+    reinitializeAndPreserveOptions();
+    write("scope/template", "first");
+    write(
+        "scope/defs.bzl",
+        """
+        def _impl(ctx):
+            out = ctx.actions.declare_file(ctx.label.name + ".out")
+            ctx.actions.expand_template(template = ctx.file.template, output = out, substitutions = {})
+            return [DefaultInfo(files = depset([out]))]
+        root = rule(implementation = _impl, attrs = {"template": attr.label(allow_single_file = True)})
+        """);
+    write("scope/BUILD", "load(':defs.bzl', 'root')", "root(name = 'root', template = 'template')");
+    write(
+        "queries/BUILD",
+        """
+        genaquery(name = "report", expression = "//scope:root", scope = ["//scope:root"], output = "proto")
+        """);
+    String cached = cacheReport ? "//queries:report" : "//scope:root";
+    addOptions("--experimental_active_directories=", "--nobuild");
+    assertUploadSuccess(cached);
+    getSkyframeExecutor().resetEvaluator();
+    addOptions("--build", "--nouse_action_cache");
+    failingStore.changedFiles = ImmutableList.of("unrelated/file");
+    assertDownloadSuccess("//queries:report");
+    assertThat(
+            getCommandEnvironment().getRemoteAnalysisCachingEventListener().getCacheHits().stream()
+                .filter(key -> key instanceof ActionLookupKey)
+                .map(key -> ((ActionLookupKey) key).getLabel()))
+        .contains(parseCanonicalUnchecked(cached));
+    var bytes = readContentAsByteArray(getArtifacts("//queries:report").iterator().next());
+    assertThat(ActionGraphContainer.parseFrom(bytes).getActions(0).getTemplateContent())
+        .isEqualTo("first\n");
+    write("scope/template", "second");
+    failingStore.changedFiles = ImmutableList.of("scope/template");
+    getSkyframeExecutor().resetEvaluator();
+    buildTarget("//queries:report");
+    bytes = readContentAsByteArray(getArtifacts("//queries:report").iterator().next());
+    assertThat(ActionGraphContainer.parseFrom(bytes).getActions(0).getTemplateContent())
+        .isEqualTo("second\n");
+    assertThat(
+            getCommandEnvironment().getRemoteAnalysisCachingEventListener().getCacheHits().stream()
+                .filter(key -> key instanceof ActionLookupKey)
+                .map(key -> ((ActionLookupKey) key).getLabel()))
+        .doesNotContain(parseCanonicalUnchecked("//queries:report"));
+  }
+
+  @Test
+  public void genaqueryRecomputesReportsWhenOutputRootsChange(
+      @TestParameter boolean consumer, @TestParameter boolean cacheExecution) throws Exception {
+    allowExternalRepositories = false;
+    reinitializeAndPreserveOptions();
+    String rules =
+        """
+        def _impl(ctx):
+            exe = ctx.actions.declare_file(ctx.label.name)
+            ctx.actions.write(exe, "exit 0", is_executable = True)
+            return [DefaultInfo(executable = exe)]
+        root = rule(implementation = _impl, executable = True)
+        """;
+    String query =
+        """
+        genaquery(name = "report", expression = "mnemonic('SourceSymlinkManifest', //scope:root)",
+                 scope = ["//scope:root"], output = "proto", opts = ["--include_file_write_contents"])
+        genrule(name = "consumer", srcs = [":report"], outs = ["copied"],
+                cmd = "cat $(location :report) > $@")
+        """;
+    write("scope/defs.bzl", rules);
+    write("scope/BUILD", "load(':defs.bzl', 'root')", "root(name = 'root')");
+    write("queries/BUILD", query);
+    String target = consumer ? "//queries:consumer" : "//queries:report";
+    addOptions(
+        "--experimental_active_directories=",
+        "--experimental_skycache_analysis_only=" + !cacheExecution);
+    assertUploadSuccess(target);
+    var original =
+        ActionGraphContainer.parseFrom(
+            readContentAsByteArray(getArtifacts(target).iterator().next()));
+    getSkyframeExecutor().resetEvaluator();
+    assertDownloadSuccess(target);
+    assertThat(
+            getCommandEnvironment().getRemoteAnalysisCachingEventListener().getCacheHits().stream()
+                .filter(key -> key instanceof ActionLookupKey)
+                .map(key -> ((ActionLookupKey) key).getLabel()))
+        .contains(parseCanonicalUnchecked(target));
+    String oldRoot = directories.getOutputBase().getPathString();
+    outputBaseName = "relocatedOutputBase";
+    reinitializeAndPreserveOptions();
+    write("scope/defs.bzl", rules);
+    write("scope/BUILD", "load(':defs.bzl', 'root')", "root(name = 'root')");
+    write("queries/BUILD", query);
+    assertDownloadSuccess(target);
+    var relocated =
+        ActionGraphContainer.parseFrom(
+            readContentAsByteArray(getArtifacts(target).iterator().next()));
+    assertThat(relocated.getActions(0).getFileContents())
+        .contains(directories.getOutputBase().getPathString());
+    assertThat(relocated.getActions(0).getFileContents()).doesNotContain(oldRoot);
+    assertThat(relocated.getActions(0).getActionKey())
+        .isNotEqualTo(original.getActions(0).getActionKey());
+    assertThat(
+            getCommandEnvironment().getRemoteAnalysisCachingEventListener().getCacheHits().stream()
+                .filter(key -> key instanceof ActionLookupKey)
+                .map(key -> ((ActionLookupKey) key).getLabel()))
+        .doesNotContain(parseCanonicalUnchecked(target));
+  }
+
+  @Test
+  public void genaqueryProtocolIsIndependentOfNestedSetSharing() throws Exception {
+    allowExternalRepositories = false;
+    reinitializeAndPreserveOptions();
+    write("scope/a", "a");
+    write("scope/b", "b");
+    write(
+        "scope/defs.bzl",
+        """
+        def _impl(ctx):
+            for name in ["first", "second"]:
+                out = ctx.actions.declare_file(name)
+                ctx.actions.run_shell(inputs = depset(ctx.files.srcs), outputs = [out], command = "exit 1")
+            return []
+        root = rule(implementation = _impl, attrs = {"srcs": attr.label_list(allow_files = True)})
+        """);
+    write("scope/BUILD", "load(':defs.bzl', 'root')", "root(name = 'root', srcs = ['a', 'b'])");
+    write(
+        "queries/BUILD",
+        "genaquery(name = 'report', expression = '//scope:root', scope = ['//scope:root'], output ="
+            + " 'proto')");
+    addOptions("--experimental_active_directories=", "--nobuild");
+    assertUploadSuccess("//scope:root");
+    addOptions(OFF_MODE_OPTION, "--build");
+    buildTarget("//queries:report");
+    var original = readContentAsByteArray(getArtifacts("//queries:report").iterator().next());
+    getSkyframeExecutor().resetEvaluator();
+    assertDownloadSuccess("//queries:report");
+    assertThat(readContentAsByteArray(getArtifacts("//queries:report").iterator().next()))
+        .isEqualTo(original);
   }
 
   @Test

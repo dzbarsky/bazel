@@ -1006,6 +1006,15 @@ public class CppCompileAction extends AbstractAction
   }
 
   @Override
+  public List<String> getArgumentsForAnalysis() throws CommandLineExpansionException {
+    return compileCommandLine.getArguments(
+        useHeaderModules
+            ? calculateModuleVariable(getOriginalInputs())
+            : CcToolchainVariables.builder().build(),
+        PathMapper.NOOP);
+  }
+
+  @Override
   public Sequence<String> getStarlarkArgv() throws EvalException {
     try {
       return StarlarkList.immutableCopyOf(getArguments());

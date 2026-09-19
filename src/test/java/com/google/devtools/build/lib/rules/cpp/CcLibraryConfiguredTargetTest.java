@@ -39,6 +39,7 @@ import com.google.devtools.build.lib.analysis.util.DummyTestFragment;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
+import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.packages.util.Crosstool.CcToolchainConfig;
 import com.google.devtools.build.lib.packages.util.MockCcSupport;
 import com.google.devtools.build.lib.rules.cpp.CcLinkingContext.LinkerInput;
@@ -899,7 +900,10 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
         .setupCcToolchainConfig(
             mockToolsConfig,
             CcToolchainConfig.builder()
-                .withFeatures(MockCcSupport.HEADER_MODULES_FEATURES, CppRuleClasses.SUPPORTS_PIC));
+                .withFeatures(
+                    MockCcSupport.HEADER_MODULES_FEATURES,
+                    CppRuleClasses.SUPPORTS_PIC,
+                    "parse_showincludes"));
     useConfiguration("--platforms=" + TestConstants.PLATFORM_LABEL);
     setupPackagesForModuleTests(/* useHeaderModules= */ true);
     invalidatePackages();
@@ -935,6 +939,21 @@ public class CcLibraryConfiguredTargetTest extends BuildViewTestCase {
             getGenfilesArtifact("d.cppmap", "//nomodule:d"));
     assertThat(getHeaderModules(dObjectAction.getCcCompilationContext().getTransitiveModules(true)))
         .containsExactly(getBinArtifact("_objs/b/b.pic.pcm", getConfiguredTarget("//module:b")));
+    List<String> analysisArguments = dObjectAction.getArgumentsForAnalysis();
+    assertThat(analysisArguments).containsExactlyElementsIn(dObjectAction.getArguments()).inOrder();
+    Artifact module = getBinArtifact("_objs/b/b.pic.pcm", getConfiguredTarget("//module:b"));
+    assertThat(analysisArguments).contains("module_file:" + module.getExecPathString());
+    dObjectAction.updateInputs(
+        NestedSetBuilder.<Artifact>stableOrder()
+            .addAll(
+                Iterables.filter(
+                    dObjectAction.getOriginalInputs().toList(), input -> !input.equals(module)))
+            .build());
+    assertThat(dObjectAction.getArguments())
+        .doesNotContain("module_file:" + module.getExecPathString());
+    assertThat(dObjectAction.getArgumentsForAnalysis())
+        .containsExactlyElementsIn(analysisArguments)
+        .inOrder();
   }
 
   private void writeSimpleCcLibrary() throws Exception {

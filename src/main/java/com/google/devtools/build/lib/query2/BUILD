@@ -89,7 +89,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/query2/query/aspectresolvers",
         "//src/main/java/com/google/devtools/build/lib/query2/query/output",
         "//src/main/java/com/google/devtools/build/lib/rules:alias",
-        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gencquery_key",
+        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gen_analysis_query_key",
         "//src/main/java/com/google/devtools/build/lib/skyframe:aspect_key_creator",
         "//src/main/java/com/google/devtools/build/lib/skyframe:configured_target_and_data",
         "//src/main/java/com/google/devtools/build/lib/skyframe:configured_target_key",
@@ -154,5 +154,6 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/collect/nestedset",
         "//src/main/java/com/google/devtools/build/lib/query2/engine",
         "//third_party:guava",
+        "//third_party:jsr305",
     ],
 )
