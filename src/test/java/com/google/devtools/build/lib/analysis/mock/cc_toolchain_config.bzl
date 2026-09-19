@@ -1398,6 +1398,7 @@ _generate_linkmap_feature = feature(
 )
 
 _feature_name_to_feature = {
+    "parse_showincludes": feature(name = "parse_showincludes", enabled = True),
     _FEATURE_NAMES.cpp_modules: _cpp_modules_feature,
     _FEATURE_NAMES.no_legacy_features: _no_legacy_features_feature,
     _FEATURE_NAMES.do_not_split_linking_cmdline: _do_not_split_linking_cmdline_feature,

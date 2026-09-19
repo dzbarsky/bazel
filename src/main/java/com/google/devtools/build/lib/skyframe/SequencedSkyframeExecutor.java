@@ -67,7 +67,7 @@ import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.profiler.GoogleAutoProfilerUtils;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
-import com.google.devtools.build.lib.rules.genquery.GenCqueryKey;
+import com.google.devtools.build.lib.rules.genquery.GenAnalysisQueryKey;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.DiffAwarenessManager.EvaluatingVersionDiff;
 import com.google.devtools.build.lib.skyframe.ExternalFilesHelper.ExternalFileAction;
@@ -699,7 +699,7 @@ public class SequencedSkyframeExecutor extends SkyframeExecutor {
 
   @ForOverride
   protected boolean shouldDeleteOnAnalysisInvalidatingChange(SkyKey k, @Nullable SkyValue v) {
-    if (k instanceof GenCqueryKey || (v != null && v.isCleared())) {
+    if (k instanceof GenAnalysisQueryKey || (v != null && v.isCleared())) {
       // Anything that had memory cleared should be discarded and re-evaluated.
       return true;
     }
