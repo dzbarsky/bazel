@@ -46,7 +46,8 @@ import com.google.devtools.build.lib.profiler.CounterSeriesTask;
 import com.google.devtools.build.lib.profiler.CounterSeriesTask.Color;
 import com.google.devtools.build.lib.profiler.CounterSeriesTaskImpl;
 import com.google.devtools.build.lib.profiler.Profiler;
-import com.google.devtools.build.lib.rules.genquery.GenCqueryKey;
+import com.google.devtools.build.lib.rules.genquery.GenAnalysisQueryKey;
+import com.google.devtools.build.lib.rules.genquery.GenAqueryDirectoryInfo;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNode;
@@ -81,8 +82,10 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.CodedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -234,6 +237,8 @@ final class SelectedEntrySerializer {
   }
 
   private final InMemoryGraph graph;
+  @Nullable private final ImmutableMap<SkyKey, GenAqueryDirectoryInfo> directoryBindings;
+  private final Map<SkyKey, Boolean> asyncDirectoryBindings = new ConcurrentHashMap<>();
   private final ObjectCodecs codecs;
   private final FrontierNodeVersion frontierVersion;
 
@@ -269,6 +274,41 @@ final class SelectedEntrySerializer {
       ObjectCodecs codecs,
       FrontierNodeVersion frontierVersion,
       ImmutableSet<SkyKey> selection,
+      CompressionService compressionService,
+      FingerprintValueService fingerprintValueService,
+      KeyValueWriter fileInvalidationWriter,
+      boolean shouldDiscardMemory,
+      EventBus eventBus,
+      ProfileCollector profileCollector,
+      SerializationStats serializationStats,
+      boolean emitUploadedEvents,
+      FileOpNodeMemoizingLookup fileOpNodes)
+      throws InterruptedException {
+    return uploadSelection(
+        graph,
+        versionGetter,
+        codecs,
+        frontierVersion,
+        selection,
+        GenAqueryDirectoryInfo.capture(graph, selection),
+        compressionService,
+        fingerprintValueService,
+        fileInvalidationWriter,
+        shouldDiscardMemory,
+        eventBus,
+        profileCollector,
+        serializationStats,
+        emitUploadedEvents,
+        fileOpNodes);
+  }
+
+  static ListenableFuture<ImmutableList<Throwable>> uploadSelection(
+      InMemoryGraph graph,
+      LongVersionGetter versionGetter,
+      ObjectCodecs codecs,
+      FrontierNodeVersion frontierVersion,
+      ImmutableSet<SkyKey> selection,
+      ImmutableMap<SkyKey, GenAqueryDirectoryInfo> directoryBindings,
       CompressionService compressionService,
       FingerprintValueService fingerprintValueService,
       KeyValueWriter fileInvalidationWriter,
@@ -331,6 +371,7 @@ final class SelectedEntrySerializer {
     var serializer =
         new SelectedEntrySerializer(
             graph,
+            directoryBindings,
             codecs,
             frontierVersion,
             compressionService,
@@ -397,7 +438,42 @@ final class SelectedEntrySerializer {
       ProfileCollector profileCollector,
       SerializationStats serializationStats,
       boolean emitUploadedEvents) {
+    this(
+        graph,
+        /* directoryBindings= */ null,
+        codecs,
+        frontierVersion,
+        compressionService,
+        fingerprintValueService,
+        fileOpNodes,
+        fileDependencySerializer,
+        writeStatuses,
+        shouldDiscardMemory,
+        packageRefcounts,
+        eventBus,
+        profileCollector,
+        serializationStats,
+        emitUploadedEvents);
+  }
+
+  private SelectedEntrySerializer(
+      InMemoryGraph graph,
+      @Nullable ImmutableMap<SkyKey, GenAqueryDirectoryInfo> directoryBindings,
+      ObjectCodecs codecs,
+      FrontierNodeVersion frontierVersion,
+      CompressionService compressionService,
+      FingerprintValueService fingerprintValueService,
+      FileOpNodeMemoizingLookup fileOpNodes,
+      FileDependencySerializer fileDependencySerializer,
+      SerializationStatus writeStatuses,
+      boolean shouldDiscardMemory,
+      @Nullable ImmutableMap<PackageIdentifier, AtomicInteger> packageRefcounts,
+      EventBus eventBus,
+      ProfileCollector profileCollector,
+      SerializationStats serializationStats,
+      boolean emitUploadedEvents) {
     this.graph = graph;
+    this.directoryBindings = directoryBindings;
     this.codecs = codecs;
     this.frontierVersion = frontierVersion;
     this.compressionService = compressionService;
@@ -542,7 +618,15 @@ final class SelectedEntrySerializer {
       @Nullable Iterable<SkyKey> dependencyDeps,
       @Nullable Version mtsv,
       @Nullable ImmutableList<SkyKey> queryDependencies) {
-    new UploadTask(key, value, dependencyKey, dependencyDeps, mtsv, queryDependencies).submit();
+    new UploadTask(
+            key,
+            value,
+            dependencyKey,
+            dependencyDeps,
+            mtsv,
+            queryDependencies,
+            directoryBinding(key, dependencyKey, dependencyDeps))
+        .submit();
   }
 
   private static ImmutableList<SkyKey> queryDependencies(
@@ -555,7 +639,51 @@ final class SelectedEntrySerializer {
     if (!excluded.isEmpty()) {
       directDeps = Iterables.filter(directDeps, dependency -> !excluded.contains(dependency));
     }
-    return GenCqueryKey.queryDependencies(directDeps);
+    return GenAnalysisQueryKey.queryDependencies(directDeps);
+  }
+
+  @Nullable
+  private GenAqueryDirectoryInfo directoryBinding(
+      SkyKey key, ActionLookupKey dependencyKey, @Nullable Iterable<SkyKey> dependencyDeps) {
+    if (directoryBindings != null) {
+      return directoryBindings.get(key);
+    }
+
+    // Async analysis uploads run before key is committed. Walk its supplied dependencies; an
+    // execution upload instead depends on its already committed owner. Remember completed
+    // dependencies for the other uploads of this command.
+    var marker = graph.getIfPresent(GenAqueryDirectoryInfo.Key.INSTANCE);
+    if (marker == null || !marker.isDone()) {
+      return null;
+    }
+    var pending = new ArrayDeque<SkyKey>();
+    Iterables.addAll(
+        pending, dependencyDeps == null ? ImmutableList.of(dependencyKey) : dependencyDeps);
+    var visited = new HashSet<SkyKey>();
+    while (!pending.isEmpty()) {
+      SkyKey dependency = pending.removeLast();
+      if (dependency.equals(GenAqueryDirectoryInfo.Key.INSTANCE)
+          || Boolean.TRUE.equals(asyncDirectoryBindings.get(dependency))) {
+        asyncDirectoryBindings.put(key, true);
+        return (GenAqueryDirectoryInfo) marker.getValue();
+      }
+      if (Boolean.FALSE.equals(asyncDirectoryBindings.get(dependency))
+          || !visited.add(dependency)) {
+        continue;
+      }
+      var entry = graph.getIfPresent(dependency);
+      if (entry == null || !entry.isDone()) {
+        // Do not memoize a negative result for a dependency that has not been committed.
+        visited.remove(dependency);
+        continue;
+      }
+      Iterables.addAll(pending, entry.getDirectDeps());
+    }
+    for (SkyKey dependency : visited) {
+      asyncDirectoryBindings.putIfAbsent(dependency, false);
+    }
+    asyncDirectoryBindings.put(key, false);
+    return null;
   }
 
   private final class UploadTask
@@ -566,6 +694,7 @@ final class SelectedEntrySerializer {
     @Nullable private final Iterable<SkyKey> dependencyDeps;
     @Nullable private final Version mtsv;
     @Nullable private final ImmutableList<SkyKey> queryDependencies;
+    @Nullable private final GenAqueryDirectoryInfo directories;
 
     // Keys are always stored as fingerprints so their detailed profiles are omitted.
     private AsyncSerializationTask keyResultTask;
@@ -577,13 +706,15 @@ final class SelectedEntrySerializer {
         ActionLookupKey dependencyKey,
         @Nullable Iterable<SkyKey> dependencyDeps,
         @Nullable Version mtsv,
-        @Nullable ImmutableList<SkyKey> queryDependencies) {
+        @Nullable ImmutableList<SkyKey> queryDependencies,
+        @Nullable GenAqueryDirectoryInfo directories) {
       this.key = key;
       this.value = value;
       this.dependencyKey = dependencyKey;
       this.dependencyDeps = dependencyDeps;
       this.mtsv = mtsv;
       this.queryDependencies = queryDependencies;
+      this.directories = directories;
     }
 
     void submit() {
@@ -612,6 +743,9 @@ final class SelectedEntrySerializer {
             queryDependencies == null ? value : new AnalysisCacheEntry(value, queryDependencies);
         if (mtsv != null && key instanceof ActionLookupKey) {
           valueToSerialize = new AnalysisValueWithMtsv(valueToSerialize, mtsv);
+        }
+        if (directories != null) {
+          valueToSerialize = new GenAqueryDirectoryInfo.BoundValue(valueToSerialize, directories);
         }
         this.valueResultTask =
             codecs.serializeMemoizedAsync(
