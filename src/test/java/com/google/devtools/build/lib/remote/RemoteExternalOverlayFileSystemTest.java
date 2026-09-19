@@ -40,6 +40,7 @@ import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.devtools.build.skyframe.MemoizingEvaluator;
 import com.google.devtools.build.skyframe.SkyKey;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -48,6 +49,52 @@ import org.mockito.ArgumentCaptor;
 
 @RunWith(JUnit4.class)
 public final class RemoteExternalOverlayFileSystemTest {
+  @Test
+  public void ensureMaterialized_previousCallerFinishesBeforeTaskSubmission() throws Exception {
+    var digestUtil = new DigestUtil(SyscallCache.NO_CACHE, DigestHashFunction.SHA256);
+    var cache = new InMemoryCombinedCache(digestUtil);
+    var nativeFs = new InMemoryFileSystem(DigestHashFunction.SHA256);
+    var externalRoot = PathFragment.create("/output/external");
+    var overlay = new RemoteExternalOverlayFileSystem(externalRoot, nativeFs);
+    var reporter = new Reporter(new EventBus());
+    var prefetcher = mock(AbstractActionInputPrefetcher.class);
+    when(prefetcher.prefetchFilesInterruptibly(isNull(), any(), any(), any(), any()))
+        .thenReturn(immediateVoidFuture());
+    overlay.beforeCommand(
+        cache,
+        prefetcher,
+        reporter,
+        "build-request",
+        "command",
+        mock(MemoizingEvaluator.class),
+        Duration.ofMinutes(1));
+    try {
+      var repo = RepositoryName.create("repo");
+      assertThat(overlay.injectRemoteRepo(repo, Tree.getDefaultInstance(), "marker")).isTrue();
+      var delayedRepo = mock(RepositoryName.class);
+      when(delayedRepo.getMarkerFileName()).thenReturn(repo.getMarkerFileName());
+      var calls = new AtomicInteger();
+      when(delayedRepo.getName())
+          .thenAnswer(
+              unused -> {
+                // Finish another caller after the presence check but before task submission.
+                if (calls.incrementAndGet() == 2) {
+                  overlay.ensureMaterialized(repo, reporter);
+                }
+                return repo.getName();
+              });
+
+      overlay.ensureMaterialized(delayedRepo, reporter);
+
+      assertThat(
+              FileSystemUtils.readContent(
+                  nativeFs.getPath(externalRoot.getChild(repo.getMarkerFileName())), UTF_8))
+          .isEqualTo("marker");
+    } finally {
+      overlay.afterCommand();
+    }
+  }
+
   @Test
   @SuppressWarnings("unchecked")
   public void afterLostRepoFile_invalidatesRepositoryOutsideOverlay() throws Exception {
