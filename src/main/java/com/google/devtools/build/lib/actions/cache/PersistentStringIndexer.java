@@ -242,6 +242,17 @@ final class PersistentStringIndexer implements StringIndexer {
     }
 
     @Override
+    protected boolean shouldKeepJournal() {
+      // We must first flush the journal to get an accurate measure of its size.
+      flushJournal();
+      try {
+        return journalSize() * 100 < cacheSize();
+      } catch (IOException e) {
+        return false;
+      }
+    }
+
+    @Override
     public Integer remove(Object object) {
       throw new UnsupportedOperationException();
     }
