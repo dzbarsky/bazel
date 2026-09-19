@@ -507,18 +507,6 @@ public class RunCommand implements BlazeCommand {
       configuration = result.getBuildConfiguration();
     }
 
-    // When --nobuild_runfile_manifests is enabled, the output service is responsible for staging
-    // runfiles.
-    if (!configuration.buildRunfileManifests()
-        && !env.getOutputService().stagesTopLevelRunfiles()) {
-      throw new RunCommandException(
-          reportAndCreateFailureResult(
-              env,
-              "--nobuild_runfile_manifests is incompatible with the \"run\" command",
-              Code.RUN_PREREQ_UNMET),
-          result.getStopTime());
-    }
-
     // Ensure runfiles directories are constructed, both for the target to run
     // and the --run_under target. The path of the runfiles directory of the
     // target to run needs to be preserved, as it acts as the working directory.
@@ -787,10 +775,7 @@ public class RunCommand implements BlazeCommand {
           builtTargets.stopTime);
     }
     TestTargetExecutionSettings settings = testAction.getExecutionSettings();
-    // ensureRunfilesBuilt does build the runfiles, but an extra consistency check won't hurt.
-    Preconditions.checkState(
-        settings.getRunfilesSymlinksCreated()
-            == options.getOptions(CoreOptions.class).getBuildRunfileLinks());
+
 
     Path execRoot = env.getExecRoot();
     Path runfilesDir = settings.getRunfilesDir();
@@ -1021,8 +1006,9 @@ public class RunCommand implements BlazeCommand {
       workingDir = workingDir.getRelative(runfilesSupport.getRunfiles().getPrefix());
     }
 
-    // Return early if runfiles staging is managed by the output service.
-    if (env.getOutputService().stagesTopLevelRunfiles()) {
+    // Without build-time manifests, the run-only output group already staged the runfiles.
+    if (runfilesSupport.getRunfilesManifest() == null
+        || env.getOutputService().stagesTopLevelRunfiles()) {
       return workingDir;
     }
 
