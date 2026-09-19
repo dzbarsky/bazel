@@ -34,6 +34,15 @@ public interface CommandAction extends Action {
   List<String> getArguments() throws CommandLineExpansionException, InterruptedException;
 
   /**
+   * Returns arguments derived only from immutable analysis data. Actions whose execution refines
+   * their command line must override this for cacheable analysis reports.
+   */
+  default List<String> getArgumentsForAnalysis()
+      throws CommandLineExpansionException, InterruptedException {
+    return getArguments();
+  }
+
+  /**
    * Returns a map of command line variables to their values that constitute the environment in
    * which this action should be run. This excludes any inherited environment variables, as this
    * method does not provide access to the client environment.

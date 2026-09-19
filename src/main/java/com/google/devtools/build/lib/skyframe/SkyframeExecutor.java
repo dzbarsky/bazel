@@ -185,9 +185,10 @@ import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.query2.common.QueryTransitivePackagePreloader;
 import com.google.devtools.build.lib.query2.common.UniverseScope;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
-import com.google.devtools.build.lib.rules.genquery.GenCqueryFunction;
-import com.google.devtools.build.lib.rules.genquery.GenCqueryKey;
-import com.google.devtools.build.lib.rules.genquery.GenCqueryValue;
+import com.google.devtools.build.lib.rules.genquery.GenAnalysisQueryFunction;
+import com.google.devtools.build.lib.rules.genquery.GenAnalysisQueryKey;
+import com.google.devtools.build.lib.rules.genquery.GenAnalysisQueryValue;
+import com.google.devtools.build.lib.rules.genquery.GenAqueryDirectoryInfo;
 import com.google.devtools.build.lib.rules.genquery.GenQueryPackageProviderFactory;
 import com.google.devtools.build.lib.runtime.KeepGoingOption;
 import com.google.devtools.build.lib.runtime.MemoryPressureOptions;
@@ -876,19 +877,26 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
             this::getExistingPackage));
     map.put(SkyFunctions.LOAD_ASPECTS, new LoadAspectsFunction());
     map.put(GenQueryPackageProviderFactory.GENQUERY_SCOPE, GenQueryPackageProviderFactory.FUNCTION);
-    var configuredQueryRule = ruleClassProvider.getRuleClassMap().get("gencquery");
-    if (configuredQueryRule != null) {
-      map.put(
-          GenCqueryKey.FUNCTION_NAME,
-          new GenCqueryFunction(
-              (GenCqueryFunction.QueryEvaluator) configuredQueryRule.getConfiguredTargetFactory(),
-              () -> SkyframeExecutorWrappingWalkableGraph.of(this),
-              this::tracksStateForIncrementality,
-              cpuBoundSemaphore));
+    map.put(
+        GenAqueryDirectoryInfo.Key.FUNCTION_NAME,
+        (key, env) -> GenAqueryDirectoryInfo.create(directories));
+    var queryEvaluators =
+        ImmutableMap.<GenAnalysisQueryKey.Kind, GenAnalysisQueryFunction.QueryEvaluator>builder();
+    for (var kind : GenAnalysisQueryKey.Kind.values()) {
+      var rule = ruleClassProvider.getRuleClassMap().get(kind.ruleName());
+      if (rule != null) {
+        queryEvaluators.put(
+            kind, (GenAnalysisQueryFunction.QueryEvaluator) rule.getConfiguredTargetFactory());
+      }
     }
     map.put(
-        SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING,
-        new ActionLookupConflictFindingFunction());
+        GenAnalysisQueryKey.FUNCTION_NAME,
+        new GenAnalysisQueryFunction(
+            queryEvaluators.buildOrThrow(),
+            () -> SkyframeExecutorWrappingWalkableGraph.of(this),
+            this::tracksStateForIncrementality,
+            cpuBoundSemaphore));
+    map.put(SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING, new ActionLookupConflictFindingFunction());
     map.put(
         SkyFunctions.TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING,
         new TopLevelActionLookupConflictFindingFunction());
@@ -1180,7 +1188,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
 
   private static boolean isAnalysisPhaseKey(SkyKey key) {
     return (key instanceof ActionLookupKey && !(key instanceof ActionTemplateExpansionKey))
-        || key instanceof GenCqueryKey;
+        || key instanceof GenAnalysisQueryKey;
   }
 
   protected SkyframeProgressReceiver newSkyframeProgressReceiver() {
@@ -1424,7 +1432,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       }
     }
     if (discardType.discardsAnalysis()) {
-      if (entry.getValue() instanceof GenCqueryValue query) {
+      if (entry.getValue() instanceof GenAnalysisQueryValue query) {
         query.clear();
       } else if (functionName.equals(SkyFunctions.CONFIGURED_TARGET)) {
         ConfiguredTargetValue ctValue = (ConfiguredTargetValue) entry.getValue();
@@ -3198,8 +3206,14 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       boolean determineTests)
       throws TargetParsingException, InterruptedException {
     return loadTargetPatternsWithFilters(
-        eventHandler, targetPatterns, relativeWorkingDirectory, options, threadCount,
-        keepGoing, determineTests, false);
+        eventHandler,
+        targetPatterns,
+        relativeWorkingDirectory,
+        options,
+        threadCount,
+        keepGoing,
+        determineTests,
+        false);
   }
 
   public TargetPatternPhaseValue loadTargetPatternsWithFilters(

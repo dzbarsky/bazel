@@ -15,12 +15,12 @@
 package com.google.devtools.build.lib.rules.genquery;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.analysis.ConfiguredObjectValue;
 import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
-import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.rules.genquery.GenQueryOutputStream.GenQueryResult;
 import com.google.devtools.build.lib.skyframe.PackageValue;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
@@ -47,30 +47,31 @@ import net.starlark.java.eval.StarlarkSemantics;
 import net.starlark.java.syntax.ParserInput;
 
 /** Acquires a tracked query graph, evaluates it, and retains only the formatted result. */
-public final class GenCqueryFunction implements SkyFunction {
+public final class GenAnalysisQueryFunction implements SkyFunction {
   /** Keeps query implementation dependencies out of the Skyframe analysis library. */
   public interface QueryEvaluator {
+    @Nullable
     GenQueryResult evaluate(
-        GenCqueryKey.Request request,
+        GenAnalysisQueryKey.Request request,
         RepositoryMapping repositoryMapping,
         StarlarkSemantics semantics,
-        GenCqueryScope scope,
+        GenAnalysisQueryScope scope,
         @Nullable ParserInput formatter,
-        ExtendedEventHandler eventHandler)
-        throws InterruptedException, QueryException;
+        Environment env)
+        throws InterruptedException, QueryException, IOException;
   }
 
-  private final QueryEvaluator evaluator;
+  private final ImmutableMap<GenAnalysisQueryKey.Kind, QueryEvaluator> evaluators;
   private final Supplier<WalkableGraph> graphSupplier;
   private final BooleanSupplier tracksIncrementalState;
   private final AtomicReference<Semaphore> cpuBoundSemaphore;
 
-  public GenCqueryFunction(
-      QueryEvaluator evaluator,
+  public GenAnalysisQueryFunction(
+      ImmutableMap<GenAnalysisQueryKey.Kind, QueryEvaluator> evaluators,
       Supplier<WalkableGraph> graphSupplier,
       BooleanSupplier tracksIncrementalState,
       AtomicReference<Semaphore> cpuBoundSemaphore) {
-    this.evaluator = evaluator;
+    this.evaluators = evaluators;
     this.graphSupplier = graphSupplier;
     this.tracksIncrementalState = tracksIncrementalState;
     this.cpuBoundSemaphore = cpuBoundSemaphore;
@@ -82,7 +83,7 @@ public final class GenCqueryFunction implements SkyFunction {
     final Set<SkyKey> metadataKeys = new LinkedHashSet<>();
     final Set<SkyKey> pending;
 
-    State(GenCqueryKey key) {
+    State(GenAnalysisQueryKey key) {
       pending = new LinkedHashSet<>(key.roots());
       // Literal-resolution metadata does not add configured targets to the query scope.
       metadataKeys.addAll(key.argument().targetPatternPackages());
@@ -94,11 +95,11 @@ public final class GenCqueryFunction implements SkyFunction {
   @Nullable
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws InterruptedException, QueryFunctionException {
-    GenCqueryKey queryKey = (GenCqueryKey) skyKey;
-    GenCqueryKey.Request request = queryKey.argument();
+    GenAnalysisQueryKey queryKey = (GenAnalysisQueryKey) skyKey;
+    GenAnalysisQueryKey.Request request = queryKey.argument();
     try {
       if (!tracksIncrementalState.getAsBoolean()) {
-        throw new QueryException("gencquery requires --track_incremental_state");
+        throw new QueryException(request.kind().ruleName() + " requires --track_incremental_state");
       }
       // These control inputs invalidate even empty requests, but are not query-scope members.
       PackageValue owner = (PackageValue) env.getValue(request.owner().getPackageIdentifier());
@@ -130,7 +131,7 @@ public final class GenCqueryFunction implements SkyFunction {
             }
           }
           // Never walk reverse edges in the live graph: they may include unrelated builds or the
-          // gencquery itself. Reading edges is safe only after requesting the parent through env.
+          // query rule itself. Reading edges is safe only after requesting the parent through env.
           // Track every visited value so changes to both nodes and edges invalidate this snapshot.
           // Only query results need sorting. Stringifying aspect keys here can exponentially
           // expand their shared base-aspect graphs.
@@ -147,7 +148,7 @@ public final class GenCqueryFunction implements SkyFunction {
                     Iterables.filter(directDeps, dependency -> !excluded.contains(dependency));
               }
             }
-            deps = GenCqueryKey.queryDependencies(directDeps);
+            deps = GenAnalysisQueryKey.queryDependencies(directDeps);
           }
           state.directDeps.put(key, deps);
           next.addAll(deps);
@@ -189,7 +190,7 @@ public final class GenCqueryFunction implements SkyFunction {
         }
       }
 
-      // All dependency requests precede admission: nested reports and cold scope analysis
+      // All analysis dependency requests precede admission: nested reports and cold scope analysis
       // must be able to acquire the same permit. Release precisely the captured semaphore.
       Semaphore semaphore = cpuBoundSemaphore.get();
       if (semaphore != null) {
@@ -210,19 +211,26 @@ public final class GenCqueryFunction implements SkyFunction {
                 SkyFunctionException.Transience.TRANSIENT);
           }
         }
-        return new GenCqueryValue(
-            evaluator.evaluate(
-                request,
-                owner.getPackage().getMetadata().repositoryMapping(),
-                semantics,
-                new GenCqueryScope(queryKey.roots(), state.values, state.directDeps),
-                formatter,
-                env.getListener()));
+        GenQueryResult result =
+            evaluators
+                .get(request.kind())
+                .evaluate(
+                    request,
+                    owner.getPackage().getMetadata().repositoryMapping(),
+                    semantics,
+                    new GenAnalysisQueryScope(queryKey.roots(), state.values, state.directDeps),
+                    formatter,
+                    env);
+        return result == null ? null : new GenAnalysisQueryValue(result);
       } finally {
         if (semaphore != null) {
           semaphore.release();
         }
       }
+    } catch (IOException e) {
+      throw new QueryFunctionException(
+          new QueryException(request.kind().ruleName() + " failed: " + e.getMessage()),
+          SkyFunctionException.Transience.TRANSIENT);
     } catch (QueryException e) {
       throw new QueryFunctionException(e, SkyFunctionException.Transience.PERSISTENT);
     }

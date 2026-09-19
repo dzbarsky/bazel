@@ -507,7 +507,7 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
         "filegroup(name = 'cycle', srcs = [':cycle'])",
         "gencquery(name = 'q', expression = 'set()', strict = False, scope = ['" + scope + "'])");
     assertFailure("//pkg:q", message);
-    assertDoesNotContainEvent("GENCQUERY");
+    assertDoesNotContainEvent("GEN_ANALYSIS_QUERY");
   }
 
   @Test
