@@ -182,6 +182,49 @@ public final class PersistentStringIndexerTest {
   }
 
   @Test
+  public void testIncrementalSave() throws Exception {
+    for (int i = 0; i < 1000; i++) {
+      assertIndex(i, "path/" + i);
+    }
+    indexer.save();
+    dataPath.setLastModifiedTime(0);
+
+    indexer.save();
+    assertThat(dataPath.getLastModifiedTime()).isEqualTo(0);
+
+    assertIndex(1000, "added");
+    indexer.save();
+    assertThat(dataPath.getLastModifiedTime()).isEqualTo(0);
+    long journalSize = journalPath.getFileSize();
+    assertThat(journalSize * 100).isLessThan(dataPath.getFileSize());
+
+    indexer.save();
+    assertThat(dataPath.getLastModifiedTime()).isEqualTo(0);
+    assertThat(journalPath.getFileSize()).isEqualTo(journalSize);
+
+    indexer = PersistentStringIndexer.create(dataPath, journalPath, clock);
+    assertThat(journalPath.exists()).isFalse();
+    assertSize(1001);
+    assertContent();
+
+    // A journal larger than 1% of the main file must be compacted.
+    assertIndex(1001, "x".repeat((int) (dataPath.getFileSize() / 100 + 1)));
+    indexer.save();
+    assertThat(journalPath.exists()).isFalse();
+    indexer = PersistentStringIndexer.create(dataPath, journalPath, clock);
+    assertSize(1002);
+    assertContent();
+
+    assertIndex(1002, "cleared");
+    indexer.save();
+    assertThat(journalPath.exists()).isTrue();
+    indexer.clear();
+    indexer = PersistentStringIndexer.create(dataPath, journalPath, clock);
+    assertSize(0);
+    assertThat(journalPath.exists()).isFalse();
+  }
+
+  @Test
   public void testJournalRecoveryWithoutMainDataFile() throws Exception {
     assertThat(dataPath.exists()).isFalse();
     assertThat(journalPath.exists()).isFalse();

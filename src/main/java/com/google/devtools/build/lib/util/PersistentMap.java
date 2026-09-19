@@ -265,17 +265,11 @@ public abstract class PersistentMap<K, V> extends ForwardingConcurrentMap<K, V> 
    *     last save().
    */
   private synchronized long save(boolean fullSave) throws IOException {
-    /* Report a previously failing I/O operation. */
-    if (deferredIOFailure != null) {
-      try {
-        throw new IOException(deferredIOFailure);
-      } finally {
-        deferredIOFailure = null;
-      }
-    }
-    if (!fullSave && shouldKeepJournal()) {
+    boolean keepJournal = !fullSave && deferredIOFailure == null && shouldKeepJournal();
+    if (keepJournal) {
       flushJournal();
-    } else {
+    }
+    if (!keepJournal || deferredIOFailure != null) {
       Path mapTemp =
           mapFile.getRelative(FileSystemUtils.replaceExtension(mapFile.asFragment(), ".tmp"));
       try {
@@ -287,6 +281,15 @@ public abstract class PersistentMap<K, V> extends ForwardingConcurrentMap<K, V> 
       }
       clearJournal();
       journalFile.delete();
+    }
+
+    // Report a journal error only after a full save has repaired any partial writes.
+    if (deferredIOFailure != null) {
+      try {
+        throw new IOException(deferredIOFailure);
+      } finally {
+        deferredIOFailure = null;
+      }
     }
     return journalSize() + cacheSize();
   }

@@ -14,14 +14,20 @@
 package com.google.devtools.build.lib.util;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.devtools.build.lib.testutil.Scratch;
 import com.google.devtools.build.lib.testutil.TestThread;
 import com.google.devtools.build.lib.testutil.TestUtils;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import java.io.DataInput;
 import java.io.DataOutput;
+import java.io.FilterOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.junit.Before;
@@ -266,6 +272,56 @@ public final class PersistentMapTest {
     createMap(); // create a new map
     // all three entries are still in the map on disk
     assertThat(map).hasSize(3);
+  }
+
+  @Test
+  public void saveReportsJournalWriteFailure() throws Exception {
+    class FailingFileSystem extends InMemoryFileSystem {
+      boolean failWrites;
+
+      FailingFileSystem() {
+        super(DigestHashFunction.SHA256);
+      }
+
+      @Override
+      public OutputStream getOutputStream(PathFragment path, boolean append, boolean internal)
+          throws IOException {
+        OutputStream stream = super.getOutputStream(path, append, internal);
+        if (!failWrites) {
+          return stream;
+        }
+        return new FilterOutputStream(stream) {
+          @Override
+          public void write(int value) throws IOException {
+            out.write(value);
+            throw new IOException("injected partial write");
+          }
+        };
+      }
+    }
+    FailingFileSystem fs = new FailingFileSystem();
+    fs.getPath("/tmp").createDirectoryAndParents();
+    mapFile = fs.getPath("/tmp/map.txt");
+    journalFile = fs.getPath("/tmp/journal.txt");
+    createMap();
+    map.put("foo", "bar");
+    map.save();
+    map.flushJournal = false;
+    map.keepJournal = true;
+    map.flushJournal();
+    fs.failWrites = true;
+    map.put("baz", "bang");
+
+    IOException failure = assertThrows(IOException.class, () -> map.save());
+    assertThat(failure).hasMessageThat().contains("injected partial write");
+
+    fs.failWrites = false;
+    // The failed recovery must leave the journal error pending until a full save succeeds.
+    failure = assertThrows(IOException.class, () -> map.save());
+    assertThat(failure).hasMessageThat().contains("injected partial write");
+    map.save();
+    createMap();
+    assertThat(map).containsExactly("foo", "bar", "baz", "bang");
   }
 
   @Test
