@@ -557,8 +557,9 @@ filegroup(name = "consumer", srcs = [":generated.txt"])
 alias(name = "aliased", actual = ":consumer")
 EOF
 
-  run_probe build --experimental_cache_probe_exclude_deps=//ignored \
-    //pkg/... //blocked/... //ignored/...
+  # The integration harness adds tools packages with unrelated dependencies.
+  run_probe build --experimental_cache_probe_exclude_deps=//ignored,//tools \
+    -- //... -//ignored/...
   assert_affected //pkg:producer //pkg:consumer //pkg:wrapper //pkg:aliased
   assert_equals 5 "$("$JQ" -r .total_targets "$manifest")"
   "$JQ" -e '.excluded_targets | index("//blocked:consumer") != null and
