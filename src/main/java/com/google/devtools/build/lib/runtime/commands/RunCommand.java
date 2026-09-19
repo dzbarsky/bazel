@@ -59,6 +59,7 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.exec.ExecutionOptions;
 import com.google.devtools.build.lib.exec.RunfilesTreeUpdater;
+import com.google.devtools.build.lib.exec.SymlinkTreeHelper;
 import com.google.devtools.build.lib.exec.TestPolicy;
 import com.google.devtools.build.lib.packages.InputFile;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
@@ -506,18 +507,6 @@ public class RunCommand implements BlazeCommand {
       configuration = result.getBuildConfiguration();
     }
 
-    // When --nobuild_runfile_manifests is enabled, the output service is responsible for staging
-    // runfiles.
-    if (!configuration.buildRunfileManifests()
-        && !env.getOutputService().stagesTopLevelRunfiles()) {
-      throw new RunCommandException(
-          reportAndCreateFailureResult(
-              env,
-              "--nobuild_runfile_manifests is incompatible with the \"run\" command",
-              Code.RUN_PREREQ_UNMET),
-          result.getStopTime());
-    }
-
     // Ensure runfiles directories are constructed, both for the target to run
     // and the --run_under target. The path of the runfiles directory of the
     // target to run needs to be preserved, as it acts as the working directory.
@@ -773,10 +762,6 @@ public class RunCommand implements BlazeCommand {
                 .getActionGraph(env.getReporter())
                 .getGeneratingAction(Iterables.getOnlyElement(statusArtifacts));
     TestTargetExecutionSettings settings = testAction.getExecutionSettings();
-    // ensureRunfilesBuilt does build the runfiles, but an extra consistency check won't hurt.
-    Preconditions.checkState(
-        settings.getRunfilesSymlinksCreated()
-            == options.getOptions(CoreOptions.class).buildRunfileLinks);
 
     Path execRoot = env.getExecRoot();
     Path runfilesDir = settings.getRunfilesDir();
@@ -1012,6 +997,13 @@ public class RunCommand implements BlazeCommand {
       return workingDir;
     }
 
+    if (!configuration.buildRunfileManifests() && !configuration.runfilesEnabled()) {
+      throw new RunfilesException(
+          "--nobuild_runfile_manifests requires --enable_runfiles for the \"run\" command",
+          Code.RUN_PREREQ_UNMET,
+          null);
+    }
+
     // Always create runfiles directory and the workspace-named directory underneath, even if we
     // run with --enable_runfiles=no (which is the default on Windows as of 2020-01-24).
     // If the binary we run is in fact a test, it will expect to be able to chdir into the runfiles
@@ -1029,7 +1021,20 @@ public class RunCommand implements BlazeCommand {
     }
 
     try {
-      runfilesTreeUpdater.updateRunfiles(ImmutableList.of(runfilesSupport.getRunfilesTree()));
+      if (configuration.buildRunfileManifests()) {
+        runfilesTreeUpdater.updateRunfiles(ImmutableList.of(runfilesSupport.getRunfilesTree()));
+      } else {
+        Path inputManifest =
+            env.getExecRoot().getRelative(RunfilesSupport.inputManifestExecPath(runfilesDir));
+        // Launchers may prefer a manifest left over from a previous manifest-enabled build.
+        inputManifest.delete();
+        new SymlinkTreeHelper(
+                inputManifest,
+                env.getExecRoot().getRelative(RunfilesSupport.outputManifestExecPath(runfilesDir)),
+                env.getExecRoot().getRelative(runfilesDir),
+                runfilesSupport.getRunfilesTree().getWorkspaceName())
+            .createRunfilesSymlinks(runfilesSupport.getRunfilesTree().getMapping());
+      }
     } catch (ExecException | IOException e) {
       throw new RunfilesException(
           "Failed to create runfiles symlinks: " + e.getMessage(),

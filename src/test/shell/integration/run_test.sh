@@ -166,10 +166,66 @@ EOF
 }
 
 function test_run_with_no_build_runfile_manifests {
+  if is_windows; then
+    return
+  fi
+  write_cc_source_files
+  echo "initial data" > cc/hello_kitty.txt
+
+  bazel build --nobuild_runfile_manifests //cc:kitty >& $TEST_log \
+      || fail "build failed"
+  # A previous manifest-enabled build can leave this discovery fallback behind.
+  echo "stale manifest" > bazel-bin/cc/kitty.runfiles_manifest
+  bazel run --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //cc:kitty >& $TEST_log || fail "run failed"
+  expect_log_once "initial data"
+  [[ ! -e bazel-bin/cc/kitty.runfiles_manifest ]] || fail "stale manifest remains"
+  [[ ! -e bazel-bin/cc/kitty.runfiles/MANIFEST ]] || fail "manifest was created"
+  bazel build --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //cc:kitty >& $TEST_log || fail "build after run failed"
+
+  rm cc/hello_kitty.txt
+  echo "updated data" > cc/pussycat.txt
+  bazel run --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //cc:kitty >& $TEST_log || fail "run with updated data failed"
+  expect_log_once "updated data"
+  [[ ! -L bazel-bin/cc/kitty.runfiles/_main/cc/hello_kitty.txt ]] \
+      || fail "stale runfile remains"
+}
+
+function test_run_with_no_build_runfile_manifests_requires_runfiles {
   write_cc_source_files
 
-  bazel run --nobuild_runfile_manifests //cc:kitty >& $TEST_log && fail "should have failed"
-  expect_log_once "--nobuild_runfile_manifests is incompatible with the \"run\" command"
+  bazel run --nobuild_runfile_manifests --enable_runfiles=no //cc:kitty \
+      >& $TEST_log && fail "should have failed"
+  expect_log_once '--nobuild_runfile_manifests requires --enable_runfiles for the "run" command'
+}
+
+function test_run_test_with_no_build_runfile_manifests {
+  if is_windows; then
+    return
+  fi
+  add_rules_shell "MODULE.bazel"
+  mkdir -p foo
+  cat > foo/BUILD <<'EOF'
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+sh_test(name = "foo_test", srcs = ["foo.sh"], data = ["data.txt"])
+EOF
+  cat > foo/foo.sh <<'EOF'
+#!/usr/bin/env bash
+cat "$TEST_SRCDIR/$TEST_WORKSPACE/foo/data.txt"
+EOF
+  chmod +x foo/foo.sh
+  echo "test runfile contents" > foo/data.txt
+
+  bazel test --nobuild_runfile_manifests //foo:foo_test >& $TEST_log \
+      || fail "test failed"
+  bazel run --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //foo:foo_test >& $TEST_log || fail "run test failed"
+  expect_log_once "test runfile contents"
+  bazel test --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //foo:foo_test >& $TEST_log || fail "test after run failed"
+  expect_log "0 targets configured"
 }
 
 function test_script_file_generation {
@@ -683,6 +739,7 @@ load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 sh_binary(
   name = 'greetings',
   srcs = ['greetings.sh'],
+  data = ['wrapper.txt'],
 )
 
 sh_binary(
@@ -700,21 +757,31 @@ EOF
 echo "goodbye $@"
 EOF
   chmod +x "$pkg/farewell.sh"
+  echo "run-under data" > "$pkg/wrapper.txt"
 
-  bazel run --run_under="//$pkg:greetings friend && unset RUNFILES_MANIFEST_FILE &&" -- "//$pkg:farewell" buddy \
-      >$TEST_log || fail "expected test to pass"
+  local flags=(--build_runfile_manifests)
+  if ! is_windows; then
+    flags+=(--nobuild_runfile_manifests)
+    echo "cat \"\$0.runfiles/_main/$pkg/wrapper.txt\"" >> "$pkg/greetings.sh"
+  fi
   # TODO(https://github.com/bazelbuild/bazel/issues/22148): bazel-team - This is
   # just demonstrating how things are, it's probably not how we want them to be.
   # "unset RUNFILES_MANIFEST_FILE" is necessary because the environment
   # variables set by //pkg:greetings are otherwise passed to //pkg:farewell and
   # break its runfiles discovery.
-  if is_windows; then
-    expect_log "hello there friend"
-    expect_log "goodbye buddy"
-  else
-    expect_log "hello there friend && unset RUNFILES_MANIFEST_FILE && .*bin/$pkg/farewell buddy"
-    expect_not_log "goodbye"
-  fi
+  local flag
+  for flag in "${flags[@]}"; do
+    bazel run "$flag" --run_under="//$pkg:greetings friend && unset RUNFILES_MANIFEST_FILE &&" -- "//$pkg:farewell" buddy \
+        >$TEST_log || fail "expected test to pass"
+    if is_windows; then
+      expect_log "hello there friend"
+      expect_log "goodbye buddy"
+    else
+      expect_log "hello there friend && unset RUNFILES_MANIFEST_FILE && .*bin/$pkg/farewell buddy"
+      expect_log "run-under data"
+      expect_not_log "goodbye"
+    fi
+  done
 }
 
 function test_run_under_command_change_preserves_cache() {
