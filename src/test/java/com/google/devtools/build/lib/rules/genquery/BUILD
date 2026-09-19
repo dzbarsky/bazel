@@ -21,7 +21,7 @@ java_test(
         "//src/test/java/com/google/devtools/build/lib:test_runner",
     ],
     deps = [
-        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gencquery_core",
+        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gen_analysis_query_core",
         "//src/main/java/com/google/devtools/build/lib/util",
         "//third_party:junit4",
         "//third_party:truth",

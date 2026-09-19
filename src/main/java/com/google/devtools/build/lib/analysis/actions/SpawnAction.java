@@ -214,6 +214,14 @@ public class SpawnAction extends AbstractAction implements CommandAction {
   }
 
   @Override
+  public List<String> getArgumentsForAnalysis()
+      throws CommandLineExpansionException, InterruptedException {
+    // Path-mapping eligibility can change when execution discovers or prunes colliding inputs.
+    // Reports use the original exec paths, matching the artifacts in the analysis graph.
+    return commandLines.allArguments(PathMapper.NOOP);
+  }
+
+  @Override
   public Sequence<CommandLineArgsApi> getStarlarkArgs() {
     ImmutableList.Builder<CommandLineArgsApi> result = ImmutableList.builder();
     ImmutableSet<Artifact> directoryInputs =

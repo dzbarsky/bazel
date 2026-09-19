@@ -23,13 +23,23 @@ import com.google.devtools.build.lib.actions.ActionExecutionMetadata;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
 import com.google.devtools.build.lib.actions.ArtifactPathResolver;
+import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.analysis.actions.TemplateExpansionAction;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import java.io.IOException;
+import javax.annotation.Nullable;
 
 /** Utility class for Aquery */
 public class AqueryUtils {
+  /**
+   * Resolves parameter contents from the input's analysis owner, without reading an output file.
+   */
+  @FunctionalInterface
+  public interface ParamFileContents {
+    @Nullable
+    Iterable<String> get(Artifact input) throws CommandLineExpansionException, InterruptedException;
+  }
 
   private AqueryUtils() {}
 

@@ -206,6 +206,15 @@ public final class SourceManifestAction extends AbstractFileWriteAction
     return symlinkArtifacts;
   }
 
+  /** Whether formatting this manifest's contents requires reading a generated symlink. */
+  public boolean hasSymlinkArtifacts() {
+    return runfiles.getArtifacts().toList().stream().anyMatch(Artifact::isSymlink)
+        || runfiles.getSymlinks().toList().stream()
+            .anyMatch(entry -> entry.getArtifact().isSymlink())
+        || runfiles.getRootSymlinks().toList().stream()
+            .anyMatch(entry -> entry.getArtifact().isSymlink());
+  }
+
   @VisibleForTesting
   public void writeTo(OutputStream out, @Nullable EventHandler eventHandler) throws IOException {
     writeFile(
