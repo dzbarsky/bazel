@@ -22,6 +22,7 @@ import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.query2.common.CqueryNode;
+import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -37,15 +38,16 @@ import java.util.Set;
 import javax.annotation.Nullable;
 
 /** A closed query graph owned by one evaluation attempt. */
-final class GenCqueryScope implements WalkableGraph {
+final class GenAnalysisQueryScope implements WalkableGraph {
   private final ImmutableList<ConfiguredTargetKey> rootKeys;
   private final Map<SkyKey, SkyValue> values;
   private final Map<SkyKey, Iterable<SkyKey>> directDeps;
   @Nullable private ImmutableMap<SkyKey, Iterable<SkyKey>> reverseDeps;
+  @Nullable private ImmutableListMultimap<ConfiguredTargetKey, AspectKey> aspectsByTarget;
   private final ImmutableListMultimap<Label, SkyKey> targetKeysByLabel;
   private final ImmutableMap<String, BuildConfigurationValue> configurations;
 
-  GenCqueryScope(
+  GenAnalysisQueryScope(
       ImmutableList<ConfiguredTargetKey> rootKeys,
       Map<SkyKey, SkyValue> values,
       Map<SkyKey, Iterable<SkyKey>> directDeps) {
@@ -89,12 +91,33 @@ final class GenCqueryScope implements WalkableGraph {
     return reverseDeps = builder.buildOrThrow();
   }
 
-  List<CqueryNode> getTargets(Label label) {
+  synchronized ImmutableList<AspectKey> getAspectKeys(ConfiguredTargetKey target) {
+    if (aspectsByTarget == null) {
+      var aspects = ImmutableListMultimap.<ConfiguredTargetKey, AspectKey>builder();
+      for (SkyKey key : values.keySet()) {
+        if (key instanceof AspectKey aspect) {
+          var base = (ConfiguredTargetValue) values.get(aspect.getBaseConfiguredTargetKey());
+          if (base != null) {
+            aspects.put(
+                ConfiguredTargetKey.fromConfiguredTarget(base.getConfiguredTarget()), aspect);
+          }
+        }
+      }
+      aspectsByTarget = aspects.build();
+    }
+    // This small owner index avoids constructing all reverse edges just to attach action lists.
+    return aspectsByTarget.get(target);
+  }
+
+  List<ConfiguredTargetValue> getTargetValues(Label label) {
     // Index keys, not configured target objects, so clearing analysis values still releases their
     // providers and actions. Only materialize targets while evaluating a query.
     return Lists.transform(
-        targetKeysByLabel.get(label),
-        key -> ((ConfiguredTargetValue) values.get(key)).getConfiguredTarget());
+        targetKeysByLabel.get(label), key -> (ConfiguredTargetValue) values.get(key));
+  }
+
+  List<CqueryNode> getTargets(Label label) {
+    return Lists.transform(getTargetValues(label), ConfiguredTargetValue::getConfiguredTarget);
   }
 
   ImmutableMap<String, BuildConfigurationValue> getConfigurations() {

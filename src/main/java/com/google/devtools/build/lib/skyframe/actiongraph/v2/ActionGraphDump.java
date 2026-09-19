@@ -20,6 +20,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.AbstractAction;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
@@ -153,9 +154,33 @@ public class ActionGraphDump {
           InterruptedException,
           IOException,
           TemplateExpansionException {
+    dumpAction(configuredTarget, action, null, false);
+  }
 
+  /** Encodes one action using analysis-only arguments and owner-resolved parameter files. */
+  public void dumpAction(
+      ConfiguredTarget configuredTarget,
+      ActionAnalysisMetadata action,
+      AqueryUtils.ParamFileContents paramFiles)
+      throws CommandLineExpansionException,
+          InterruptedException,
+          IOException,
+          TemplateExpansionException {
+    dumpAction(configuredTarget, action, paramFiles, true);
+  }
+
+  private void dumpAction(
+      ConfiguredTarget configuredTarget,
+      ActionAnalysisMetadata action,
+      @Nullable AqueryUtils.ParamFileContents paramFiles,
+      boolean analysisOnly)
+      throws CommandLineExpansionException,
+          InterruptedException,
+          IOException,
+          TemplateExpansionException {
     // Store the content of param files.
     if (includeParamFiles
+        && paramFiles == null
         && (action instanceof ParameterFileWriteAction parameterFileWriteAction)) {
 
       Iterable<String> fileContent = parameterFileWriteAction.getArguments();
@@ -203,7 +228,9 @@ public class ActionGraphDump {
       // environment as well.
       ImmutableMap<String, String> fixedEnvironment =
           spawnAction.getEffectiveEnvironment(ImmutableMap.of(), PathMapper.NOOP);
-      for (Map.Entry<String, String> environmentVariable : fixedEnvironment.entrySet()) {
+      for (Map.Entry<String, String> environmentVariable :
+          (analysisOnly ? ImmutableSortedMap.copyOf(fixedEnvironment) : fixedEnvironment)
+              .entrySet()) {
         actionBuilder.addEnvironmentVariables(
             AnalysisProtosV2.KeyValuePair.newBuilder()
                 .setKey(internalToUnicode(environmentVariable.getKey()))
@@ -213,7 +240,8 @@ public class ActionGraphDump {
     }
 
     if (includeActionCmdLine && action instanceof CommandAction commandAction) {
-      for (String argument : commandAction.getArguments()) {
+      for (String argument :
+          analysisOnly ? commandAction.getArgumentsForAnalysis() : commandAction.getArguments()) {
         actionBuilder.addArguments(internalToUnicode(argument));
       }
     }
@@ -239,11 +267,15 @@ public class ActionGraphDump {
       // to provide params to the command.
       for (Artifact input : getActionInputs(action, includePrunedInputs).toList()) {
         String inputFileExecPath = input.getExecPathString();
-        if (getParamFileNameToContentMap().containsKey(inputFileExecPath)) {
+        Iterable<String> arguments =
+            paramFiles == null
+                ? getParamFileNameToContentMap().get(inputFileExecPath)
+                : paramFiles.get(input);
+        if (arguments != null) {
           AnalysisProtosV2.ParamFile.Builder paramFile =
               AnalysisProtosV2.ParamFile.newBuilder()
                   .setExecPath(internalToUnicode(inputFileExecPath));
-          for (String argument : getParamFileNameToContentMap().get(inputFileExecPath)) {
+          for (String argument : arguments) {
             paramFile.addArguments(internalToUnicode(argument));
           }
           actionBuilder.addParamFiles(paramFile.build());
@@ -251,7 +283,8 @@ public class ActionGraphDump {
       }
     }
     Map<String, String> executionInfo = action.getExecutionInfo();
-    for (Map.Entry<String, String> info : executionInfo.entrySet()) {
+    for (Map.Entry<String, String> info :
+        (analysisOnly ? ImmutableSortedMap.copyOf(executionInfo) : executionInfo).entrySet()) {
       actionBuilder.addExecutionInfo(
           AnalysisProtosV2.KeyValuePair.newBuilder()
               .setKey(internalToUnicode(info.getKey()))

@@ -53,6 +53,7 @@ import java.io.OutputStream;
 import java.io.PrintStream;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -77,6 +78,8 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
   private final AqueryActionFilter actionFilters;
   private final LabelPrinter labelPrinter;
   private Map<String, String> paramFileNameToContentMap;
+  @Nullable AqueryUtils.ParamFileContents paramFiles;
+  boolean analysisOnly;
 
   ActionGraphTextOutputFormatterCallback(
       ExtendedEventHandler eventHandler,
@@ -135,12 +138,13 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
     }
   }
 
-  private void writeAction(
+  void writeAction(
       ActionAnalysisMetadata action,
       PrintStream printStream,
       @Nullable Set<ActionAnalysisMetadata> reachableActions)
       throws IOException, CommandLineExpansionException, InterruptedException, EvalException {
     if (options.getIncludeParamFiles()
+        && paramFiles == null
         && action instanceof ParameterFileWriteAction parameterFileWriteAction) {
 
       String fileContent = String.join(" \\\n    ", parameterFileWriteAction.getArguments());
@@ -292,10 +296,9 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
               CommandFailureUtils.describeCommand(
                   CommandDescriptionForm.COMPLETE,
                   /* prettyPrintArgs= */ true,
-                  ((CommandAction) action)
-                      .getArguments().stream()
-                          .map(a -> internalToEscapedUnicode(a))
-                          .collect(toImmutableList()),
+                  getArguments((CommandAction) action).stream()
+                      .map(a -> internalToEscapedUnicode(a))
+                      .collect(toImmutableList()),
                   /* environment= */ null,
                   /* environmentVariablesToClear= */ null,
                   /* cwd= */ null,
@@ -312,12 +315,19 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
       // to provide params to the command.
       for (Artifact input : getActionInputs(action, options.getIncludePrunedInputs()).toList()) {
         String inputFileName = input.getExecPathString();
-        if (getParamFileNameToContentMap().containsKey(inputFileName)) {
+        String content;
+        if (paramFiles == null) {
+          content = getParamFileNameToContentMap().get(inputFileName);
+        } else {
+          Iterable<String> arguments = paramFiles.get(input);
+          content = arguments == null ? null : String.join(" \\\n    ", arguments);
+        }
+        if (content != null) {
           stringBuilder
               .append("  Params File Content (")
               .append(inputFileName)
               .append("):\n    ")
-              .append(getParamFileNameToContentMap().get(inputFileName))
+              .append(content)
               .append("\n");
         }
       }
@@ -378,6 +388,11 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
     stringBuilder.append('\n');
   }
 
+  private List<String> getArguments(CommandAction action)
+      throws CommandLineExpansionException, InterruptedException {
+    return analysisOnly ? action.getArgumentsForAnalysis() : action.getArguments();
+  }
+
   private void writeCommand(ActionAnalysisMetadata action, StringBuilder stringBuilder)
       throws IOException, CommandLineExpansionException, InterruptedException, EvalException {
     if (!(action instanceof CommandAction)) {
@@ -386,10 +401,9 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
 
     boolean first = true;
     for (String arg :
-        ((CommandAction) action)
-            .getArguments().stream()
-                .map(a -> internalToEscapedUnicode(a))
-                .collect(toImmutableList())) {
+        getArguments((CommandAction) action).stream()
+            .map(a -> internalToEscapedUnicode(a))
+            .collect(toImmutableList())) {
       if (!first) {
         stringBuilder.append(' ');
       }
