@@ -765,7 +765,7 @@ public class RunCommand implements BlazeCommand {
     // ensureRunfilesBuilt does build the runfiles, but an extra consistency check won't hurt.
     Preconditions.checkState(
         settings.getRunfilesSymlinksCreated()
-            == options.getOptions(CoreOptions.class).buildRunfileLinks);
+            == builtTargets.configuration.buildRunfileLinks());
 
     Path execRoot = env.getExecRoot();
     Path runfilesDir = settings.getRunfilesDir();

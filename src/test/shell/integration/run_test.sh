@@ -201,6 +201,33 @@ function test_run_with_no_build_runfile_manifests_requires_runfiles {
   expect_log_once '--nobuild_runfile_manifests requires --enable_runfiles for the "run" command'
 }
 
+function test_run_test_with_no_build_runfile_manifests {
+  if is_windows; then
+    return
+  fi
+  add_rules_shell "MODULE.bazel"
+  mkdir -p foo
+  cat > foo/BUILD <<'EOF'
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+sh_test(name = "foo_test", srcs = ["foo.sh"], data = ["data.txt"])
+EOF
+  cat > foo/foo.sh <<'EOF'
+#!/usr/bin/env bash
+cat "$TEST_SRCDIR/$TEST_WORKSPACE/foo/data.txt"
+EOF
+  chmod +x foo/foo.sh
+  echo "test runfile contents" > foo/data.txt
+
+  bazel test --nobuild_runfile_manifests //foo:foo_test >& $TEST_log \
+      || fail "test failed"
+  bazel run --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //foo:foo_test >& $TEST_log || fail "run test failed"
+  expect_log_once "test runfile contents"
+  bazel test --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //foo:foo_test >& $TEST_log || fail "test after run failed"
+  expect_log "0 targets configured"
+}
+
 function test_script_file_generation {
   if is_windows; then
     # TODO(laszlocsomor): fix this test on Windows, and enable it.
