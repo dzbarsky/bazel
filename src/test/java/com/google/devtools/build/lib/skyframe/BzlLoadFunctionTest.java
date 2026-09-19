@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.cmdline.BazelModuleContext;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.RuleVisibility;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.pkgcache.PackageOptions;
@@ -38,13 +39,19 @@ import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.FileSystem;
+import com.google.devtools.build.lib.vfs.ModifiedFileSet;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
+import com.google.devtools.build.skyframe.AbstractSkyFunctionEnvironmentForTesting;
 import com.google.devtools.build.skyframe.ErrorInfo;
 import com.google.devtools.build.skyframe.EvaluationResult;
+import com.google.devtools.build.skyframe.InMemoryMemoizingEvaluator;
+import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
+import com.google.devtools.build.skyframe.SkyValue;
+import com.google.devtools.build.skyframe.ValueOrUntypedException;
 import com.google.devtools.common.options.Options;
 import com.google.devtools.common.options.OptionsParser;
 import java.io.IOException;
@@ -1084,6 +1091,115 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
     // Note that we're not testing the case of a non-registry override using @bazel_tools here, but
     // that is incredibly hard to set up in a unit test. So we should just rely on integration tests
     // for that.
+  }
+
+  @Test
+  public void unrelatedMainRepoMappingChange_preservesExternalModule() throws Exception {
+    scratch.overwriteFile("MODULE.bazel", "bazel_dep(name='foo',version='1.0')");
+    registry
+        .addModule(createModuleKey("foo", "1.0"), "module(name='foo',version='1.0')")
+        .addModule(createModuleKey("bar", "1.0"), "module(name='bar',version='1.0')");
+    Path fooDir = moduleRoot.getRelative("foo+1.0");
+    scratch.file(fooDir.getRelative("REPO.bazel").getPathString());
+    scratch.file(fooDir.getRelative("BUILD").getPathString());
+    scratch.file(fooDir.getRelative("test.bzl").getPathString(), "value = 17");
+    SkyKey skyKey = BzlLoadValue.keyForBuild(Label.parseCanonical("@@foo+//:test.bzl"));
+    EvaluationResult<BzlLoadValue> before =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), skyKey, /* keepGoing= */ false, reporter);
+    assertThatEvaluationResult(before).hasNoError();
+
+    scratch.overwriteFile(
+        "MODULE.bazel",
+        "bazel_dep(name='foo',version='1.0')",
+        "bazel_dep(name='bar',version='1.0')");
+    getSkyframeExecutor()
+        .invalidateFilesUnderPathForTesting(
+            reporter,
+            ModifiedFileSet.builder().modify(PathFragment.create("MODULE.bazel")).build(),
+            Root.fromPath(rootDirectory));
+    EvaluationResult<BzlLoadValue> after =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), skyKey, /* keepGoing= */ false, reporter);
+    assertThatEvaluationResult(after).hasNoError();
+    assertThat(BazelModuleContext.of(after.get(skyKey).getModule()).repoMapping())
+        .isEqualTo(BazelModuleContext.of(before.get(skyKey).getModule()).repoMapping());
+    assertThat(after.get(skyKey).getModule()).isSameInstanceAs(before.get(skyKey).getModule());
+  }
+
+  @Test
+  public void missingMainRepoMapping_defersLabelDiagnostics() throws Exception {
+    scratch.overwriteFile(
+        "MODULE.bazel", "bazel_dep(name='foo',version='1.0',repo_name='alias')");
+    registry.addModule(createModuleKey("foo", "1.0"), "module(name='foo',version='1.0')");
+    Path fooDir = moduleRoot.getRelative("foo+1.0");
+    scratch.file(fooDir.getRelative("REPO.bazel").getPathString());
+    scratch.file(fooDir.getRelative("BUILD").getPathString());
+    scratch.file(
+        fooDir.getRelative("test.bzl").getPathString(),
+        "print(Label('//:target'))",
+        "fail(Label('//:target'))");
+    SkyKey skyKey = BzlLoadValue.keyForBuild(Label.parseCanonical("@@foo+//:test.bzl"));
+    reporter.removeHandler(failFastHandler);
+    EvaluationResult<BzlLoadValue> result =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), skyKey, /* keepGoing= */ false, reporter);
+    assertThat(result.hasError()).isTrue();
+    assertContainsEvent("@alias//:target");
+    eventCollector.clear();
+
+    var evaluator = (InMemoryMemoizingEvaluator) getSkyframeExecutor().getEvaluator();
+    class MappingEnvironment extends AbstractSkyFunctionEnvironmentForTesting {
+      private final boolean interruptMappingLookup;
+
+      MappingEnvironment(boolean interruptMappingLookup) {
+        this.interruptMappingLookup = interruptMappingLookup;
+      }
+
+      @Override
+      protected ImmutableMap<SkyKey, ValueOrUntypedException> getValueOrUntypedExceptions(
+          Iterable<? extends SkyKey> depKeys) throws InterruptedException {
+        var values = ImmutableMap.<SkyKey, ValueOrUntypedException>builder();
+        for (SkyKey depKey : depKeys) {
+          SkyValue value = null;
+          if (!depKey.equals(RepositoryMappingValue.key(RepositoryName.MAIN))) {
+            value = evaluator.getExistingValue(depKey);
+            assertThat(value).isNotNull();
+          } else if (interruptMappingLookup) {
+            throw new InterruptedException();
+          }
+          values.put(depKey, ValueOrUntypedException.ofValueUntyped(value));
+        }
+        return values.buildOrThrow();
+      }
+
+      @Override
+      public ExtendedEventHandler getListener() {
+        return reporter;
+      }
+    }
+    var function = evaluator.getSkyFunctionsForTesting().get(skyKey.functionName());
+    var missingMappingEnv = new MappingEnvironment(/* interruptMappingLookup= */ false);
+    assertThat(function.compute(skyKey, missingMappingEnv)).isNull();
+    assertThat(missingMappingEnv.valuesMissing()).isTrue();
+    assertThat(eventCollector).isEmpty();
+
+    try {
+      assertThrows(
+          InterruptedException.class,
+          () -> function.compute(skyKey, new MappingEnvironment(/* interruptMappingLookup= */ true)));
+    } finally {
+      Thread.interrupted();
+    }
+    assertThat(eventCollector).isEmpty();
+
+    assertThrows(
+        SkyFunctionException.class,
+        () ->
+            function.compute(
+                skyKey, new SkyFunctionEnvironmentForTesting(reporter, getSkyframeExecutor())));
+    assertContainsEvent("@alias//:target");
+    assertDoesNotContainEvent("@@foo+//:target");
   }
 
   @Test
