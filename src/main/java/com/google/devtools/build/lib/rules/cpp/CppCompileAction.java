@@ -976,7 +976,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
               "failed to generate compile environment variables for rule '%s: %s",
               getOwner().getLabel(), e.getMessage());
       DetailedExitCode code = createDetailedExitCode(message, Code.COMMAND_GENERATION_FAILURE);
-      throw new ActionExecutionException(message, this, /*catastrophe=*/ false, code);
+      throw new ActionExecutionException(message, this, /* catastrophe= */ false, code);
     }
   }
 
@@ -1004,6 +1004,16 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
 
   private List<String> getArguments(PathMapper pathMapper) throws CommandLineExpansionException {
     return compileCommandLine.getArguments(paramFilePath, getOverwrittenVariables(), pathMapper);
+  }
+
+  @Override
+  public List<String> getArgumentsForAnalysis() throws CommandLineExpansionException {
+    return compileCommandLine.getArguments(
+        paramFilePath,
+        useHeaderModules
+            ? calculateModuleVariable(getOriginalInputs())
+            : CcToolchainVariables.builder().build(),
+        PathMapper.NOOP);
   }
 
   @Override
@@ -1060,7 +1070,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     }
     // TODO(ulfjack): Extra actions currently ignore the client environment.
     for (Map.Entry<String, String> envVariable :
-        getEffectiveEnvironment(/*clientEnv=*/ ImmutableMap.of(), PathMapper.NOOP).entrySet()) {
+        getEffectiveEnvironment(/* clientEnv= */ ImmutableMap.of(), PathMapper.NOOP).entrySet()) {
       info.addVariable(
           EnvironmentVariable.newBuilder()
               .setName(envVariable.getKey())
@@ -1202,7 +1212,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
                 includePath);
         DetailedExitCode code =
             createDetailedExitCode(message, Code.INCLUDE_PATH_OUTSIDE_EXEC_ROOT);
-        throw new ActionExecutionException(message, this, /*catastrophe=*/ false, code);
+        throw new ActionExecutionException(message, this, /* catastrophe= */ false, code);
       }
     }
   }

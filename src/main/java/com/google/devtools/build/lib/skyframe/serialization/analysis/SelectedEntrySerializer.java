@@ -28,6 +28,7 @@ import static com.google.devtools.build.lib.skyframe.serialization.proto.DataTyp
 import static com.google.devtools.build.lib.skyframe.serialization.proto.DataType.DATA_TYPE_LISTING;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.eventbus.EventBus;
@@ -39,7 +40,8 @@ import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
 import com.google.devtools.build.lib.analysis.ConfiguredObjectValue;
 import com.google.devtools.build.lib.concurrent.QuiescingFuture;
-import com.google.devtools.build.lib.rules.genquery.GenCqueryKey;
+import com.google.devtools.build.lib.rules.genquery.GenAnalysisQueryKey;
+import com.google.devtools.build.lib.rules.genquery.GenAqueryDirectoryInfo;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNode;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FileOpNodeOrEmpty;
 import com.google.devtools.build.lib.skyframe.FileOpNodeOrFuture.FutureFileOpNode;
@@ -63,6 +65,7 @@ import com.google.devtools.build.lib.versioning.LongVersionGetter;
 import com.google.devtools.build.skyframe.InMemoryGraph;
 import com.google.devtools.build.skyframe.InMemoryNodeEntry;
 import com.google.devtools.build.skyframe.SkyKey;
+import com.google.devtools.build.skyframe.SkyValue;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.CodedOutputStream;
 import java.io.ByteArrayOutputStream;
@@ -117,6 +120,7 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
   }
 
   private final InMemoryGraph graph;
+  private final ImmutableMap<SkyKey, GenAqueryDirectoryInfo> directoryBindings;
   private final ObjectCodecs codecs;
   private final FrontierNodeVersion frontierVersion;
 
@@ -141,6 +145,7 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
       ObjectCodecs codecs,
       FrontierNodeVersion frontierVersion,
       ImmutableSet<SkyKey> selection,
+      ImmutableMap<SkyKey, GenAqueryDirectoryInfo> directoryBindings,
       FingerprintValueService fingerprintValueService,
       KeyValueWriter fileInvalidationWriter,
       @Nullable RemoteAnalysisJsonLogWriter jsonLogWriter,
@@ -154,6 +159,7 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
     var serializer =
         new SelectedEntrySerializer(
             graph,
+            directoryBindings,
             codecs,
             frontierVersion,
             fingerprintValueService,
@@ -171,6 +177,7 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
 
   private SelectedEntrySerializer(
       InMemoryGraph graph,
+      ImmutableMap<SkyKey, GenAqueryDirectoryInfo> directoryBindings,
       ObjectCodecs codecs,
       FrontierNodeVersion frontierVersion,
       FingerprintValueService fingerprintValueService,
@@ -182,6 +189,7 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
       ProfileCollector profileCollector,
       SerializationStats serializationStats) {
     this.graph = graph;
+    this.directoryBindings = directoryBindings;
     this.codecs = codecs;
     this.frontierVersion = frontierVersion;
     this.fingerprintValueService = fingerprintValueService;
@@ -247,7 +255,7 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
             () -> codecs.serializeMemoizedAsync(fingerprintValueService, key, profileCollector),
             fingerprintValueService.getExecutor());
 
-    Object value = nodeEntry.getValue();
+    SkyValue value = nodeEntry.getValue();
     if (value instanceof ConfiguredObjectValue configuredValue) {
       ImmutableList<SkyKey> dependencies = configuredValue.getQueryDependencies(key);
       if (dependencies == null) {
@@ -256,9 +264,13 @@ final class SelectedEntrySerializer implements Consumer<SkyKey> {
         if (!excluded.isEmpty()) {
           directDeps = Iterables.filter(directDeps, dependency -> !excluded.contains(dependency));
         }
-        dependencies = GenCqueryKey.queryDependencies(directDeps);
+        dependencies = GenAnalysisQueryKey.queryDependencies(directDeps);
       }
       value = new AnalysisCacheEntry(configuredValue, dependencies);
+    }
+    var directories = directoryBindings.get(key);
+    if (directories != null) {
+      value = new GenAqueryDirectoryInfo.BoundValue(value, directories);
     }
     Object valueToSerialize = value;
     ListenableFuture<SerializationResult<ByteString>> futureValueBytes =

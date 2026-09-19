@@ -21,6 +21,7 @@ import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.AspectValue;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.rules.genquery.GenAqueryDirectoryInfo;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.serialization.DependOnFutureShim.DefaultDependOnFutureShim;
 import com.google.devtools.build.lib.skyframe.serialization.DeserializedSkyValue;
@@ -84,6 +85,21 @@ public final class SkyValueRetrieverUtils {
               key,
               state,
               /* frontierNodeVersion= */ analysisCachingDeps.getSkyValueVersion());
+      if (retrievalResult instanceof RetrievedValue(GenAqueryDirectoryInfo.BoundValue bound)) {
+        // Analysis and execution entries can both contain report data from another output root.
+        // Request the marker on hits as well, preserving the binding if this graph is reuploaded.
+        var directories =
+            (GenAqueryDirectoryInfo) env.getValue(GenAqueryDirectoryInfo.Key.INSTANCE);
+        if (directories == null) {
+          retrievalResult = Restart.RESTART;
+        } else if (!directories.equals(bound.directories())) {
+          var miss = NO_CACHED_DATA;
+          state.setState(miss);
+          retrievalResult = miss;
+        } else {
+          retrievalResult = new RetrievedValue(bound.value());
+        }
+      }
       if ((key instanceof ConfiguredTargetKey || key instanceof AspectKey)
           && retrievalResult instanceof RetrievedValue(SkyValue value)) {
         // An incomplete analysis entry is a cache miss, never an installed value with an empty

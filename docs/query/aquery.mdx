@@ -156,6 +156,75 @@ Without performing extra analysis, dump the Action Graph from Skyframe.
 Note: Specifying a target with `--skyframe_state` is currently not supported.
 This flag is only available with `--output=proto` or `--output=textproto`.
 
+## Using action query results in a build {:#genaquery}
+
+The [`genaquery` rule](/reference/be/general#genaquery) writes an action query's
+result to a build artifact that other rules can consume. For example:
+
+```python
+genaquery(
+    name = "compile-actions.json",
+    expression = 'mnemonic("CppCompile", deps(//app:app))',
+    scope = ["//app:app"],
+    output = "jsonproto",
+)
+```
+
+This uses the enclosing build's configuration, including `select()` choices and
+transitions. `scope` targets are analyzed, but their actions are not executed.
+Actions belonging only to the scope are excluded from build action-conflict
+checks, and the report does not inherit the scope's visibility, compatibility,
+coverage, or extra-action requirements. The output file is named after the rule.
+
+The configured transitive closure of `scope` is the entire visible graph.
+Previously analyzed targets do not extend it. References outside this closure
+fail unless `strict = False`, which warns and skips them. Scope analysis errors
+still fail the build. Labels in the expression are relative to the repository
+root, so `:app` means `//:app`. Wildcard and recursive target patterns are not
+supported. As with `genquery`, an absolute spelling such as `//pkg:all` can name
+an individual existing target instead of a wildcard.
+
+The query selects target owners; `deps(...)` includes their dependencies'
+actions. Action filters can nest around the target expression, for example
+`inputs(".*a.h", outputs(".*[.]o", deps(//app:app)))`. Each filter further restricts
+the matching actions. Filters inside target functions or set operations are
+rejected. The rule shares aquery's target functions and their limitations.
+
+The `output` attribute accepts `text` (default), `commands`, `summary`, `proto`,
+`streamed_proto`, `textproto`, and `jsonproto`. There is no Starlark output mode.
+Targets are ordered by canonical label, configuration checksum, and full target
+identity. Attached aspects are ordered structurally, and actions preserve their
+analysis registration order. Protocol identifiers are assigned in that order.
+A top-level `somepath(...)` target expression instead keeps dependency path order;
+choice functions retain their freedom to select any matching target or path.
+
+`opts` accepts aquery dependency and formatting options. For example,
+`opts = ["--include_param_files"]` includes parameter-file contents and enables
+command lines. Contents come from their generating actions without executing
+them. Use `--noinclude_aspects` to omit attached aspect actions. Build options,
+`--output`, scope/expression/output-file flags, `--skyframe_state`, and
+`--experimental_explicit_aspects` are not supported in `opts`.
+
+Reports describe analysis data. `--noinclude_pruned_inputs` is rejected because
+previous execution must not affect the report. Commands use analysis-time
+arguments and unstripped exec paths, without discovered C++ module refinements
+or execution-only environment values. Tree-artifact contents are not expanded. Generated templates
+are described by their artifact; source-template contents are tracked, so edits
+invalidate the report. `--include_file_write_contents` cannot report runfiles
+manifests containing symlink artifacts because their contents require generated
+files; selecting such a manifest is an error in formats that include contents.
+
+Reports can contain absolute paths and action hashes tied to local directories.
+Remote analysis and execution cache entries that depend on a report are reused
+only within the same workspace and output roots. Scoped targets and unrelated
+targets can still reuse cached analysis across roots.
+
+The rule requires `--track_incremental_state`, which is enabled by default.
+Set [`compressed_output = True`](/reference/be/general#genaquery.compressed_output)
+to write GZIP output. Large outputs are internally compressed even without this
+attribute. Proto formats stream their records; JSON streams actions and buffers
+compressed metadata instead of building another complete action graph in memory.
+
 ## Other tools and features {:#other-tools-features}
 
 ### Querying against the state of Skyframe {:#querying-against-skyframe}
