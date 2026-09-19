@@ -23,15 +23,14 @@ import com.google.devtools.build.lib.rules.LabelBuildSettings.LabelBuildFlagRule
 import com.google.devtools.build.lib.rules.LabelBuildSettings.LabelBuildSettingRule;
 import com.google.devtools.build.lib.rules.core.CoreRules;
 import com.google.devtools.build.lib.rules.filegroup.FilegroupRule;
+import com.google.devtools.build.lib.rules.genquery.GenAqueryRule;
 import com.google.devtools.build.lib.rules.genquery.GenCqueryRule;
 import com.google.devtools.build.lib.rules.genquery.GenQueryRule;
 import com.google.devtools.build.lib.rules.starlarkdocextract.StarlarkDocExtractRule;
 import com.google.devtools.build.lib.rules.test.TestSuiteRule;
 import net.starlark.java.eval.FlagGuardedValue;
 
-/**
- * A set of generic rules that provide miscellaneous capabilities to Bazel.
- */
+/** A set of generic rules that provide miscellaneous capabilities to Bazel. */
 public class GenericRules implements RuleSet {
   public static final GenericRules INSTANCE = new GenericRules();
 
@@ -48,6 +47,7 @@ public class GenericRules implements RuleSet {
     builder.addRuleDefinition(new TestSuiteRule());
     GenQueryRule.register(builder);
     builder.addRuleDefinition(new GenCqueryRule());
+    builder.addRuleDefinition(new GenAqueryRule());
     builder.addRuleDefinition(new LabelBuildSettingRule());
     builder.addRuleDefinition(new LabelBuildFlagRule());
     builder.addRuleDefinition(new StarlarkDocExtractRule());

@@ -37,9 +37,11 @@ import javax.annotation.Nullable;
  * set of Skyframe dependencies.
  */
 @AutoCodec
-public final class GenCqueryKey extends AbstractSkyKey.WithCachedHashCode<GenCqueryKey.Request> {
-  public static final SkyFunctionName FUNCTION_NAME = SkyFunctionName.createHermetic("GENCQUERY");
-  private static final SkyKeyInterner<GenCqueryKey> interner = SkyKey.newInterner();
+public final class GenAnalysisQueryKey
+    extends AbstractSkyKey.WithCachedHashCode<GenAnalysisQueryKey.Request> {
+  public static final SkyFunctionName FUNCTION_NAME =
+      SkyFunctionName.createHermetic("GEN_ANALYSIS_QUERY");
+  private static final SkyKeyInterner<GenAnalysisQueryKey> interner = SkyKey.newInterner();
   // The standard ordering omits this bit, but a transition's result is not its incoming root.
   private static final Comparator<ConfiguredTargetKey> ROOT_ORDER =
       Comparator.comparing(ConfiguredTargetKey::getLabel)
@@ -52,9 +54,26 @@ public final class GenCqueryKey extends AbstractSkyKey.WithCachedHashCode<GenCqu
                   Comparator.comparing(BuildConfigurationKey::getOptionsChecksum)))
           .thenComparing(ConfiguredTargetKey::shouldApplyRuleTransition);
 
+  /** The two analysis query languages supported by native rules. */
+  public enum Kind {
+    CQUERY("gencquery"),
+    AQUERY("genaquery");
+
+    private final String ruleName;
+
+    Kind(String ruleName) {
+      this.ruleName = ruleName;
+    }
+
+    public String ruleName() {
+      return ruleName;
+    }
+  }
+
   /** Immutable inputs resolved and validated by the native rule. */
   @AutoCodec
   public record Request(
+      Kind kind,
       Label owner,
       BuildConfigurationKey configuration,
       ImmutableList<ConfiguredTargetKey> roots,
@@ -69,14 +88,14 @@ public final class GenCqueryKey extends AbstractSkyKey.WithCachedHashCode<GenCqu
     }
   }
 
-  private GenCqueryKey(Request request) {
+  private GenAnalysisQueryKey(Request request) {
     super(request);
   }
 
   @VisibleForSerialization
   @AutoCodec.Instantiator
-  public static GenCqueryKey create(Request argument) {
-    return interner.intern(new GenCqueryKey(argument));
+  public static GenAnalysisQueryKey create(Request argument) {
+    return interner.intern(new GenAnalysisQueryKey(argument));
   }
 
   public ImmutableList<ConfiguredTargetKey> roots() {
@@ -93,7 +112,7 @@ public final class GenCqueryKey extends AbstractSkyKey.WithCachedHashCode<GenCqu
   public static ImmutableList<SkyKey> queryDependencies(Iterable<SkyKey> dependencies) {
     ImmutableSet.Builder<SkyKey> result = ImmutableSet.builder();
     for (SkyKey dependency : dependencies) {
-      if (dependency instanceof GenCqueryKey scope) {
+      if (dependency instanceof GenAnalysisQueryKey scope) {
         result.addAll(scope.roots());
       } else if (dependency.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
           || dependency.functionName().equals(SkyFunctions.ASPECT)
@@ -111,7 +130,7 @@ public final class GenCqueryKey extends AbstractSkyKey.WithCachedHashCode<GenCqu
   }
 
   @Override
-  public SkyKeyInterner<GenCqueryKey> getSkyKeyInterner() {
+  public SkyKeyInterner<GenAnalysisQueryKey> getSkyKeyInterner() {
     return interner;
   }
 
