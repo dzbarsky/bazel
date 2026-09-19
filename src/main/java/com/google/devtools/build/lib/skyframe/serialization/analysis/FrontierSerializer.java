@@ -37,6 +37,7 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.rules.AliasConfiguredTarget;
+import com.google.devtools.build.lib.rules.genquery.GenAqueryDirectoryInfo;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.RemoteAnalysisCaching;
 import com.google.devtools.build.lib.server.FailureDetails.RemoteAnalysisCaching.Code;
@@ -129,6 +130,7 @@ public final class FrontierSerializer {
 
     requireNonNull(versionGetter, "missing versionGetter");
 
+    var directoryBindings = GenAqueryDirectoryInfo.capture(graph, selectedKeys);
     boolean shouldDiscardMemory = !keepStateAfterBuild;
     if (shouldDiscardMemory) {
       // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -167,6 +169,7 @@ public final class FrontierSerializer {
             codecs,
             frontierVersion,
             selectedKeys,
+            directoryBindings,
             compressionService,
             fingerprintValueService,
             fileInvalidationWriter,

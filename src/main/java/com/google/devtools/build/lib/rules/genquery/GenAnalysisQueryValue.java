@@ -21,10 +21,10 @@ import com.google.devtools.build.skyframe.SkyValue;
 import javax.annotation.Nullable;
 
 /** Query bytes, shared with the output action, without retaining the query graph. */
-public final class GenCqueryValue implements SkyValue {
+public final class GenAnalysisQueryValue implements SkyValue {
   @Nullable private GenQueryResult result;
 
-  GenCqueryValue(GenQueryResult result) {
+  GenAnalysisQueryValue(GenQueryResult result) {
     this.result = result;
   }
 

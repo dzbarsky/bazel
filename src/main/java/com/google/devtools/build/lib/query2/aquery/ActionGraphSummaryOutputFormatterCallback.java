@@ -39,6 +39,7 @@ import javax.annotation.Nullable;
 class ActionGraphSummaryOutputFormatterCallback extends AqueryThreadsafeCallback {
 
   private final AqueryActionFilter actionFilters;
+  boolean deterministic;
   private final Map<String, Integer> mnemonicToCount = new HashMap<>();
   private final Map<String, Integer> configurationToCount = new HashMap<>();
   private final Map<String, Integer> execPlatformToCount = new HashMap<>();
@@ -90,7 +91,7 @@ class ActionGraphSummaryOutputFormatterCallback extends AqueryThreadsafeCallback
     }
   }
 
-  private void processAction(
+  void processAction(
       ActionAnalysisMetadata action, @Nullable Set<ActionAnalysisMetadata> reachableActions)
       throws InterruptedException {
     if (!AqueryUtils.matchesAqueryFilters(
@@ -147,8 +148,12 @@ class ActionGraphSummaryOutputFormatterCallback extends AqueryThreadsafeCallback
     if (!actionsCount.isEmpty()) {
       printStream.println();
       printStream.println(s);
+      Comparator<Entry<String, Integer>> order = Comparator.comparingInt(Entry::getValue);
+      if (deterministic) {
+        order = order.thenComparing(Entry::getKey);
+      }
       actionsCount.entrySet().stream()
-          .sorted(Comparator.comparingInt(Entry::getValue))
+          .sorted(order)
           .forEach(entry -> printStream.println("  " + entry.getKey() + ": " + entry.getValue()));
     }
   }
