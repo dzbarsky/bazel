@@ -42,6 +42,7 @@ import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading.Code;
+import com.google.devtools.build.lib.supplier.InterruptibleSupplier;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
@@ -219,7 +220,7 @@ public final class PackageFactory {
       Optional<String> associatedModuleVersion,
       StarlarkSemantics starlarkSemantics,
       RepositoryMapping repositoryMapping,
-      RepositoryMapping mainRepositoryMapping,
+      InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
       @Nullable Semaphore cpuBoundSemaphore,
       @Nullable ImmutableMap<Location, String> generatorMap,
       @Nullable ConfigSettingVisibilityPolicy configSettingVisibilityPolicy,
