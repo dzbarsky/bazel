@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.skyframe;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.cmdline.BatchCallback.SafeBatchCallback;
+import com.google.devtools.build.lib.cmdline.IgnoredSubdirectories;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.QueryExceptionMarkerInterface;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets;
@@ -73,6 +74,13 @@ public class TargetPatternFunction implements SkyFunction {
               /* maxConcurrentGetTargetsTasks= */ Optional.empty(),
               SimplePackageIdentifierBatchingCallback::new);
       ImmutableSet<PathFragment> excludedSubdirectories = patternKey.getExcludedSubdirectories();
+      // Prune excluded subtrees before RecursivePkgValue loads their packages.
+      IgnoredSubdirectories traversalExclusions =
+          excludedSubdirectories.isEmpty()
+              ? ignoredSubdirectories.asIgnoredSubdirectories()
+              : ignoredSubdirectories
+                  .asIgnoredSubdirectories()
+                  .union(IgnoredSubdirectories.of(excludedSubdirectories));
       ResolvedTargets.Builder<Target> resolvedTargetsBuilder = ResolvedTargets.builder();
       SafeBatchCallback<Target> callback =
           partialResult -> {
@@ -92,8 +100,8 @@ public class TargetPatternFunction implements SkyFunction {
       try {
         parsedPattern.eval(
             resolver,
-            () -> ignoredSubdirectories.asIgnoredSubdirectories(),
-            excludedSubdirectories,
+            () -> traversalExclusions,
+            ImmutableSet.of(),
             callback,
             QueryExceptionMarkerInterface.MarkerRuntimeException.class);
       } catch (ProcessPackageDirectoryException e) {
