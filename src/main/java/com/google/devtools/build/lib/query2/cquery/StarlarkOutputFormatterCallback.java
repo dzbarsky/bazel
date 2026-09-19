@@ -153,7 +153,7 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
         accessor,
         starlarkSemantics,
         readStarlarkFile(options, starlarkSemantics, eventHandler),
-        options.file.isEmpty() ? "--starlark:expr" : "--starlark:file",
+        options.getFile().isEmpty() ? "--starlark:expr" : "--starlark:file",
         Charset.defaultCharset());
   }
 
