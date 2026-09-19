@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.analysis;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableClassToInstanceMap;
 import com.google.devtools.build.lib.collect.ImmutableSharedKeyMap;
 import com.google.devtools.build.lib.packages.Info;
 import com.google.devtools.build.lib.packages.Provider;
@@ -50,7 +51,13 @@ public class TransitiveInfoProviderMapImpl extends ImmutableSharedKeyMap<Object,
     return EMPTY_TRANSITIVE_INFO_PROVIDER_MAP;
   }
 
-  static TransitiveInfoProviderMapImpl create(Map<Object, Object> map) {
+  /** Creates a map using the explicit Class keys supplied by the caller. */
+  public static TransitiveInfoProviderMapImpl copyOf(
+      ImmutableClassToInstanceMap<TransitiveInfoProvider> map) {
+    return create(map);
+  }
+
+  static TransitiveInfoProviderMapImpl create(Map<?, ?> map) {
     int count = map.size();
     if (count == 0) {
       return empty();
@@ -58,7 +65,7 @@ public class TransitiveInfoProviderMapImpl extends ImmutableSharedKeyMap<Object,
     Object[] keys = new Object[count];
     Object[] values = new Object[count];
     int i = 0;
-    for (Map.Entry<Object, Object> entry : map.entrySet()) {
+    for (Map.Entry<?, ?> entry : map.entrySet()) {
       keys[i] = entry.getKey();
       values[i] = entry.getValue();
       ++i;

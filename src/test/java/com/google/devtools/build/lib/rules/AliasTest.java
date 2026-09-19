@@ -20,11 +20,14 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
+import com.google.devtools.build.lib.analysis.AliasProvider;
 import com.google.devtools.build.lib.analysis.AnalysisResult;
 import com.google.devtools.build.lib.analysis.ConfiguredAspect;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
+import com.google.devtools.build.lib.analysis.VisibilityProvider;
+import com.google.devtools.build.lib.analysis.VisibilityProviderImpl;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -34,7 +37,12 @@ import com.google.devtools.build.lib.packages.StarlarkProvider;
 import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.rules.cpp.CcInfo;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
+import com.google.devtools.build.lib.skyframe.serialization.SerializationRegistrySetupHelpers;
+import com.google.devtools.build.lib.skyframe.serialization.testutils.SerializationDepsUtils;
+import com.google.devtools.build.lib.skyframe.serialization.testutils.SerializationTester;
 import com.google.devtools.build.lib.testutil.TestConstants;
+import com.google.devtools.build.lib.vfs.FileSystem;
+import com.google.devtools.build.lib.vfs.Root;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -78,6 +86,48 @@ public class AliasTest extends BuildViewTestCase {
 
     ConfiguredTarget b = getConfiguredTarget("//a:b");
     assertThat(ActionsTestUtil.baseArtifactNames(getFilesToBuild(b))).containsExactly("a");
+  }
+
+  @Test
+  public void serializedAliasPreservesOverridesAndDelegation() throws Exception {
+    scratch.file(
+        "a/BUILD",
+        """
+        exports_files(["source"], visibility = ["//visibility:private"])
+        alias(name = "first", actual = "source", visibility = ["//visibility:public"])
+        alias(name = "second", actual = ":first", visibility = ["//visibility:private"])
+        """);
+
+    var tester =
+        new SerializationTester(getConfiguredTarget("//a:first"), getConfiguredTarget("//a:second"))
+            .addDependency(FileSystem.class, scratch.getFileSystem())
+            .addDependency(
+                Root.RootCodecDependencies.class,
+                new Root.RootCodecDependencies(Root.fromPath(rootDirectory)))
+            .addDependencies(SerializationDepsUtils.SERIALIZATION_DEPS_FOR_TEST)
+            .setVerificationFunction(
+                (ConfiguredTarget original, ConfiguredTarget copy) -> {
+                  assertThat(copy.getLookupKey()).isEqualTo(original.getLookupKey());
+                  assertThat(copy.getProvider(AliasProvider.class).getAliasChain())
+                      .containsExactlyElementsIn(
+                          original.getProvider(AliasProvider.class).getAliasChain())
+                      .inOrder();
+                  assertThat(copy.getProvider(VisibilityProvider.class).getVisibility().isEmpty())
+                      .isEqualTo(
+                          original.getProvider(VisibilityProvider.class).getVisibility().isEmpty());
+                  assertThat(copy.getProvider(VisibilityProvider.class).isCreatedInSymbolicMacro())
+                      .isFalse();
+                  // Overrides use exact Class keys, without normalizing implementation classes.
+                  assertThat(copy.getProvider(VisibilityProviderImpl.class)).isNull();
+                  assertThat(copy.getProvider(FileProvider.class).getFilesToBuild().toList())
+                      .containsExactlyElementsIn(
+                          original.getProvider(FileProvider.class).getFilesToBuild().toList());
+                });
+    tester.runTests();
+    for (var codec : SerializationRegistrySetupHelpers.analysisCachingCodecs()) {
+      tester.addCodec(codec);
+    }
+    tester.makeMemoizingAndAllowFutureBlocking(true).runTests();
   }
 
   @Test
