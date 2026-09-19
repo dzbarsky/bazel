@@ -166,10 +166,90 @@ EOF
 }
 
 function test_run_with_no_build_runfile_manifests {
+  if is_windows; then
+    return
+  fi
   write_cc_source_files
+  echo 'alias(name = "alias", actual = ":kitty")' >> cc/BUILD
+  echo "initial data" > cc/hello_kitty.txt
 
-  bazel run --nobuild_runfile_manifests //cc:kitty >& $TEST_log && fail "should have failed"
-  expect_log_once "--nobuild_runfile_manifests is incompatible with the \"run\" command"
+  bazel build --nobuild_runfile_manifests //cc:alias >& $TEST_log \
+      || fail "build failed"
+  [[ ! -e bazel-bin/cc/kitty.runfiles_manifest ]] || fail "build created a manifest"
+  bazel run --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      --output_groups=-_runfiles_for_run_INTERNAL_ \
+      //cc:alias >& $TEST_log || fail "run failed"
+  expect_log_once "initial data"
+  [[ -f bazel-bin/cc/kitty.runfiles_manifest ]] || fail "input manifest is missing"
+  [[ -f bazel-bin/cc/kitty.runfiles/MANIFEST ]] || fail "output manifest is missing"
+  bazel build --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //cc:alias >& $TEST_log || fail "build after run failed"
+
+  rm cc/hello_kitty.txt
+  echo "updated data" > cc/pussycat.txt
+  bazel run --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //cc:alias >& $TEST_log || fail "run with updated data failed"
+  expect_log_once "updated data"
+  [[ ! -L bazel-bin/cc/kitty.runfiles/_main/cc/hello_kitty.txt ]] \
+      || fail "stale runfile remains"
+}
+
+function test_run_with_no_build_runfile_manifests_manifest_only {
+  add_rules_shell "MODULE.bazel"
+  mkdir -p foo
+  cat > foo/BUILD <<'EOF'
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+sh_test(
+    name = "foo_test",
+    srcs = ["foo.sh"],
+    data = ["data.txt"],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
+)
+EOF
+  cat > foo/foo.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(grep -m1 '^bazel_tools/tools/bash/runfiles/runfiles.bash ' \
+    "$RUNFILES_MANIFEST_FILE" | cut -d ' ' -f 2-)"
+cat "$(rlocation "$TEST_WORKSPACE/foo/data.txt")"
+EOF
+  chmod +x foo/foo.sh
+  echo "manifest-only data" > foo/data.txt
+  bazel run --nobuild_runfile_manifests --enable_runfiles=no \
+      //foo:foo_test >& $TEST_log || fail "run without directory runfiles failed"
+  expect_log_once "manifest-only data"
+}
+
+function test_run_test_with_no_build_runfile_manifests {
+  if is_windows; then
+    return
+  fi
+  add_rules_shell "MODULE.bazel"
+  mkdir -p foo
+  cat > foo/BUILD <<'EOF'
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+sh_binary(name = "helper", srcs = ["helper.sh"])
+sh_test(name = "foo_test", srcs = ["foo.sh"], data = ["data.txt", ":helper"])
+EOF
+  cat > foo/foo.sh <<'EOF'
+#!/usr/bin/env bash
+cat "$TEST_SRCDIR/$TEST_WORKSPACE/foo/data.txt"
+EOF
+  printf '#!/usr/bin/env bash\nexit 0\n' > foo/helper.sh
+  chmod +x foo/foo.sh foo/helper.sh
+  echo "test runfile contents" > foo/data.txt
+
+  bazel test --nobuild_runfile_manifests //foo:foo_test >& $TEST_log \
+      || fail "test failed"
+  [[ ! -e bazel-bin/foo/foo_test.runfiles_manifest ]] || fail "test built a manifest"
+  bazel run --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //foo:foo_test >& $TEST_log || fail "run test failed"
+  expect_log_once "test runfile contents"
+  [[ ! -e bazel-bin/foo/helper.runfiles_manifest ]] || fail "dependency manifest was built"
+  bazel test --nobuild_runfile_manifests --noallow_analysis_cache_discard \
+      //foo:foo_test >& $TEST_log || fail "test after run failed"
+  expect_log "0 targets configured"
 }
 
 function test_script_file_generation {
@@ -683,6 +763,7 @@ load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 sh_binary(
   name = 'greetings',
   srcs = ['greetings.sh'],
+  data = ['wrapper.txt'],
 )
 
 sh_binary(
@@ -700,21 +781,31 @@ EOF
 echo "goodbye $@"
 EOF
   chmod +x "$pkg/farewell.sh"
+  echo "run-under data" > "$pkg/wrapper.txt"
 
-  bazel run --run_under="//$pkg:greetings friend && unset RUNFILES_MANIFEST_FILE &&" -- "//$pkg:farewell" buddy \
-      >$TEST_log || fail "expected test to pass"
+  local flags=(--build_runfile_manifests)
+  if ! is_windows; then
+    flags+=(--nobuild_runfile_manifests)
+    echo "cat \"\$0.runfiles/_main/$pkg/wrapper.txt\"" >> "$pkg/greetings.sh"
+  fi
   # TODO(https://github.com/bazelbuild/bazel/issues/22148): bazel-team - This is
   # just demonstrating how things are, it's probably not how we want them to be.
   # "unset RUNFILES_MANIFEST_FILE" is necessary because the environment
   # variables set by //pkg:greetings are otherwise passed to //pkg:farewell and
   # break its runfiles discovery.
-  if is_windows; then
-    expect_log "hello there friend"
-    expect_log "goodbye buddy"
-  else
-    expect_log "hello there friend && unset RUNFILES_MANIFEST_FILE && .*bin/$pkg/farewell buddy"
-    expect_not_log "goodbye"
-  fi
+  local flag
+  for flag in "${flags[@]}"; do
+    bazel run "$flag" --run_under="//$pkg:greetings friend && unset RUNFILES_MANIFEST_FILE &&" -- "//$pkg:farewell" buddy \
+        >$TEST_log || fail "expected test to pass"
+    if is_windows; then
+      expect_log "hello there friend"
+      expect_log "goodbye buddy"
+    else
+      expect_log "hello there friend && unset RUNFILES_MANIFEST_FILE && .*bin/$pkg/farewell buddy"
+      expect_log "run-under data"
+      expect_not_log "goodbye"
+    fi
+  done
 }
 
 function test_run_under_command_change_preserves_cache() {
