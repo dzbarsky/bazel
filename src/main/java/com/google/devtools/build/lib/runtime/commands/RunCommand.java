@@ -762,10 +762,6 @@ public class RunCommand implements BlazeCommand {
                 .getActionGraph(env.getReporter())
                 .getGeneratingAction(Iterables.getOnlyElement(statusArtifacts));
     TestTargetExecutionSettings settings = testAction.getExecutionSettings();
-    // ensureRunfilesBuilt does build the runfiles, but an extra consistency check won't hurt.
-    Preconditions.checkState(
-        settings.getRunfilesSymlinksCreated()
-            == builtTargets.configuration.buildRunfileLinks());
 
     Path execRoot = env.getExecRoot();
     Path runfilesDir = settings.getRunfilesDir();
