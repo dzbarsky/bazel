@@ -111,6 +111,10 @@ public abstract class OutputGroupInfo extends StructImpl
   public static final String HIDDEN_TOP_LEVEL =
       HIDDEN_OUTPUT_GROUP_PREFIX + "hidden_top_level" + INTERNAL_SUFFIX;
 
+  /** Stages top-level runfiles for {@code bazel run} when ordinary builds omit manifests. */
+  public static final String RUNFILES_FOR_RUN =
+      HIDDEN_OUTPUT_GROUP_PREFIX + "runfiles_for_run" + INTERNAL_SUFFIX;
+
   /**
    * This output group contains artifacts that are the outputs of validation actions. These actions
    * should be run even if no other action depends on their outputs, therefore this output group is:
