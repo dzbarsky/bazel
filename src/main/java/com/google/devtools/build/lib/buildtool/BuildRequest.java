@@ -21,6 +21,7 @@ import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.devtools.build.lib.analysis.AnalysisOptions;
 import com.google.devtools.build.lib.analysis.AspectCollection;
 import com.google.devtools.build.lib.analysis.OutputGroupInfo;
@@ -421,13 +422,22 @@ public class BuildRequest implements OptionsProvider {
   /** Creates a new TopLevelArtifactContext from this build request. */
   public TopLevelArtifactContext getTopLevelArtifactContext() {
     BuildRequestOptions buildOptions = getBuildOptions();
-    return new TopLevelArtifactContext(
-        getOptions(ExecutionOptions.class).getTestStrategy().equals("exclusive"),
+    var outputGroups =
         OutputGroupInfo.determineOutputGroups(
             buildOptions.getOutputGroups(),
             buildOptions.getExtraDefaultOutputGroups(),
             validationMode(),
-            /* shouldRunTests= */ shouldRunTests()),
+            /* shouldRunTests= */ shouldRunTests());
+    if (commandName.equals("run")) {
+      outputGroups =
+          ImmutableSortedSet.<String>naturalOrder()
+              .addAll(outputGroups)
+              .add(OutputGroupInfo.RUNFILES_FOR_RUN)
+              .build();
+    }
+    return new TopLevelArtifactContext(
+        getOptions(ExecutionOptions.class).getTestStrategy().equals("exclusive"),
+        outputGroups,
         buildOptions.getIncompatibleFailOnUnknownOutputGroups(),
         /* forRunCommand= */ commandName.equals("run"),
         /* cacheProbe= */ getOptions(ExecutionOptions.class).getCacheProbeOutput() != null);
