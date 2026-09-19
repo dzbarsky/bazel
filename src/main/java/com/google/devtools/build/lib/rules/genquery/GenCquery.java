@@ -16,38 +16,24 @@ package com.google.devtools.build.lib.rules.genquery;
 
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
-import com.google.common.collect.Comparators;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.actions.ActionConflictException;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
-import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
-import com.google.devtools.build.lib.analysis.OutputGroupInfo;
-import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.Runfiles;
-import com.google.devtools.build.lib.analysis.RunfilesProvider;
-import com.google.devtools.build.lib.analysis.TargetAndConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
-import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
-import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.events.Event;
-import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.StoredEventHandler;
-import com.google.devtools.build.lib.packages.AspectDescriptor;
 import com.google.devtools.build.lib.packages.BuildType;
-import com.google.devtools.build.lib.packages.NoSuchTargetException;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.packages.Types;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
@@ -61,7 +47,6 @@ import com.google.devtools.build.lib.query2.engine.Callback;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
-import com.google.devtools.build.lib.query2.engine.QueryParser;
 import com.google.devtools.build.lib.query2.engine.QuerySyntaxException;
 import com.google.devtools.build.lib.query2.engine.QueryUtil;
 import com.google.devtools.build.lib.query2.engine.ThreadSafeOutputFormatterCallback;
@@ -69,7 +54,6 @@ import com.google.devtools.build.lib.rules.genquery.GenQueryOutputStream.GenQuer
 import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
-import com.google.devtools.build.lib.skyframe.PackageValue;
 import com.google.devtools.build.lib.skyframe.config.BuildConfigurationKey;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunction;
@@ -78,8 +62,6 @@ import com.google.devtools.common.options.OptionsParsingException;
 import java.io.IOException;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.Function;
 import javax.annotation.Nullable;
@@ -90,37 +72,7 @@ import net.starlark.java.syntax.ParserInput;
  * Evaluates cquery over an explicitly scoped configured graph and registers a file write action.
  */
 public final class GenCquery
-    implements RuleConfiguredTargetFactory, GenCqueryFunction.QueryEvaluator {
-  private static final Comparator<ConfiguredTargetKey> CONFIGURED_TARGET_ORDER =
-      Comparator.comparing(ConfiguredTargetKey::getLabel)
-          .thenComparing(
-              ConfiguredTargetKey::getExecutionPlatformLabel,
-              Comparator.nullsFirst(Comparator.naturalOrder()))
-          .thenComparing(
-              ConfiguredTargetKey::getConfigurationKey,
-              Comparator.nullsFirst(
-                  Comparator.comparing(BuildConfigurationKey::getOptionsChecksum)));
-  private static final Comparator<AspectKey> ASPECT_ORDER =
-      Comparator.comparing(AspectKey::getBaseConfiguredTargetKey, CONFIGURED_TARGET_ORDER)
-          .thenComparing((left, right) -> new DescriptorGraphComparator().compare(left, right));
-
-  private static final class DescriptorGraphComparator implements Comparator<AspectKey> {
-    private final HashSet<AspectDescriptor> visited = new HashSet<>();
-
-    @Override
-    public int compare(AspectKey left, AspectKey right) {
-      AspectDescriptor leftDescriptor = left.getAspectDescriptor();
-      AspectDescriptor rightDescriptor = right.getAspectDescriptor();
-      if (!leftDescriptor.equals(rightDescriptor)) {
-        return leftDescriptor.getDescription().compareTo(rightDescriptor.getDescription());
-      }
-      if (!visited.add(leftDescriptor)) {
-        return 0;
-      }
-      return Comparators.lexicographical(this).compare(left.getBaseKeys(), right.getBaseKeys());
-    }
-  }
-
+    implements RuleConfiguredTargetFactory, GenAnalysisQueryFunction.QueryEvaluator {
   private static final ImmutableMap<String, QueryFunction> QUERY_FUNCTIONS =
       Maps.uniqueIndex(ConfiguredTargetQueryEnvironment.FUNCTIONS, QueryFunction::getName);
 
@@ -135,12 +87,12 @@ public final class GenCquery
                 // can exponentially expand its shared base-aspect graph.
                 if (left instanceof AspectKey leftAspect) {
                   return right instanceof AspectKey rightAspect
-                      ? ASPECT_ORDER.compare(leftAspect, rightAspect)
+                      ? GenAnalysisQuery.ASPECT_ORDER.compare(leftAspect, rightAspect)
                       : 1;
                 }
                 return right instanceof AspectKey
                     ? -1
-                    : CONFIGURED_TARGET_ORDER.compare(
+                    : GenAnalysisQuery.CONFIGURED_TARGET_ORDER.compare(
                         (ConfiguredTargetKey) left, (ConfiguredTargetKey) right);
               });
 
@@ -200,95 +152,19 @@ public final class GenCquery
       return null;
     }
 
-    String expression = ruleContext.attributes().get("expression", Type.STRING);
-    var targetPatternPackages = ImmutableSet.<PackageIdentifier>builder();
-    try {
-      var patterns = new LinkedHashSet<String>();
-      QueryParser.parse(expression, QUERY_FUNCTIONS).collectTargetPatterns(patterns);
-      var targetParser =
-          new TargetPattern.Parser(
-              PathFragment.EMPTY_FRAGMENT,
-              ruleContext.getRepository(),
-              ruleContext.getRule().getPackageMetadata().repositoryMapping());
-      for (String pattern : patterns) {
-        TargetPattern parsed = targetParser.parse(pattern);
-        if (parsed.getType() == TargetPattern.Type.TARGETS_IN_PACKAGE
-            && (pattern.startsWith("//") || pattern.startsWith("@"))) {
-          // Resolve concrete names such as //pkg:all before applying strict scope filtering.
-          targetPatternPackages.add(parsed.getDirectory());
-        }
-      }
-    } catch (QuerySyntaxException | TargetParsingException e) {
-      ruleContext.ruleError("cquery failed: " + e.getMessage());
-      return null;
-    }
-
-    SkyFunction.Environment env = ruleContext.getAnalysisEnvironment().getSkyframeEnv();
-    ImmutableList<ConfiguredTargetKey> rootKeys =
-        ruleContext.attributes().get("scope", BuildType.GENQUERY_SCOPE_TYPE_LIST).stream()
-            .distinct()
-            .map(
-                label ->
-                    ConfiguredTargetKey.builder()
-                        .setLabel(label)
-                        .setConfigurationKey(ruleContext.getConfiguration().getKey())
-                        .build())
-            .collect(ImmutableList.toImmutableList());
-    GenCqueryValue value;
-    try {
-      value =
-          (GenCqueryValue)
-              env.getValueOrThrow(
-                  GenCqueryKey.create(
-                      new GenCqueryKey.Request(
-                          ruleContext.getLabel(),
-                          ruleContext.getConfiguration().getKey(),
-                          rootKeys,
-                          expression,
-                          ImmutableList.copyOf(targetPatternPackages.build().iterator()),
-                          ImmutableList.copyOf(parser.canonicalize()),
-                          source,
-                          ruleContext.attributes().get("strict", Type.BOOLEAN),
-                          ruleContext.attributes().get("compressed_output", Type.BOOLEAN))),
-                  GenCqueryFunction.QueryException.class);
-    } catch (GenCqueryFunction.QueryException e) {
-      if (e.attribute != null) {
-        ruleContext.attributeError(e.attribute, e.getMessage());
-      } else {
-        ruleContext.ruleError(e.getMessage());
-      }
-      return null;
-    }
-    if (value == null) {
-      return null;
-    }
-
-    Artifact output = ruleContext.createOutputArtifact();
-    ruleContext.registerAction(
-        new GenQuery.QueryResultAction(ruleContext.getActionOwner(), output, value.getResult()));
-    var files = NestedSetBuilder.create(Order.STABLE_ORDER, output);
-    return new RuleConfiguredTargetBuilder(ruleContext)
-        .setFilesToBuild(files)
-        .addProvider(
-            RunfilesProvider.class,
-            RunfilesProvider.simple(
-                new Runfiles.Builder(ruleContext.getWorkspaceName())
-                    .addTransitiveArtifacts(files)
-                    .build()))
-        .addOutputGroup(
-            OutputGroupInfo.VALIDATION_TRANSITIVE, NestedSetBuilder.emptySet(Order.STABLE_ORDER))
-        .build();
+    return GenAnalysisQuery.create(
+        ruleContext, GenAnalysisQueryKey.Kind.CQUERY, QUERY_FUNCTIONS, parser, source);
   }
 
   @Override
   public GenQueryResult evaluate(
-      GenCqueryKey.Request request,
+      GenAnalysisQueryKey.Request request,
       RepositoryMapping repositoryMapping,
       StarlarkSemantics semantics,
-      GenCqueryScope scope,
+      GenAnalysisQueryScope scope,
       @Nullable ParserInput starlarkFile,
-      ExtendedEventHandler eventHandler)
-      throws InterruptedException, GenCqueryFunction.QueryException {
+      SkyFunction.Environment env)
+      throws InterruptedException, GenAnalysisQueryFunction.QueryException {
     OptionsParser parser =
         OptionsParser.builder()
             .optionsClasses(CqueryOptions.class)
@@ -364,12 +240,12 @@ public final class GenCquery
       out.close();
       result = out.getResult();
     } catch (QueryException | QuerySyntaxException | IOException e) {
-      throw new GenCqueryFunction.QueryException("cquery failed: " + e.getMessage());
+      throw new GenAnalysisQueryFunction.QueryException("cquery failed: " + e.getMessage());
     } finally {
-      events.replayOn(eventHandler);
+      events.replayOn(env.getListener());
     }
     if (events.hasErrors()) {
-      throw new GenCqueryFunction.QueryException("cquery output could not be evaluated");
+      throw new GenAnalysisQueryFunction.QueryException("cquery output could not be evaluated");
     }
 
     return result;
@@ -377,21 +253,21 @@ public final class GenCquery
 
   /** Uses cquery's evaluator while resolving target literals exclusively within the snapshot. */
   private static final class ScopedEnvironment extends ConfiguredTargetQueryEnvironment {
-    private final GenCqueryScope scope;
+    private final GenAnalysisQueryScope scope;
     private final boolean strict;
 
     ScopedEnvironment(
-        GenCqueryKey.Request request,
+        GenAnalysisQueryKey.Request request,
         RepositoryMapping repositoryMapping,
         StarlarkSemantics semantics,
-        GenCqueryScope scope,
+        GenAnalysisQueryScope scope,
         CqueryOptions options,
         StoredEventHandler events) {
       super(
           /* keepGoing= */ false,
           events,
           CQUERY_FUNCTIONS,
-          topLevelConfigurations(scope),
+          GenAnalysisQuery.topLevelConfigurations(scope),
           scope.getConfigurations(),
           /* topLevelAspects= */ ImmutableMap.of(),
           new TargetPattern.Parser(
@@ -403,28 +279,6 @@ public final class GenCquery
           options.getLabelPrinterLegacy(semantics));
       this.strict = request.strict();
       this.scope = scope;
-    }
-
-    private static TopLevelConfigurations topLevelConfigurations(GenCqueryScope scope) {
-      ImmutableList.Builder<TargetAndConfiguration> roots = ImmutableList.builder();
-      for (ConfiguredTargetKey key : scope.getRootKeys()) {
-        ConfiguredTarget target =
-            ((ConfiguredTargetValue) scope.getValue(key)).getConfiguredTarget();
-        Label label = target.getOriginalLabel();
-        try {
-          roots.add(
-              new TargetAndConfiguration(
-                  ((PackageValue) scope.getValue(label.getPackageIdentifier()))
-                      .getPackage()
-                      .getTarget(label.getName()),
-                  target.getConfigurationKey() == null
-                      ? null
-                      : (BuildConfigurationValue) scope.getValue(target.getConfigurationKey())));
-        } catch (NoSuchTargetException e) {
-          throw new IllegalStateException("analyzed scope target is missing: " + label, e);
-        }
-      }
-      return new TopLevelConfigurations(roots.build());
     }
 
     @Override
@@ -453,34 +307,8 @@ public final class GenCquery
         QueryExpression owner, String pattern, Callback<CqueryNode> callback) {
       try {
         TargetPattern parsed = getPattern(pattern);
-        Label label = null;
-        if (parsed.getType() == TargetPattern.Type.SINGLE_TARGET) {
-          label = parsed.getSingleTargetLabel();
-        } else if (parsed.getType() == TargetPattern.Type.TARGETS_IN_PACKAGE
-            && (pattern.startsWith("//") || pattern.startsWith("@"))) {
-          // Absolute wildcard spellings can name concrete targets, such as //pkg:all. Resolve
-          // that ambiguity from tracked package data before enforcing the configured scope.
-          PackageValue pkg = (PackageValue) scope.getValue(parsed.getDirectory());
-          String name =
-              Label.create(parsed.getDirectory(), pattern.substring(pattern.lastIndexOf(':') + 1))
-                  .getName();
-          var target = pkg == null ? null : pkg.getPackage().getTargetOrNull(name);
-          if (target != null) {
-            label = target.getLabel();
-            eventHandler.handle(
-                Event.warn(
-                    String.format(
-                        "The target pattern '%s' is ambiguous: ':%s' is both a wildcard, and the"
-                            + " name of an existing %s; using the latter interpretation",
-                        pattern, name, target.getTargetKind())));
-          }
-        }
-        if (label == null) {
-          throw new QueryException(
-              owner,
-              "target patterns are not allowed in gencquery: " + pattern,
-              Query.Code.SYNTAX_ERROR);
-        }
+        Label label =
+            GenAnalysisQuery.resolveLabel(scope, parsed, pattern, "gencquery", owner, eventHandler);
         List<CqueryNode> targets = scope.getTargets(label);
         if (targets.isEmpty()) {
           String message = "target '" + label + "' is not within the scope of the query";
