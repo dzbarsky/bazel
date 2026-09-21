@@ -62,6 +62,8 @@ import javax.annotation.Nullable;
  */
 public final class Fingerprint {
 
+  private static final int BUFFER_SIZE = 1024;
+
   // Make novel use of a CodedOutputStream, which is good at efficiently serializing data. By
   // flushing at the end of each digest we can continue to use the stream.
   private final CodedOutputStream codedOut;
@@ -75,7 +77,7 @@ public final class Fingerprint {
     codedOut =
         CodedOutputStream.newInstance(
             new DigestOutputStream(ByteStreams.nullOutputStream(), messageDigest),
-            /*bufferSize=*/ 1024);
+            /*bufferSize=*/ BUFFER_SIZE);
   }
 
   public Fingerprint() {
@@ -234,7 +236,13 @@ public final class Fingerprint {
   @CanIgnoreReturnValue
   public Fingerprint addString(String input) {
     try {
-      codedOut.writeStringNoTag(input);
+      // For large strings, protobuf reserves three bytes per UTF-16 code unit. The JDK's
+      // compact-string encoder can allocate just one byte per character for ASCII strings.
+      if (input.length() >= BUFFER_SIZE / 3) {
+        codedOut.writeByteArrayNoTag(input.getBytes(UTF_8));
+      } else {
+        codedOut.writeStringNoTag(input);
+      }
     } catch (IOException e) {
       throw new IllegalStateException("failed to write string", e);
     }
