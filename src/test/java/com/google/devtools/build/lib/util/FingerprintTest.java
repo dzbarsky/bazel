@@ -23,6 +23,8 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.CodedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +69,40 @@ public class FingerprintTest {
 
     assertThat(new Fingerprint().addBytes(ByteString.copyFromUtf8(helloWorld)).hexDigestAndReset())
         .isEqualTo(helloWorldHash);
+  }
+
+  @Test
+  public void longStringEncodingMatchesProtobuf() throws Exception {
+    Fingerprint fingerprint = new Fingerprint();
+    for (String input :
+        ImmutableList.of(
+            "a".repeat(340),
+            "a".repeat(341),
+            "a".repeat(342),
+            "a".repeat(1024),
+            "a".repeat(10000),
+            "\u00e9".repeat(1000),
+            "\u4e2d".repeat(1000),
+            "\ud83d\ude00".repeat(1000),
+            "a".repeat(1000) + "\ud800")) {
+      ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+      CodedOutputStream protobuf = CodedOutputStream.newInstance(bytes, 1024);
+      protobuf.writeInt32NoTag(-123);
+      protobuf.writeStringNoTag(input);
+      protobuf.writeBoolNoTag(true);
+      protobuf.writeStringNoTag("suffix");
+      protobuf.flush();
+      byte[] expected =
+          DigestHashFunction.SHA256.cloneOrCreateMessageDigest().digest(bytes.toByteArray());
+      assertThat(
+              fingerprint
+                  .addInt(-123)
+                  .addString(input)
+                  .addBoolean(true)
+                  .addString("suffix")
+                  .digestAndReset())
+          .isEqualTo(expected);
+    }
   }
 
   @Test
