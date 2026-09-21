@@ -320,12 +320,14 @@ public class InMemoryGraphImpl implements InMemoryGraph {
 
     @Override
     public SkyKey getOrWeakIntern(SkyKey sample) {
-      // Use computeIfAbsent not to mutate the map, but to call weakIntern under synchronization.
-      // This ensures that the canonical instance isn't being transferred to the node map
-      // concurrently in createIfAbsent. In the common case that the key is already present in the
-      // node map, this is a lock-free lookup.
+      InMemoryNodeEntry nodeEntry = nodeMap.get(sample);
+      if (nodeEntry != null) {
+        return nodeEntry.getKey();
+      }
+      // Recheck under synchronization: createIfAbsent may have transferred the canonical
+      // instance to the node map since the first lookup.
       SkyKey[] weakInterned = new SkyKey[1];
-      InMemoryNodeEntry nodeEntry =
+      nodeEntry =
           nodeMap.computeIfAbsent(
               sample,
               k -> {
