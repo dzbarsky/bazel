@@ -21,6 +21,7 @@ import static org.junit.Assert.assertThrows;
 import com.google.common.testing.EqualsTester;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.List;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -32,6 +33,33 @@ import org.junit.runners.JUnit4;
 public class OptionsTest {
 
   private static final String[] NO_ARGS = {};
+
+  public static class CacheKeyOptions extends HttpOptions {
+    @Option(
+        name = "items",
+        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+        effectTags = {OptionEffectTag.NO_OP},
+        defaultValue = "null",
+        allowMultiple = true)
+    public List<String> items;
+  }
+
+  @Test
+  public void cacheKeyEncoding() {
+    CacheKeyOptions options = Options.getDefaults(CacheKeyOptions.class);
+    options.host = "a\"b\\c";
+    assertThat(options.cacheKey())
+        .isEqualTo(
+            CacheKeyOptions.class.getName()
+                + "{debug=\"false\", host=\"a\\\"b\\\\c\", items=EMPTY, port=\"80\", special=NULL,"
+                + " tristate=\"AUTO\", }");
+    options.items = List.of("");
+    assertThat(options.cacheKey())
+        .isEqualTo(
+            CacheKeyOptions.class.getName()
+                + "{debug=\"false\", host=\"a\\\"b\\\\c\", items=\"[]\", port=\"80\", special=NULL,"
+                + " tristate=\"AUTO\", }");
+  }
 
   public static class HttpOptions extends OptionsBase {
 
