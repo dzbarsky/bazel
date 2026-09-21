@@ -399,6 +399,9 @@ public class RegisteredToolchainsFunction implements SkyFunction {
     }
     ImmutableList.Builder<TargetPattern> toolchains = ImmutableList.builder();
     for (Module module : bazelDepGraphValue.getDepGraph().values()) {
+      if (module.getToolchainsToRegister().isEmpty()) {
+        continue;
+      }
       TargetPattern.Parser parser =
           new TargetPattern.Parser(
               PathFragment.EMPTY_FRAGMENT,
