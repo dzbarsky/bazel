@@ -89,31 +89,31 @@ public abstract class OptionsBase {
    */
   public final String cacheKey() {
     StringBuilder result = new StringBuilder(getClass().getName()).append("{");
-    result.append(mapToCacheKey(asMap()));
+    for (OptionDefinition definition : OptionsData.getAllOptionDefinitionsForClass(getClass())) {
+      appendCacheKeyEntry(result, definition.getOptionName(), getValueFromDefinition(definition));
+    }
     return result.append("}").toString();
   }
 
   public static String mapToCacheKey(Map<?, ?> optionsMap) {
     StringBuilder result = new StringBuilder();
     for (Map.Entry<?, ?> entry : optionsMap.entrySet()) {
-      result.append(entry.getKey()).append("=");
-
-      Object value = entry.getValue();
-      // This special case is needed because List.toString() prints the same
-      // ("[]") for an empty list and for a list with a single empty string.
-      if (value instanceof List<?> && ((List<?>) value).isEmpty()) {
-        result.append("EMPTY");
-      } else if (value == null) {
-        result.append("NULL");
-      } else {
-        result
-            .append('"')
-            .append(ESCAPER.escape(value.toString()))
-            .append('"');
-      }
-      result.append(", ");
+      appendCacheKeyEntry(result, entry.getKey(), entry.getValue());
     }
     return result.toString();
+  }
+
+  private static void appendCacheKeyEntry(StringBuilder result, Object key, Object value) {
+    result.append(key).append("=");
+    // List.toString() is "[]" for both an empty list and a list containing one empty string.
+    if (value instanceof List<?> && ((List<?>) value).isEmpty()) {
+      result.append("EMPTY");
+    } else if (value == null) {
+      result.append("NULL");
+    } else {
+      result.append('"').append(ESCAPER.escape(value.toString())).append('"');
+    }
+    result.append(", ");
   }
 
   @Override
