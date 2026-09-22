@@ -298,8 +298,8 @@ public class RemoteActionFileSystem extends FileSystem {
     return remoteOutputTree;
   }
 
-  @VisibleForTesting
-  protected FileSystem getLocalFileSystem() {
+  /** Returns the delegate filesystem, which may virtualize external repositories. */
+  FileSystem getLocalFileSystem() {
     return localFs;
   }
 
