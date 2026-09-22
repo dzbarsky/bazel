@@ -284,8 +284,8 @@ public class RemoteActionFileSystem extends FileSystem implements PathCanonicali
     return remoteOutputTree;
   }
 
-  @VisibleForTesting
-  protected FileSystem getLocalFileSystem() {
+  /** Returns the delegate filesystem, which may virtualize external repositories. */
+  FileSystem getLocalFileSystem() {
     return localFs;
   }
 
