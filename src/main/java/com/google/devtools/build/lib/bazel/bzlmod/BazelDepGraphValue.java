@@ -27,6 +27,8 @@ import com.google.devtools.build.lib.skyframe.serialization.autocodec.Serializat
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * The result of running Bazel module resolution, containing the Bazel module dependency graph
@@ -35,6 +37,11 @@ import java.util.Map;
 @AutoValue
 public abstract class BazelDepGraphValue implements SkyValue {
   @SerializationConstant public static final SkyKey KEY = () -> SkyFunctions.BAZEL_DEP_GRAPH;
+
+  // Configuration-specific toolchain resolution repeatedly requests mappings from this graph.
+  // Keep them with the immutable inputs so a new dependency graph gets a fresh cache.
+  private final ConcurrentMap<ModuleKey, RepositoryMapping> fullRepoMappings =
+      new ConcurrentHashMap<>();
 
   public static BazelDepGraphValue create(
       ImmutableMap<ModuleKey, Module> depGraph,
@@ -118,13 +125,16 @@ public abstract class BazelDepGraphValue implements SkyValue {
    * module deps and module extensions.
    */
   public final RepositoryMapping getFullRepoMapping(ModuleKey key) {
-    return getRepositoryMapping(
+    return fullRepoMappings.computeIfAbsent(
         key,
-        getDepGraph(),
-        getExtensionUsagesTable(),
-        getExtensionUniqueNames(),
-        getCanonicalRepoNameLookup(),
-        getRepoOverrides());
+        moduleKey ->
+            getRepositoryMapping(
+                moduleKey,
+                getDepGraph(),
+                getExtensionUsagesTable(),
+                getExtensionUniqueNames(),
+                getCanonicalRepoNameLookup(),
+                getRepoOverrides()));
   }
 
   static RepositoryMapping getRepositoryMapping(
