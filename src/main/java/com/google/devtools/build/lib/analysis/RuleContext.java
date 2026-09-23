@@ -1926,7 +1926,7 @@ public class RuleContext extends TargetContext
 
     @Nullable
     Aspect getMainAspect() {
-      return Streams.findLast(aspects.stream()).orElse(null);
+      return Iterables.getLast(aspects, null);
     }
 
     ImmutableList<Aspect> getAspects() {
