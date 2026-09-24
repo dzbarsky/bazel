@@ -201,9 +201,8 @@ public final class PlatformProducerTest extends ProducerTestCase {
       throws InvalidPlatformException, OptionsParsingException, InterruptedException {
     PlatformInfoSink sink = new PlatformInfoSink();
     BuildOptions options = BuildOptions.of(ImmutableList.of(CoreOptions.class));
-    options
-        .get(CoreOptions.class)
-        .setCommandLineFlagAliases(ImmutableList.copyOf(flagAliasMappings.entrySet()));
+    options.get(CoreOptions.class).commandLineFlagAliases =
+        ImmutableList.copyOf(flagAliasMappings.entrySet());
     PlatformProducer producer =
         new PlatformProducer(platformLabel, options, sink, StateMachine.DONE);
     boolean success = executeProducer(producer);

@@ -1037,7 +1037,7 @@ public class RegisteredToolchainsFunctionTest extends ToolchainTestCase {
         )
         """);
 
-    useConfiguration("--extra_toolchains=//:*");
+    useConfiguration("--platforms=//platforms:linux", "--extra_toolchains=//:*");
 
     SkyKey toolchainsKey = registeredToolchainsKey(testToolchainTypeLabel, /* debug= */ false);
     EvaluationResult<RegisteredToolchainsValue> result =
