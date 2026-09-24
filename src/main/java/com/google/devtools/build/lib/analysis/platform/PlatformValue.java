@@ -27,7 +27,6 @@ import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -74,7 +73,12 @@ public record PlatformValue(PlatformInfo platformInfo, Optional<ParsedFlagsValue
       this.label = requireNonNull(label);
       this.flagAliasMappings = requireNonNull(flagAliasMappings);
       this.noConfigOptions = requireNonNull(noConfigOptions);
-      this.hashCode = Objects.hash(label, flagAliasMappings, noConfigOptions);
+      // Deliberately uses flagAliasMappings.size() instead of hashing the full map:
+      // hashing an ImmutableMap allocates an entry set and an iterator on every call.
+      // Using size() provides O(1) non-allocating differentiation between empty and
+      // populated alias mappings, while equals() still compares all fields completely.
+      this.hashCode =
+          31 * (31 * label.hashCode() + flagAliasMappings.size()) + noConfigOptions.hashCode();
     }
 
     @AutoCodec.Instantiator
