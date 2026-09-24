@@ -20,6 +20,7 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.cmdline.StarlarkThreadContext;
+import com.google.devtools.build.lib.supplier.InterruptibleSupplier;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.Optional;
 import javax.annotation.Nullable;
@@ -59,7 +60,7 @@ public final class BzlInitThreadContext extends StarlarkThreadContext
    * @param networkAllowlistForTests an allowlist for rule classes created by this thread
    * @param fragmentNameToClass a map from configuration fragment name to configuration fragment
    *     class, such as "apple" to AppleConfiguration.class
-   * @param mainRepoMapping the repository mapping of the main repository
+   * @param mainRepoMappingSupplier supplies the main repository mapping for label debug printing
    */
   public BzlInitThreadContext(
       Label bzlFile,
@@ -67,8 +68,8 @@ public final class BzlInitThreadContext extends StarlarkThreadContext
       RepositoryName toolsRepository,
       Optional<Label> networkAllowlistForTests,
       ImmutableMap<String, Class<?>> fragmentNameToClass,
-      RepositoryMapping mainRepoMapping) {
-    super(() -> mainRepoMapping);
+      @Nullable InterruptibleSupplier<RepositoryMapping> mainRepoMappingSupplier) {
+    super(mainRepoMappingSupplier);
     this.bzlFile = bzlFile;
     this.transitiveDigest = transitiveDigest;
     this.toolsRepository = toolsRepository;

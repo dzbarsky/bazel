@@ -36,8 +36,7 @@ import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
-import com.google.devtools.build.lib.events.EventKind;
-import com.google.devtools.build.lib.events.ExtendedEventHandler;
+import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.io.InconsistentFilesystemException;
 import com.google.devtools.build.lib.packages.AutoloadSymbols;
 import com.google.devtools.build.lib.packages.BazelStarlarkEnvironment;
@@ -67,7 +66,6 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -799,10 +797,6 @@ public class BzlLoadFunction implements SkyFunction {
     if (repoMapping == null) {
       return null;
     }
-    RepositoryMapping mainRepoMapping = getMainRepositoryMapping(key, env);
-    if (mainRepoMapping == null) {
-      return null;
-    }
     var repoMappingRecorder = new Label.SimpleRepoMappingRecorder();
     ImmutableList<Pair<String, Location>> programLoads = getLoadsFromProgram(prog);
     ImmutableList<Label> loadLabels =
@@ -904,20 +898,31 @@ public class BzlLoadFunction implements SkyFunction {
             ruleClassProvider.getToolsRepository(),
             ruleClassProvider.getNetworkAllowlistForTests(),
             ruleClassProvider.getConfigurationFragmentMap(),
-            mainRepoMapping);
+            () -> {
+              try {
+                return getMainRepositoryMapping(key, env);
+              } catch (InterruptedException e) {
+                // Label.debugPrint suppresses the exception; preserve cancellation for this load.
+                Thread.currentThread().interrupt();
+                throw e;
+              }
+            });
 
-    // executeBzlFile may post events to the Environment's handler, but events do not matter when
-    // caching BzlLoadValues. Note that executing the code mutates the Module and
-    // BzlInitThreadContext.
-    executeBzlFile(
-        prog,
-        key,
-        module,
-        loadMap,
-        context,
-        builtins.starlarkSemantics,
-        env.getListener(),
-        repoMappingRecorder);
+    // Debug printing can request the main repo mapping. Do not retain events or a partially
+    // initialized module if that dependency requires a Skyframe restart.
+    StoredEventHandler events =
+        executeBzlFile(
+            prog, key, module, loadMap, context, builtins.starlarkSemantics, repoMappingRecorder);
+    if (Thread.interrupted()) {
+      throw new InterruptedException();
+    }
+    if (env.valuesMissing()) {
+      return null;
+    }
+    events.replayOn(env.getListener());
+    if (events.hasErrors()) {
+      throw executionFailed(label);
+    }
 
     BzlVisibility bzlVisibility = context.getBzlVisibility();
     if (bzlVisibility == null) {
@@ -1371,16 +1376,15 @@ public class BzlLoadFunction implements SkyFunction {
   }
 
   /** Executes the compiled .bzl file defining the module to be loaded. */
-  private static void executeBzlFile(
+  private static StoredEventHandler executeBzlFile(
       Program prog,
       BzlLoadValue.Key key,
       Module module,
       Map<String, Module> loadedModules,
       BzlInitThreadContext context,
       StarlarkSemantics starlarkSemantics,
-      ExtendedEventHandler skyframeEventHandler,
       Label.RepoMappingRecorder repoMappingRecorder)
-      throws BzlLoadFailedException, InterruptedException {
+      throws InterruptedException {
     Label label = key.getLabel();
     try (Mutability mu = Mutability.create("loading", label)) {
       StarlarkThread thread =
@@ -1394,22 +1398,12 @@ public class BzlLoadFunction implements SkyFunction {
       // recorded. See #20721 for more details.
       thread.setThreadLocal(Label.RepoMappingRecorder.class, repoMappingRecorder);
 
-      // Wrap the skyframe event handler to listen for starlark errors.
-      AtomicBoolean sawStarlarkError = new AtomicBoolean(false);
-      EventHandler starlarkEventHandler =
-          event -> {
-            if (event.getKind() == EventKind.ERROR) {
-              sawStarlarkError.set(true);
-            }
-            skyframeEventHandler.handle(event);
-          };
+      StoredEventHandler starlarkEventHandler = new StoredEventHandler();
       thread.setPrintHandler(Event.makeDebugPrintHandler(starlarkEventHandler));
       context.storeInThread(thread);
 
       execAndExport(prog, label, starlarkEventHandler, module, thread);
-      if (sawStarlarkError.get()) {
-        throw executionFailed(label);
-      }
+      return starlarkEventHandler;
     }
   }
 

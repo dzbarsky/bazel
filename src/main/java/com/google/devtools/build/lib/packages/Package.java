@@ -49,6 +49,7 @@ import com.google.devtools.build.lib.skyframe.serialization.ObjectCodec;
 import com.google.devtools.build.lib.skyframe.serialization.SerializationContext;
 import com.google.devtools.build.lib.skyframe.serialization.SerializationException;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.supplier.InterruptibleSupplier;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.util.HashCodes;
@@ -579,7 +580,7 @@ public class Package extends Packageoid {
       boolean noImplicitFileExport,
       boolean simplifyUnconditionalSelectsInRuleAttrs,
       RepositoryMapping repositoryMapping,
-      RepositoryMapping mainRepositoryMapping,
+      InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
       @Nullable Semaphore cpuBoundSemaphore,
       PackageOverheadEstimator packageOverheadEstimator,
       @Nullable ImmutableMap<Location, String> generatorMap,
@@ -639,7 +640,7 @@ public class Package extends Packageoid {
             packageSettings.precomputeTransitiveLoads(),
             noImplicitFileExport,
             simplifyUnconditionalSelectsInRuleAttrs,
-            mainRepositoryMapping,
+            () -> mainRepositoryMapping,
             cpuBoundSemaphore,
             packageOverheadEstimator,
             generatorMap,
@@ -991,7 +992,7 @@ public class Package extends Packageoid {
         boolean precomputeTransitiveLoads,
         boolean noImplicitFileExport,
         boolean simplifyUnconditionalSelectsInRuleAttrs,
-        RepositoryMapping mainRepositoryMapping,
+        InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
         @Nullable Semaphore cpuBoundSemaphore,
         PackageOverheadEstimator packageOverheadEstimator,
         @Nullable ImmutableMap<Location, String> generatorMap,
@@ -1128,7 +1129,7 @@ public class Package extends Packageoid {
         boolean precomputeTransitiveLoads,
         boolean noImplicitFileExport,
         boolean simplifyUnconditionalSelectsInRuleAttrs,
-        RepositoryMapping mainRepositoryMapping,
+        InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
         @Nullable Semaphore cpuBoundSemaphore,
         PackageOverheadEstimator packageOverheadEstimator,
         @Nullable ImmutableMap<Location, String> generatorMap,

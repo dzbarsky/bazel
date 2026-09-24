@@ -41,6 +41,7 @@ import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
@@ -85,13 +86,16 @@ import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.lib.vfs.SyscallCache;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
+import com.google.devtools.build.skyframe.AbstractSkyFunctionEnvironmentForTesting;
 import com.google.devtools.build.skyframe.Differencer.DiffWithDelta.Delta;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.InMemoryGraph;
+import com.google.devtools.build.skyframe.InMemoryMemoizingEvaluator;
 import com.google.devtools.build.skyframe.InMemoryNodeEntry;
 import com.google.devtools.build.skyframe.RecordingDifferencer;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
+import com.google.devtools.build.skyframe.ValueOrUntypedException;
 import com.google.devtools.common.options.Options;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.testing.junit.testparameterinjector.TestParameter;
@@ -242,6 +246,115 @@ public class PackageFunctionTest extends BuildViewTestCase {
     return computationMode.equals(ComputationMode.PACKAGE_PIECE_FOR_BUILD_FILE)
         ? new PackagePieceIdentifier.ForBuildFile(pkgId)
         : pkgId;
+  }
+
+  @Test
+  public void unrelatedMainRepoMappingChange_preservesExternalPackage() throws Exception {
+    scratch.overwriteFile(
+        "MODULE.bazel",
+        "bazel_dep(name='foo')",
+        "local_path_override(module_name='foo', path='/foo')");
+    scratch.file("/foo/MODULE.bazel", "module(name='foo')");
+    scratch.file("/foo/BUILD", "filegroup(name='files', srcs=glob(['*.txt']))");
+    scratch.file("/foo/input.txt");
+    scratch.file("/bar/MODULE.bazel", "module(name='bar')");
+    preparePackageLoading(ComputationMode.MONOLITHIC_PACKAGE, rootDirectory);
+    PackageIdentifier key = Label.parseCanonical("@@foo+//:BUILD").getPackageIdentifier();
+    EvaluationResult<PackageValue> before =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), key, /* keepGoing= */ false, reporter);
+    assertThatEvaluationResult(before).hasNoError();
+    assertThat(before.get(key).getPackage().containsErrors()).isFalse();
+
+    scratch.overwriteFile(
+        "MODULE.bazel",
+        "bazel_dep(name='foo')",
+        "local_path_override(module_name='foo', path='/foo')",
+        "bazel_dep(name='bar')",
+        "local_path_override(module_name='bar', path='/bar')");
+    getSkyframeExecutor()
+        .invalidateFilesUnderPathForTesting(
+            reporter,
+            ModifiedFileSet.builder().modify(PathFragment.create("MODULE.bazel")).build(),
+            Root.fromPath(rootDirectory));
+    EvaluationResult<PackageValue> after =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), key, /* keepGoing= */ false, reporter);
+    assertThatEvaluationResult(after).hasNoError();
+    assertThat(after.get(key).getPackage()).isSameInstanceAs(before.get(key).getPackage());
+  }
+
+  @Test
+  public void missingMainRepoMapping_defersBuildLabelDiagnostics() throws Exception {
+    scratch.overwriteFile(
+        "MODULE.bazel",
+        "bazel_dep(name='foo', repo_name='alias')",
+        "local_path_override(module_name='foo', path='/foo')");
+    scratch.file("/foo/MODULE.bazel", "module(name='foo')");
+    scratch.file("/foo/label.bzl", "label = Label('//:target')");
+    scratch.file(
+        "/foo/BUILD",
+        "load(':label.bzl', 'label')",
+        "print('before lookup')",
+        "print(label)",
+        "fail(label)");
+    preparePackageLoading(ComputationMode.MONOLITHIC_PACKAGE, rootDirectory);
+    PackageIdentifier key = Label.parseCanonical("@@foo+//:BUILD").getPackageIdentifier();
+    reporter.removeHandler(failFastHandler);
+    EvaluationResult<PackageValue> result =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), key, /* keepGoing= */ false, reporter);
+    assertThat(result.get(key).getPackage().containsErrors()).isTrue();
+    assertContainsEvent("@alias//:target");
+    eventCollector.clear();
+
+    var evaluator = (InMemoryMemoizingEvaluator) getSkyframeExecutor().getEvaluator();
+    class MappingEnvironment extends AbstractSkyFunctionEnvironmentForTesting {
+      private final boolean interruptMappingLookup;
+
+      MappingEnvironment(boolean interruptMappingLookup) {
+        this.interruptMappingLookup = interruptMappingLookup;
+      }
+
+      @Override
+      protected ImmutableMap<SkyKey, ValueOrUntypedException> getValueOrUntypedExceptions(
+          Iterable<? extends SkyKey> depKeys) throws InterruptedException {
+        var values = ImmutableMap.<SkyKey, ValueOrUntypedException>builder();
+        for (SkyKey depKey : depKeys) {
+          SkyValue value = null;
+          if (!depKey.equals(RepositoryMappingValue.key(RepositoryName.MAIN))) {
+            value = evaluator.getExistingValue(depKey);
+            assertThat(value).isNotNull();
+          } else if (interruptMappingLookup) {
+            throw new InterruptedException();
+          }
+          values.put(depKey, ValueOrUntypedException.ofValueUntyped(value));
+        }
+        return values.buildOrThrow();
+      }
+
+      @Override
+      public ExtendedEventHandler getListener() {
+        return reporter;
+      }
+    }
+    var function = evaluator.getSkyFunctionsForTesting().get(key.functionName());
+    var missingMappingEnv = new MappingEnvironment(/* interruptMappingLookup= */ false);
+    assertThat(function.compute(key, missingMappingEnv)).isNull();
+    assertThat(missingMappingEnv.valuesMissing()).isTrue();
+    assertThat(eventCollector).isEmpty();
+    assertThrows(
+        InterruptedException.class,
+        () -> function.compute(key, new MappingEnvironment(/* interruptMappingLookup= */ true)));
+    assertThat(eventCollector).isEmpty();
+
+    var available =
+        (PackageValue)
+            function.compute(
+                key, new SkyFunctionEnvironmentForTesting(reporter, getSkyframeExecutor()));
+    assertThat(available.getPackage().containsErrors()).isTrue();
+    assertContainsEvent("@alias//:target");
+    assertDoesNotContainEvent("@@foo+//:target");
   }
 
   @CanIgnoreReturnValue

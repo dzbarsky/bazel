@@ -71,6 +71,7 @@ import com.google.devtools.build.lib.skyframe.PackageFunctionWithMultipleGlobDep
 import com.google.devtools.build.lib.skyframe.RepoFileFunction.BadRepoFileException;
 import com.google.devtools.build.lib.skyframe.RepoPackageArgsFunction.RepoPackageArgsValue;
 import com.google.devtools.build.lib.skyframe.StarlarkBuiltinsFunction.BuiltinsFailedException;
+import com.google.devtools.build.lib.supplier.InterruptibleSupplier;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.vfs.DetailedIOException;
@@ -105,6 +106,7 @@ import java.util.function.Function;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Module;
+import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkSemantics;
 import net.starlark.java.syntax.FileOptions;
 import net.starlark.java.syntax.Location;
@@ -988,6 +990,45 @@ public abstract class PackageFunction implements SkyFunction {
       Root packageRoot,
       Environment env);
 
+  private static final class MainRepositoryMappingUnavailableException extends RuntimeException {
+    MainRepositoryMappingUnavailableException(@Nullable InterruptedException interruption) {
+      super(interruption);
+    }
+  }
+
+  private static final class MainRepositoryMappingSupplier
+      implements InterruptibleSupplier<RepositoryMapping> {
+    @Nullable private Environment env;
+    private final Globber globber;
+    @Nullable private RepositoryMapping mapping;
+
+    MainRepositoryMappingSupplier(Environment env, Globber globber) {
+      this.env = env;
+      this.globber = globber;
+    }
+
+    @Override
+    public RepositoryMapping get() {
+      if (mapping == null) {
+        RepositoryMappingValue value;
+        try {
+          value =
+              (RepositoryMappingValue)
+                  checkNotNull(env).getValue(RepositoryMappingValue.key(RepositoryName.MAIN));
+        } catch (InterruptedException e) {
+          // Label.debugPrint swallows InterruptedException; propagate it through Starlark instead.
+          globber.onInterrupt();
+          throw new MainRepositoryMappingUnavailableException(e);
+        }
+        if (value == null) {
+          throw new MainRepositoryMappingUnavailableException(null);
+        }
+        mapping = value.repositoryMapping();
+      }
+      return mapping;
+    }
+  }
+
   /**
    * Constructs a {@link Package} or {@code PackagePiece.ForBuildFile} object for the given package.
    * Note that the returned package or piece may be in error.
@@ -1012,7 +1053,10 @@ public abstract class PackageFunction implements SkyFunction {
         (RepositoryMappingValue)
             env.getValue(RepositoryMappingValue.key(packageId.getRepository()));
     RepositoryMappingValue mainRepositoryMappingValue =
-        (RepositoryMappingValue) env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN));
+        packagePieceId == null
+            ? null
+            : (RepositoryMappingValue)
+                env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN));
     RootedPath buildFileRootedPath = packageLookupValue.getRootedPath(packageId);
     FileValue buildFileValue = getBuildFileValue(env, buildFileRootedPath);
     RuleVisibility defaultVisibility = PrecomputedValue.DEFAULT_VISIBILITY.get(env);
@@ -1042,7 +1086,6 @@ public abstract class PackageFunction implements SkyFunction {
     }
 
     RepositoryMapping repositoryMapping = repositoryMappingValue.repositoryMapping();
-    RepositoryMapping mainRepositoryMapping = mainRepositoryMappingValue.repositoryMapping();
     Label preludeLabel = null;
 
     // Load (optional) prelude, which determines environment.
@@ -1081,6 +1124,7 @@ public abstract class PackageFunction implements SkyFunction {
       packageProgress.startReadPackage(packageId);
     }
     boolean committed = false;
+    MainRepositoryMappingSupplier mainRepositoryMapping = null;
     try (SilentCloseable c =
         Profiler.instance().profile(ProfilerTask.CREATE_PACKAGE, packageId.toString())) {
       CompiledBuildFile compiled = state.compiledBuildFile;
@@ -1161,9 +1205,7 @@ public abstract class PackageFunction implements SkyFunction {
         }
       }
 
-      // From this point on, no matter whether the function returns
-      // successfully or throws an exception, there will be no more
-      // Skyframe restarts.
+      // Only a lazy MAIN repository mapping lookup can still restart BUILD execution.
       committed = true;
 
       long startTimeNanos = BlazeClock.nanoTime();
@@ -1176,6 +1218,7 @@ public abstract class PackageFunction implements SkyFunction {
               packageLocator,
               threadStateReceiverFactoryForMetrics.apply(keyForMetrics));
       Globber globber = makeGlobber(nonSkyframeGlobber, packageId, packageRoot, env);
+      mainRepositoryMapping = new MainRepositoryMappingSupplier(env, globber);
 
       // Create the package,
       // even if it will be empty because we cannot attempt execution.
@@ -1200,7 +1243,7 @@ public abstract class PackageFunction implements SkyFunction {
                   repositoryMappingValue.associatedModuleVersion(),
                   starlarkBuiltinsValue.starlarkSemantics,
                   repositoryMapping,
-                  mainRepositoryMapping,
+                  checkNotNull(mainRepositoryMappingValue).repositoryMapping(),
                   cpuBoundSemaphore.get(),
                   /* (Nullable) */ compiled.generatorMap,
                   configSettingVisibilityPolicy,
@@ -1250,7 +1293,21 @@ public abstract class PackageFunction implements SkyFunction {
           pkgBuilder,
           globber,
           new Metrics(loadTimeNanos, nonSkyframeGlobber.getGlobFilesystemOperationCost()));
+    } catch (Starlark.UncheckedEvalException e) {
+      if (!(e.getCause() instanceof MainRepositoryMappingUnavailableException unavailable)) {
+        throw e;
+      }
+      if (unavailable.getCause() instanceof InterruptedException interrupted) {
+        throw interrupted;
+      }
+      // Missing glob values deliberately retain the loaded builder; missing MAIN cannot.
+      committed = false;
+      return null;
     } finally {
+      // A loaded builder can outlive this attempt while its glob dependencies are evaluated.
+      if (mainRepositoryMapping != null) {
+        mainRepositoryMapping.env = null;
+      }
       if (committed) {
         // We're done executing the BUILD file. Therefore, we can discard the compiled BUILD file...
         state.compiledBuildFile = null;
