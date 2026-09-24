@@ -31,6 +31,7 @@ import com.google.devtools.build.lib.analysis.PlatformConfiguration;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.analysis.RuleContext.PrerequisiteValidationContext;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
@@ -131,14 +132,14 @@ public class TestRuleClassProvider {
     }
 
     @Override
-    protected boolean checkVisibilityForExperimental(RuleContext.Builder context) {
+    protected boolean checkVisibilityForExperimental(PrerequisiteValidationContext context) {
       // It does not matter whether we return true or false here if packageUnderExperimental always
       // returns false.
       return true;
     }
 
     @Override
-    protected boolean allowExperimentalDeps(RuleContext.Builder context) {
+    protected boolean allowExperimentalDeps(PrerequisiteValidationContext context) {
       // It does not matter whether we return true or false here if packageUnderExperimental always
       // returns false.
       return false;
