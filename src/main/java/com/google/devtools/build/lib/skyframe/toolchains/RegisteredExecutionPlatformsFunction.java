@@ -174,11 +174,16 @@ public class RegisteredExecutionPlatformsFunction implements SkyFunction {
       if (module.getExecutionPlatformsToRegister().isEmpty()) {
         continue;
       }
+      RepositoryName repoName =
+          bazelDepGraphValue.getCanonicalRepoNameLookup().inverse().get(module.getKey());
+      RepositoryMappingValue repoMapping =
+          (RepositoryMappingValue) env.getValue(RepositoryMappingValue.key(repoName));
+      if (repoMapping == null) {
+        continue;
+      }
       TargetPattern.Parser parser =
           new TargetPattern.Parser(
-              PathFragment.EMPTY_FRAGMENT,
-              bazelDepGraphValue.getCanonicalRepoNameLookup().inverse().get(module.getKey()),
-              bazelDepGraphValue.getFullRepoMapping(module.getKey()));
+              PathFragment.EMPTY_FRAGMENT, repoName, repoMapping.repositoryMapping());
       for (String pattern : module.getExecutionPlatformsToRegister()) {
         try {
           executionPlatforms.add(parser.parse(pattern));
@@ -188,7 +193,7 @@ public class RegisteredExecutionPlatformsFunction implements SkyFunction {
         }
       }
     }
-    return executionPlatforms.build();
+    return env.valuesMissing() ? null : executionPlatforms.build();
   }
 
   @Nullable

@@ -406,7 +406,6 @@ public final class ModCommand implements BlazeCommand {
 
     AugmentedModule baseModule =
         Objects.requireNonNull(moduleInspector.depGraph().get(baseModuleKey));
-    RepositoryMapping baseModuleMapping = depGraphValue.getFullRepoMapping(baseModuleKey);
     try {
       switch (subcommand) {
         case GRAPH -> {
@@ -417,6 +416,25 @@ public final class ModCommand implements BlazeCommand {
           }
         }
         case SHOW_REPO -> {
+          var mappingKey =
+              RepositoryMappingValue.key(
+                  depGraphValue.getCanonicalRepoNameLookup().inverse().get(baseModuleKey));
+          EvaluationResult<RepositoryMappingValue> result =
+              skyframeExecutor.evaluate(
+                  ImmutableList.of(mappingKey),
+                  /* keepGoing= */ false,
+                  threadsOption.threads,
+                  env.getReporter());
+          if (result.hasError()) {
+            Exception e = result.getError().getException();
+            return reportAndCreateFailureResult(
+                env,
+                e != null
+                    ? e.getMessage()
+                    : "Unexpected error during repository mapping evaluation.",
+                Code.INVALID_ARGUMENTS);
+          }
+          var baseModuleMapping = result.get(mappingKey).repositoryMapping();
           argsAsRepos =
               getReposToShow(modOptions, moduleInspector, depGraphValue, baseModuleMapping, args);
         }
@@ -469,6 +487,11 @@ public final class ModCommand implements BlazeCommand {
       }
     } catch (InvalidArgumentException e) {
       return reportAndCreateFailureResult(env, e.getMessage(), e.getCode());
+    } catch (InterruptedException e) {
+      String errorMessage = "mod command interrupted: " + e.getMessage();
+      env.getReporter().handle(Event.error(errorMessage));
+      return BlazeCommandResult.detailedExitCode(
+          InterruptedFailureDetails.detailedExitCode(errorMessage));
     }
     /* Extract and check the --from and --extension_usages argument */
     ImmutableSet<ModuleKey> fromKeys;
