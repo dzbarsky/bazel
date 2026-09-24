@@ -138,6 +138,7 @@ java_library(
     name = "platform_producer",
     srcs = ["PlatformProducer.java"],
     deps = [
+        "//src/main/java/com/google/devtools/build/lib/analysis/config:build_options",
         "//src/main/java/com/google/devtools/build/lib/analysis/platform",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/skyframe/toolchains:platform_lookup_util",
