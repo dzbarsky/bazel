@@ -917,7 +917,7 @@ public class RegisteredToolchainsFunctionTest extends ToolchainTestCase {
   }
 
   @Test
-  public void testRegisteredToolchains_targetSetting_error() throws Exception {
+  public void testRegisteredToolchains_targetSetting_featureFlag() throws Exception {
     // Add an extra toolchain with a target_setting
     scratch.file(
         "extra/BUILD",
@@ -962,20 +962,16 @@ public class RegisteredToolchainsFunctionTest extends ToolchainTestCase {
         register_toolchains("//toolchain:toolchain_1", "//extra:extra_toolchain")
         """);
 
-    // Need this so the feature flag is actually gone from the configuration.
+    // Target settings are evaluated in the target configuration, just like select() conditions,
+    // so they aren't affected by the trimming of feature flags on dependency edges.
     useConfiguration(
         "--platforms=//platforms:linux", "--enforce_transitive_configs_for_config_feature_flag");
     SkyKey toolchainsKey = registeredToolchainsKey(testToolchainTypeLabel, /* debug= */ false);
     EvaluationResult<RegisteredToolchainsValue> result =
         requestToolchainsFromSkyframe(toolchainsKey);
-    assertThatEvaluationResult(result)
-        .hasErrorEntryForKeyThat(toolchainsKey)
-        .hasExceptionThat()
-        .hasMessageThat()
-        .contains(
-            "Unrecoverable errors resolving config_setting associated with"
-                + " //extra:extra_toolchain: For config_setting flagged: Feature flag"
-                + " //extra:flag was accessed in a configuration it is not present in.");
+    assertThatEvaluationResult(result).hasNoError();
+    assertToolchainLabels(result.get(toolchainsKey))
+        .contains(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
   }
 
   @Test
@@ -1015,5 +1011,331 @@ public class RegisteredToolchainsFunctionTest extends ToolchainTestCase {
             RegisteredToolchainsValue.create(
                 ImmutableList.of(toolchain2, toolchain1), /* rejectedToolchains= */ null))
         .testEquals();
+  }
+
+  @Test
+  public void testRegisteredToolchains_wildcard_nonRuleTargets() throws Exception {
+    // Add a toolchain and a non-rule target in the root package.
+    scratch.file(
+        "BUILD",
+        """
+        load('//toolchain:toolchain_def.bzl', 'test_toolchain')
+
+        exports_files(['some_file'])
+
+        toolchain(
+            name = 'root_toolchain',
+            exec_compatible_with = ['//constraints:linux'],
+            target_compatible_with = ['//constraints:linux'],
+            toolchain = ':root_toolchain_impl',
+            toolchain_type = '//toolchain:test_toolchain',
+        )
+
+        test_toolchain(
+            name = 'root_toolchain_impl',
+            data = 'root',
+        )
+        """);
+
+    useConfiguration("--extra_toolchains=//:*");
+
+    SkyKey toolchainsKey = registeredToolchainsKey(testToolchainTypeLabel, /* debug= */ false);
+    EvaluationResult<RegisteredToolchainsValue> result =
+        requestToolchainsFromSkyframe(toolchainsKey);
+    assertThatEvaluationResult(result).hasNoError();
+
+    // Verify that the toolchain was registered and the filegroup was filtered out.
+    assertToolchainLabels(result.get(toolchainsKey))
+        .contains(Label.parseCanonicalUnchecked("//:root_toolchain_impl"));
+  }
+
+  private BuildConfigurationKey noConfigKey() {
+    return BuildConfigurationKey.create(CommonOptions.noConfigOptions(targetConfig.getOptions()));
+  }
+
+  private void writeOptimizedToolchain(String extraAttrs) throws Exception {
+    scratch.file(
+        "extra/BUILD",
+        """
+        load("//toolchain:toolchain_def.bzl", "test_toolchain")
+
+        config_setting(
+            name = "optimized",
+            values = {"compilation_mode": "opt"},
+        )
+
+        alias(
+            name = "type_alias",
+            actual = "//toolchain:test_toolchain",
+        )
+
+        alias(
+            name = "optimized_alias",
+            actual = ":optimized",
+        )
+
+        config_setting(
+            name = "debug",
+            values = {"compilation_mode": "dbg"},
+        )
+
+        config_setting(
+            name = "stripped",
+            values = {"strip": "always"},
+        )
+
+        # Resolves to a different config_setting depending on the configuration.
+        alias(
+            name = "optimized_or_stripped",
+            actual = select({
+                ":debug": ":stripped",
+                "//conditions:default": ":optimized",
+            }),
+        )
+
+        filegroup(name = "not_a_setting")
+
+        toolchain(
+            name = "extra_toolchain",
+            toolchain = ":extra_toolchain_impl",
+            %s
+        )
+
+        test_toolchain(
+            name = "extra_toolchain_impl",
+            data = "extra",
+        )
+        """
+            .formatted(extraAttrs));
+  }
+
+  private RegisteredToolchainsValue requestToolchains(String... flags) throws Exception {
+    useConfiguration(
+        ImmutableList.<String>builder()
+            .add("--extra_toolchains=//extra:extra_toolchain")
+            .add(flags)
+            .build()
+            .toArray(String[]::new));
+    SkyKey key = registeredToolchainsKey(testToolchainTypeLabel, /* debug= */ true);
+    var result = requestToolchainsFromSkyframe(key);
+    assertThatEvaluationResult(result).hasNoError();
+    return result.get(key);
+  }
+
+  @Test
+  public void targetSettings_toolchainAnalyzedWithoutConfiguration() throws Exception {
+    writeOptimizedToolchain(
+        """
+        toolchain_type = "//toolchain:test_toolchain",
+        target_settings = [":optimized"],
+        """);
+
+    assertToolchainLabels(requestToolchains("-c", "opt"))
+        .contains(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+    var fastbuild = requestToolchains("-c", "fastbuild");
+    assertToolchainLabels(fastbuild)
+        .doesNotContain(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+    assertThat(fastbuild.rejectedToolchains())
+        .containsCell(
+            testToolchainTypeLabel,
+            Label.parseCanonicalUnchecked("//extra:extra_toolchain"),
+            "mismatching target_settings: optimized");
+
+    assertThat(getKnownConfigurations("//extra:extra_toolchain")).containsExactly(noConfigKey());
+    assertThat(getKnownConfigurations("//extra:optimized")).doesNotContain(noConfigKey());
+  }
+
+  @Test
+  public void targetSettings_select_toolchainAnalyzedPerConfiguration() throws Exception {
+    writeOptimizedToolchain(
+        """
+        toolchain_type = "//toolchain:test_toolchain",
+        target_settings = select({
+            ":optimized": [":optimized"],
+            "//conditions:default": [],
+        }),
+        """);
+
+    assertToolchainLabels(requestToolchains("-c", "opt"))
+        .contains(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+    assertToolchainLabels(requestToolchains("-c", "fastbuild"))
+        .contains(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+
+    assertThat(getKnownConfigurations("//extra:extra_toolchain")).doesNotContain(noConfigKey());
+    assertThat(getKnownConfigurations("//extra:extra_toolchain")).hasSize(2);
+  }
+
+  @Test
+  public void aliasedToolchainType_toolchainAnalyzedPerConfiguration() throws Exception {
+    writeOptimizedToolchain(
+        """
+        toolchain_type = ":type_alias",
+        """);
+
+    assertToolchainLabels(requestToolchains())
+        .contains(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+
+    assertThat(getKnownConfigurations("//extra:extra_toolchain")).contains(targetConfigKey);
+    assertThat(getKnownConfigurations("//extra:extra_toolchain")).doesNotContain(noConfigKey());
+  }
+
+  @Test
+  public void aliasedTargetSetting_toolchainAnalyzedWithoutConfiguration() throws Exception {
+    writeOptimizedToolchain(
+        """
+        toolchain_type = "//toolchain:test_toolchain",
+        target_settings = [":optimized_alias"],
+        """);
+
+    assertToolchainLabels(requestToolchains("-c", "opt"))
+        .contains(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+    assertToolchainLabels(requestToolchains("-c", "fastbuild"))
+        .doesNotContain(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+
+    assertThat(getKnownConfigurations("//extra:extra_toolchain")).containsExactly(noConfigKey());
+    assertThat(getKnownConfigurations("//extra:optimized_alias")).doesNotContain(noConfigKey());
+  }
+
+  @Test
+  public void configurableAliasTargetSetting_toolchainAnalyzedWithoutConfiguration()
+      throws Exception {
+    writeOptimizedToolchain(
+        """
+        toolchain_type = "//toolchain:test_toolchain",
+        target_settings = [":optimized_or_stripped"],
+        """);
+
+    assertToolchainLabels(requestToolchains("-c", "opt"))
+        .contains(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+    assertToolchainLabels(requestToolchains("-c", "fastbuild"))
+        .doesNotContain(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+    assertToolchainLabels(requestToolchains("-c", "dbg", "--strip=always"))
+        .contains(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+    assertToolchainLabels(requestToolchains("-c", "dbg", "--strip=never"))
+        .doesNotContain(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+
+    assertThat(getKnownConfigurations("//extra:extra_toolchain")).containsExactly(noConfigKey());
+  }
+
+  @Test
+  public void targetSettings_notAConfigSetting() throws Exception {
+    writeOptimizedToolchain(
+        """
+        toolchain_type = "//toolchain:test_toolchain",
+        target_settings = [":not_a_setting"],
+        """);
+    useConfiguration("--extra_toolchains=//extra:extra_toolchain");
+    reporter.removeHandler(failFastHandler);
+
+    SkyKey key = registeredToolchainsKey(testToolchainTypeLabel, /* debug= */ false);
+    assertThatEvaluationResult(requestToolchainsFromSkyframe(key)).hasErrorEntryForKeyThat(key);
+    assertContainsEvent(
+        "in target_settings attribute of toolchain rule //extra:extra_toolchain: filegroup rule"
+            + " '//extra:not_a_setting' is misplaced here (expected config_setting)");
+  }
+
+  @Test
+  public void targetSettings_notVisible() throws Exception {
+    scratch.file(
+        "private/BUILD",
+        """
+        config_setting(
+            name = "optimized",
+            values = {"compilation_mode": "opt"},
+            visibility = ["//visibility:private"],
+        )
+        """);
+    writeOptimizedToolchain(
+        """
+        toolchain_type = "//toolchain:test_toolchain",
+        target_settings = ["//private:optimized"],
+        """);
+    useConfiguration("--extra_toolchains=//extra:extra_toolchain");
+    reporter.removeHandler(failFastHandler);
+
+    SkyKey key = registeredToolchainsKey(testToolchainTypeLabel, /* debug= */ false);
+    assertThatEvaluationResult(requestToolchainsFromSkyframe(key)).hasErrorEntryForKeyThat(key);
+    assertContainsEvent(
+        "Visibility error:\ntarget '//private:optimized' is not visible from\n"
+            + "target '//extra:extra_toolchain'");
+  }
+
+  @Test
+  public void targetSettings_testonly() throws Exception {
+    scratch.file(
+        "testonly/BUILD",
+        """
+        config_setting(
+            name = "optimized",
+            testonly = True,
+            values = {"compilation_mode": "opt"},
+            visibility = ["//visibility:public"],
+        )
+        """);
+    writeOptimizedToolchain(
+        """
+        toolchain_type = "//toolchain:test_toolchain",
+        target_settings = ["//testonly:optimized"],
+        """);
+    useConfiguration("--extra_toolchains=//extra:extra_toolchain");
+    reporter.removeHandler(failFastHandler);
+
+    SkyKey key = registeredToolchainsKey(testToolchainTypeLabel, /* debug= */ false);
+    assertThatEvaluationResult(requestToolchainsFromSkyframe(key)).hasErrorEntryForKeyThat(key);
+    assertContainsEvent(
+        "non-test target '//extra:extra_toolchain' depends on testonly target"
+            + " '//testonly:optimized' and doesn't have testonly attribute set");
+  }
+
+  @Test
+  public void targetSettings_deprecated() throws Exception {
+    scratch.file(
+        "deprecated/BUILD",
+        """
+        config_setting(
+            name = "optimized",
+            deprecation = "Use something else",
+            values = {"compilation_mode": "opt"},
+            visibility = ["//visibility:public"],
+        )
+        """);
+    writeOptimizedToolchain(
+        """
+        toolchain_type = "//toolchain:test_toolchain",
+        target_settings = ["//deprecated:optimized"],
+        """);
+
+    assertToolchainLabels(requestToolchains("-c", "opt"))
+        .contains(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+    assertContainsEvent(
+        "target '//extra:extra_toolchain' depends on deprecated target '//deprecated:optimized':"
+            + " Use something else");
+  }
+
+  @Test
+  public void sharedDeclarationRespectsVisibilityFlagsAcrossConfigurations() throws Exception {
+    scratch.file(
+        "private_type/BUILD",
+        "toolchain_type(name = 'private', visibility = ['//visibility:private'])");
+    writeOptimizedToolchain("toolchain_type = '//private_type:private',");
+    reporter.removeHandler(failFastHandler);
+    Label type = Label.parseCanonicalUnchecked("//private_type:private");
+    useConfiguration("--extra_toolchains=//extra:extra_toolchain", "--check_visibility");
+    SkyKey checked = registeredToolchainsKey(type, /* debug= */ false);
+    assertThatEvaluationResult(requestToolchainsFromSkyframe(checked))
+        .hasErrorEntryForKeyThat(checked);
+    assertContainsEvent("is not visible from");
+
+    useConfiguration("--extra_toolchains=//extra:extra_toolchain", "--nocheck_visibility");
+    SkyKey unchecked = registeredToolchainsKey(type, /* debug= */ false);
+    var result = requestToolchainsFromSkyframe(unchecked);
+    assertThatEvaluationResult(result).hasNoError();
+    assertToolchainLabels(result.get(unchecked))
+        .contains(Label.parseCanonicalUnchecked("//extra:extra_toolchain_impl"));
+
+    useConfiguration("--extra_toolchains=//extra:extra_toolchain", "--check_visibility");
+    checked = registeredToolchainsKey(type, /* debug= */ false);
+    assertThatEvaluationResult(requestToolchainsFromSkyframe(checked))
+        .hasErrorEntryForKeyThat(checked);
   }
 }
