@@ -17,6 +17,9 @@ package com.google.devtools.build.lib.analysis.platform;
 import static java.util.Objects.requireNonNull;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.lib.analysis.config.BuildOptions;
+import com.google.devtools.build.lib.analysis.config.CommonOptions;
+import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.config.ParsedFlagsValue;
@@ -48,8 +51,12 @@ public record PlatformValue(PlatformInfo platformInfo, Optional<ParsedFlagsValue
     return new PlatformValue(platformInfo, Optional.of(parsedFlags));
   }
 
-  public static Key key(Label platformLabel, ImmutableMap<String, Label> flagAliasMappings) {
-    return Key.create(platformLabel, flagAliasMappings);
+  /** Returns the key for the given platform as seen from a configuration with the given options. */
+  public static Key key(Label platformLabel, BuildOptions options) {
+    return Key.create(
+        platformLabel,
+        options.get(CoreOptions.class).getCommandLineFlagAliases(),
+        CommonOptions.noConfigOptions(options));
   }
 
   /** Key definition. */
@@ -59,17 +66,21 @@ public record PlatformValue(PlatformInfo platformInfo, Optional<ParsedFlagsValue
 
     private final Label label;
     private final ImmutableMap<String, Label> flagAliasMappings;
+    private final BuildOptions noConfigOptions;
     private final int hashCode;
 
-    private Key(Label label, ImmutableMap<String, Label> flagAliasMappings) {
+    private Key(
+        Label label, ImmutableMap<String, Label> flagAliasMappings, BuildOptions noConfigOptions) {
       this.label = requireNonNull(label);
       this.flagAliasMappings = requireNonNull(flagAliasMappings);
-      this.hashCode = Objects.hash(label, flagAliasMappings);
+      this.noConfigOptions = requireNonNull(noConfigOptions);
+      this.hashCode = Objects.hash(label, flagAliasMappings, noConfigOptions);
     }
 
     @AutoCodec.Instantiator
-    static Key create(Label label, ImmutableMap<String, Label> flagAliasMappings) {
-      return interner.intern(new Key(label, flagAliasMappings));
+    static Key create(
+        Label label, ImmutableMap<String, Label> flagAliasMappings, BuildOptions noConfigOptions) {
+      return interner.intern(new Key(label, flagAliasMappings, noConfigOptions));
     }
 
     public Label label() {
@@ -78,6 +89,11 @@ public record PlatformValue(PlatformInfo platformInfo, Optional<ParsedFlagsValue
 
     public ImmutableMap<String, Label> flagAliasMappings() {
       return flagAliasMappings;
+    }
+
+    /** The options of the no-config configuration in which the platform is analyzed. */
+    public BuildOptions noConfigOptions() {
+      return noConfigOptions;
     }
 
     @Override
@@ -98,7 +114,9 @@ public record PlatformValue(PlatformInfo platformInfo, Optional<ParsedFlagsValue
       if (!(o instanceof Key key)) {
         return false;
       }
-      return label.equals(key.label) && flagAliasMappings.equals(key.flagAliasMappings);
+      return label.equals(key.label)
+          && flagAliasMappings.equals(key.flagAliasMappings)
+          && noConfigOptions.equals(key.noConfigOptions);
     }
 
     @Override
@@ -108,7 +126,13 @@ public record PlatformValue(PlatformInfo platformInfo, Optional<ParsedFlagsValue
 
     @Override
     public String toString() {
-      return "Key[label=" + label + ", flagAliasMappings=" + flagAliasMappings + "]";
+      return "Key[label="
+          + label
+          + ", flagAliasMappings="
+          + flagAliasMappings
+          + ", noConfigOptions="
+          + noConfigOptions
+          + "]";
     }
   }
 }

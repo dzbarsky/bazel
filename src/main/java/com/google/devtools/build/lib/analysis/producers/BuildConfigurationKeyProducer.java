@@ -17,7 +17,6 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.devtools.build.lib.analysis.PlatformOptions;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
-import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.analysis.config.Scope;
 import com.google.devtools.build.lib.analysis.platform.PlatformValue;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -133,10 +132,7 @@ public final class BuildConfigurationKeyProducer<C>
       //  the first value and ignore any subsequent ones. Remove this check as part of cleanup.
       tasks.enqueue(
           new PlatformProducer(
-              targetPlatforms.getFirst(),
-              options.get(CoreOptions.class).getCommandLineFlagAliases(),
-              this,
-              this::checkTargetPlatformFlags));
+              targetPlatforms.getFirst(), options, this, this::checkTargetPlatformFlags));
       return runAfter;
     } else {
       Verify.verify(targetPlatforms.isEmpty());
@@ -322,7 +318,6 @@ public final class BuildConfigurationKeyProducer<C>
       BuildOptions baselineConfiguration,
       @Nullable Label label) {
     Preconditions.checkNotNull(buildOptionsScopeValue);
-
 
     BuildOptions transitionedOptionsWithScopeType =
         buildOptionsScopeValue.getResolvedBuildOptionsWithScopeTypes();
