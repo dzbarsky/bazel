@@ -55,7 +55,7 @@ public class ToolchainRule implements RuleDefinition {
         // A toolchain declaration doesn't read these attributes and is only ever consumed by
         // toolchain resolution, not by aspects, so they have no effect.
         .removeAttribute("features")
-        .removeAttribute(RuleClass.ASPECT_HINTS_ATTR)
+        .removeAttribute("aspect_hints")
         .exemptFromConstraintChecking("this rule *defines* a constraint")
         .toolchainResolutionMode(ToolchainResolutionMode.DISABLED)
 
