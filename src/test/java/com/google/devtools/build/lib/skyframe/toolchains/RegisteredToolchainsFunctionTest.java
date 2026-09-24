@@ -48,7 +48,9 @@ public class RegisteredToolchainsFunctionTest extends ToolchainTestCase {
         type,
         ConfiguredTargetKey.builder()
             .setLabel(targetConfig.getFragment(PlatformConfiguration.class).getTargetPlatform())
-            .setConfigurationKey(BuildConfigurationKey.create(CommonOptions.EMPTY_OPTIONS))
+            .setConfigurationKey(
+                BuildConfigurationKey.create(
+                    CommonOptions.noConfigOptions(targetConfig.getOptions())))
             .build(),
         debug);
   }

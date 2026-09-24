@@ -138,7 +138,12 @@ public class RegisteredToolchainsFunction implements SkyFunction {
 
     // Debugging retains all declarations so resolution can explain every rejection.
     if (!key.debug()) {
-      toolchainLabels = filterTargetPlatforms(env, key.targetPlatformKey(), toolchainLabels);
+      toolchainLabels =
+          filterTargetPlatforms(
+              env,
+              key.targetPlatformKey(),
+              toolchainLabels,
+              CommonOptions.noConfigOptions(configuration.getOptions()));
       if (toolchainLabels == null) {
         return null;
       }
@@ -234,7 +239,10 @@ public class RegisteredToolchainsFunction implements SkyFunction {
 
   @Nullable
   private static ImmutableSet<Label> filterTargetPlatforms(
-      Environment env, ConfiguredTargetKey platformKey, ImmutableSet<Label> labels)
+      Environment env,
+      ConfiguredTargetKey platformKey,
+      ImmutableSet<Label> labels,
+      com.google.devtools.build.lib.analysis.config.BuildOptions noConfigOptions)
       throws InterruptedException {
     Map<ConfiguredTargetKey, PlatformInfo> platforms;
     try {
@@ -281,8 +289,7 @@ public class RegisteredToolchainsFunction implements SkyFunction {
                       label ->
                           ConfiguredTargetKey.builder()
                               .setLabel(label)
-                              .setConfigurationKey(
-                                  BuildConfigurationKey.create(CommonOptions.EMPTY_OPTIONS))
+                              .setConfigurationKey(BuildConfigurationKey.create(noConfigOptions))
                               .build())
                   .collect(toImmutableSet()),
               env);
