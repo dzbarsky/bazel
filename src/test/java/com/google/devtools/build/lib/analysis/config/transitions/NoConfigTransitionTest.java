@@ -212,7 +212,7 @@ public class NoConfigTransitionTest extends BuildViewTestCase {
     assertThat(noConfigOptions.get(CoreOptions.class).checkVisibility).isFalse();
     assertThat(noConfigOptions.get(CoreOptions.class).verboseVisibilityErrors).isTrue();
     // Only the analysis phase flags are inherited.
-    assertThat(noConfigOptions.get(CoreOptions.class).getDefaultFeatures()).isEmpty();
+    assertThat(noConfigOptions.get(CoreOptions.class).defaultFeatures).isEmpty();
     assertThat(CommonOptions.noConfigOptions(targetConfig.getOptions()))
         .isSameInstanceAs(noConfigOptions);
   }
