@@ -49,6 +49,9 @@ public abstract class AbstractToolchainCycleReporter implements CyclesReporter.S
   private static final Predicate<SkyKey> IS_REGISTERED_TOOLCHAINS_SKY_KEY =
       SkyFunctions.isSkyFunction(SkyFunctions.REGISTERED_TOOLCHAINS);
 
+  private static final Predicate<SkyKey> IS_TOOLCHAIN_DECLARATIONS_SKY_KEY =
+      SkyFunctions.isSkyFunction(SkyFunctions.TOOLCHAIN_DECLARATIONS);
+
   private static final Predicate<SkyKey> IS_SINGLE_TOOLCHAIN_RESOLUTION_SKY_KEY =
       SkyFunctions.isSkyFunction(SkyFunctions.SINGLE_TOOLCHAIN_RESOLUTION);
 
@@ -59,6 +62,7 @@ public abstract class AbstractToolchainCycleReporter implements CyclesReporter.S
       Predicates.or(
           IS_REGISTERED_EXECUTION_PLATFORMS_SKY_KEY,
           IS_REGISTERED_TOOLCHAINS_SKY_KEY,
+          IS_TOOLCHAIN_DECLARATIONS_SKY_KEY,
           IS_SINGLE_TOOLCHAIN_RESOLUTION_SKY_KEY,
           IS_TOOLCHAIN_RESOLUTION_SKY_KEY);
 
@@ -66,6 +70,12 @@ public abstract class AbstractToolchainCycleReporter implements CyclesReporter.S
 
   AbstractToolchainCycleReporter(SkyFunctionName rootFunction) {
     this.isRootKey = SkyFunctions.isSkyFunction(rootFunction);
+  }
+
+  AbstractToolchainCycleReporter(SkyFunctionName rootFunction, SkyFunctionName secondRootFunction) {
+    this.isRootKey =
+        Predicates.or(
+            SkyFunctions.isSkyFunction(rootFunction), SkyFunctions.isSkyFunction(secondRootFunction));
   }
 
   /** Formats the cycle error message prefix for the given root target. */
@@ -110,6 +120,9 @@ public abstract class AbstractToolchainCycleReporter implements CyclesReporter.S
     }
     if (input instanceof RegisteredToolchainsValue.Key) {
       return "RegisteredToolchains";
+    }
+    if (input instanceof ToolchainDeclarationsValue.Key) {
+      return "ToolchainDeclarations";
     }
     if (input instanceof SingleToolchainResolutionKey singleToolchainResolutionKey) {
       Label toolchainType = singleToolchainResolutionKey.toolchainType().toolchainType();
