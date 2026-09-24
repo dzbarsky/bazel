@@ -140,17 +140,30 @@ public final class StarlarkThread {
     return v == null ? null : key.cast(v);
   }
 
-  /** Records call metadata shared by builtin and Starlark function calls. */
+  /**
+   * Records call metadata shared by builtin and Starlark function calls.
+   *
+   * <p>Popped frames are reset and pooled by their thread. Callers must not retain a frame beyond
+   * the lifetime of its call.
+   */
   static class CallFrame implements Debug.Frame {
-    final StarlarkCallable fn; // the called function
+    StarlarkCallable fn; // the called function
 
     // Current PC location. Initially fn.getLocation(); for Starlark functions,
     // it is updated at key points when it may be observed: calls, breakpoints, errors.
     Location loc;
     private long profileStartTimeNanos; // start time nanos of walltime call profiler
 
-    private CallFrame(StarlarkCallable fn) {
+    private CallFrame() {}
+
+    void init(StarlarkCallable fn) {
       this.fn = fn;
+    }
+
+    void reset() {
+      fn = null;
+      loc = null;
+      profileStartTimeNanos = 0;
     }
 
     @Override
@@ -178,8 +191,7 @@ public final class StarlarkThread {
   static final class Frame extends CallFrame {
     final StarlarkThread thread;
 
-    @Nullable
-    final Debug.Debugger dbg = Debug.debugger.get(); // the debugger, if active for this frame
+    @Nullable Debug.Debugger dbg; // the debugger, if active for this frame
 
     Object result = Starlark.NONE; // the operand of a Starlark return statement
 
@@ -192,9 +204,23 @@ public final class StarlarkThread {
     // values, or wrapped in StarlarkFunction.Cells if shared with a nested function.
     @Nullable Object[] locals;
 
-    private Frame(StarlarkThread thread, StarlarkCallable fn) {
-      super(fn);
+    private Frame(StarlarkThread thread) {
       this.thread = thread;
+    }
+
+    @Override
+    void init(StarlarkCallable fn) {
+      super.init(fn);
+      dbg = Debug.debugger.get();
+    }
+
+    @Override
+    void reset() {
+      super.reset();
+      dbg = null;
+      result = Starlark.NONE;
+      errorLocationSet = false;
+      locals = null;
     }
 
     // Updates the PC location in this frame.
@@ -267,6 +293,10 @@ public final class StarlarkThread {
   /** Stack of active function calls. */
   private final ArrayList<CallFrame> callstack = new ArrayList<>();
 
+  // Reuse each frame type separately so builtins keep their smaller representation.
+  private final ArrayList<CallFrame> builtinFramePool = new ArrayList<>();
+  private final ArrayList<Frame> framePool = new ArrayList<>();
+
   /** A hook for notifications of assignments at top level. */
   PostAssignHook postAssignHook;
 
@@ -296,7 +326,15 @@ public final class StarlarkThread {
       }
     }
 
-    CallFrame fr = fn instanceof StarlarkFunction ? new Frame(this, fn) : new CallFrame(fn);
+    CallFrame fr;
+    if (fn instanceof StarlarkFunction) {
+      int pooled = framePool.size();
+      fr = pooled > 0 ? framePool.remove(pooled - 1) : new Frame(this);
+    } else {
+      int pooled = builtinFramePool.size();
+      fr = pooled > 0 ? builtinFramePool.remove(pooled - 1) : new CallFrame();
+    }
+    fr.init(fn);
     callstack.add(fr);
 
     // Notify debug tools of the thread's first push.
@@ -342,6 +380,14 @@ public final class StarlarkThread {
       // Only record the context once since it is the same for all frames.
       var contextDescription = last == 0 ? getContextDescription() : null;
       callProfiler.end(fr.profileStartTimeNanos, fr.fn, contextDescription);
+    }
+
+    // Profilers must consume the function and location before the frame is reset.
+    fr.reset();
+    if (fr instanceof Frame starlarkFrame) {
+      framePool.add(starlarkFrame);
+    } else {
+      builtinFramePool.add(fr);
     }
 
     // Notify debug tools of the thread's last pop.
