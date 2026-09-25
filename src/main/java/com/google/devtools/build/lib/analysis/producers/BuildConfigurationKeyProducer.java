@@ -172,7 +172,7 @@ public final class BuildConfigurationKeyProducer<C>
 
     // the list of flags that are either project scoped or their scopes are not yet resolved.
     // Lookup via BuildOptionsScopeFunction will be done for these flags
-    List<Label> flagsWithIncompleteScopeInfo = new ArrayList<>();
+    List<Label> flagsWithIncompleteScopeInfo = null;
     for (Map.Entry<Label, Object> entry :
         postPlatformProcessedOptions.getStarlarkOptions().entrySet()) {
       Scope.ScopeType scopeType =
@@ -180,13 +180,16 @@ public final class BuildConfigurationKeyProducer<C>
       // scope is null is applicable for cases where a transition applies starlark flags that are
       // not already part of the baseline configuration.
       if (scopeType == null || scopeType == Scope.ScopeType.PROJECT) {
+        if (flagsWithIncompleteScopeInfo == null) {
+          flagsWithIncompleteScopeInfo = new ArrayList<>();
+        }
         flagsWithIncompleteScopeInfo.add(entry.getKey());
       }
     }
 
-    // if flagsWithIncompleteScopeInfo is empty, we do not need to do any further lookUp for the
+    // If no flags need scope information, we do not need to do any further lookup for the
     // ScopeType and ScopeDefinition
-    if (flagsWithIncompleteScopeInfo.isEmpty()) {
+    if (flagsWithIncompleteScopeInfo == null) {
       return this::possiblyApplyScopes;
     }
 
