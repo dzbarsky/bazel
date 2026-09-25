@@ -400,10 +400,16 @@ final class Eval {
       throw Starlark.errorf(
           "too %s values to unpack (got %d, want %d)", nrhs < nlhs ? "few" : "many", nrhs, nlhs);
     }
-    int i = 0;
-    for (Object item : rhs) {
-      assign(fr, lhs.get(i), item);
-      i++;
+    if (rhs instanceof Tuple tuple) {
+      for (int i = 0; i < nlhs; i++) {
+        assign(fr, lhs.get(i), tuple.get(i));
+      }
+    } else {
+      int i = 0;
+      for (Object item : rhs) {
+        assign(fr, lhs.get(i), item);
+        i++;
+      }
     }
   }
 
