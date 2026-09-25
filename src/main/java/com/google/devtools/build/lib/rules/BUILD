@@ -59,6 +59,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/analysis:required_config_fragments_provider",
         "//src/main/java/com/google/devtools/build/lib/analysis:rule_definition_environment",
         "//src/main/java/com/google/devtools/build/lib/analysis:transitive_info_provider",
+        "//src/main/java/com/google/devtools/build/lib/analysis:transitive_info_provider_map_impl",
         "//src/main/java/com/google/devtools/build/lib/analysis:visibility_provider",
         "//src/main/java/com/google/devtools/build/lib/analysis:visibility_provider_impl",
         "//src/main/java/com/google/devtools/build/lib/analysis/config:config_matching_provider",
