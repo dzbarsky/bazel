@@ -120,8 +120,13 @@ public class DigestUtils {
    * #manuallyComputeDigest} to skip an additional attempt to obtain the fast digest.
    *
    * @param path the file path
-   * @param status a recently obtained file status, if available. Used to skip a stat.
    */
+  public static byte[] getDigestWithManualFallback(Path path, XattrProvider xattrProvider)
+      throws IOException {
+    return getDigestWithManualFallback(path, xattrProvider, /* status= */ null);
+  }
+
+  /** Computes a digest using an existing file status when available. */
   public static byte[] getDigestWithManualFallback(
       Path path, XattrProvider xattrProvider, @Nullable FileStatus status) throws IOException {
     byte[] digest = xattrProvider.getFastDigest(path);
