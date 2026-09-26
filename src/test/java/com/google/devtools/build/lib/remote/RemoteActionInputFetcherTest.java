@@ -15,6 +15,10 @@ package com.google.devtools.build.lib.remote;
 
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.Directory;
@@ -213,6 +217,56 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
               overlayFs.injectRemoteRepo(
                   RepositoryName.createUnvalidated("repo"), tree, "MARKER\n"));
     }
+  }
+
+  @Test
+  public void prefetchFiles_localFile_doesNotComputePath() throws Exception {
+    Path path = execRoot.getRelative("file");
+    FileSystemUtils.writeContent(path, StandardCharsets.UTF_8, "hello world");
+    FileArtifactValue metadata = FileArtifactValue.createForTesting(path);
+    ActionInput input = mock(ActionInput.class);
+    when(input.getExecPath()).thenReturn(PathFragment.create("file"));
+    AbstractActionInputPrefetcher prefetcher = createPrefetcher(new HashMap<>());
+
+    wait(
+        prefetcher.prefetchFilesInterruptibly(
+            action, ImmutableList.of(input), unused -> metadata, Priority.MEDIUM, Reason.INPUTS));
+
+    verify(input, never()).getExecPath();
+    assertThat(prefetcher.downloadedFiles()).isEmpty();
+    assertThat(prefetcher.downloadsInProgress()).isEmpty();
+  }
+
+  @Test
+  public void rewoundActionOutput_localMetadata_redownloaded() throws Exception {
+    Map<ActionInput, FileArtifactValue> metadata = new HashMap<>();
+    Map<HashCode, byte[]> cas = new HashMap<>();
+    Artifact output = createRemoteArtifact("file", "hello world", metadata, cas);
+    AbstractActionInputPrefetcher prefetcher = createPrefetcher(cas);
+
+    wait(
+        prefetcher.prefetchFilesInterruptibly(
+            action, metadata.keySet(), metadata::get, Priority.MEDIUM, Reason.INPUTS));
+    assertThat(FileSystemUtils.readContent(output.getPath(), StandardCharsets.UTF_8))
+        .isEqualTo("hello world");
+
+    // A locally re-executed action can be rewound again, deleting its now-local output.
+    FileArtifactValue remoteMetadata = metadata.get(output);
+    metadata.put(
+        output,
+        FileArtifactValue.createForNormalFile(
+            remoteMetadata.getDigest(), /* proxy= */ null, remoteMetadata.getSize()));
+    output.getPath().delete();
+    prefetcher.handleRewoundActionOutputs(ImmutableList.of(output));
+
+    wait(
+        prefetcher.prefetchFilesInterruptibly(
+            action, metadata.keySet(), metadata::get, Priority.MEDIUM, Reason.INPUTS));
+
+    assertThat(FileSystemUtils.readContent(output.getPath(), StandardCharsets.UTF_8))
+        .isEqualTo("hello world");
+    assertThat(prefetcher.downloadedFiles()).containsExactly(output.getPath());
+    assertThat(prefetcher.downloadsInProgress()).isEmpty();
   }
 
   @Test

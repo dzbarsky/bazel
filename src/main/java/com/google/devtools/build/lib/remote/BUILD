@@ -253,6 +253,7 @@ java_library(
     name = "abstract_action_input_prefetcher",
     srcs = ["AbstractActionInputPrefetcher.java"],
     deps = [
+        ":concurrent_artifact_path_trie",
         ":remote_output_checker",
         ":subtree_materializer",
         "//src/main/java/com/google/devtools/build/lib/actions",
