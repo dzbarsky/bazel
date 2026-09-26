@@ -19,7 +19,10 @@ import com.github.benmanes.caffeine.cache.stats.CacheStats;
 import com.github.benmanes.caffeine.cache.stats.ConcurrentStatsCounter;
 import com.github.benmanes.caffeine.cache.stats.StatsCounter;
 import com.google.common.base.Preconditions;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.UnsafeByteOperations;
 import java.io.IOException;
+import java.util.HexFormat;
 import javax.annotation.Nullable;
 
 /**
@@ -34,6 +37,8 @@ import javax.annotation.Nullable;
 public class DigestUtils {
   // Typical size for a digest byte array.
   public static final int ESTIMATED_SIZE = 32;
+
+  private static final HexFormat HEX_FORMAT = HexFormat.of();
 
   /**
    * The digest of a file together with the metadata of the file it was computed from, for files
@@ -209,5 +214,15 @@ public class DigestUtils {
       return lhs;
     }
     return combineUnordered(rhs, lhs);
+  }
+
+  /** Returns the lowercase hex encoding of the given bytes. */
+  public static ByteString toHexByteString(byte[] bytes) {
+    byte[] hex = new byte[2 * bytes.length];
+    for (int i = 0; i < bytes.length; i++) {
+      hex[2 * i] = (byte) HEX_FORMAT.toHighHexDigit(bytes[i]);
+      hex[2 * i + 1] = (byte) HEX_FORMAT.toLowHexDigit(bytes[i]);
+    }
+    return UnsafeByteOperations.unsafeWrap(hex);
   }
 }
