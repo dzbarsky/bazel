@@ -18,8 +18,10 @@ import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.analysis.BlazeVersionInfo;
 import com.google.devtools.build.lib.profiler.Profiler.TaskData;
+import com.google.gson.FormattingStyle;
 import com.google.gson.stream.JsonWriter;
 import java.io.BufferedOutputStream;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
@@ -60,6 +62,10 @@ class JsonTraceFileWriter implements Runnable {
   private static final long SLIM_PROFILE_EVENT_THRESHOLD = 10_000;
   private static final long SLIM_PROFILE_MAXIMAL_PAUSE_NS = Duration.ofMillis(100).toNanos();
   private static final long SLIM_PROFILE_MAXIMAL_DURATION_NS = Duration.ofMillis(250).toNanos();
+
+  static final FormattingStyle INDENT_2 = FormattingStyle.PRETTY.withIndent("  ");
+  static final FormattingStyle INDENT_4 = FormattingStyle.PRETTY.withIndent("    ");
+  static final FormattingStyle NO_INDENT = FormattingStyle.COMPACT;
 
   private static final TaskData POISON_PILL =
       new TaskData(
@@ -246,7 +252,9 @@ class JsonTraceFileWriter implements Runnable {
               // The buffer size of 262144 is chosen at random.
               // Bazel internally stores strings as raw bytes encoded in ISO_8859_1, so we use the
               // same encoding here to also write out raw bytes.
-              new OutputStreamWriter(new BufferedOutputStream(outStream, 262144), ISO_8859_1))) {
+              new BufferedWriter(
+                  new OutputStreamWriter(new BufferedOutputStream(outStream, 262144), ISO_8859_1),
+                  8192))) {
         var startDate = Instant.ofEpochMilli(profileStartEpochMillis);
         writer.beginObject();
         writer.name("otherData");
@@ -292,7 +300,7 @@ class JsonTraceFileWriter implements Runnable {
           }
         }
         receivedPoisonPill = true;
-        writer.setIndent("  ");
+        writer.setFormattingStyle(INDENT_2);
         writer.endArray();
         writer.endObject();
       } catch (IOException e) {

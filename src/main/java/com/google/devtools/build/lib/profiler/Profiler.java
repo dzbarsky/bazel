@@ -16,6 +16,9 @@ package com.google.devtools.build.lib.profiler;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.google.devtools.build.lib.profiler.JsonTraceFileWriter.INDENT_2;
+import static com.google.devtools.build.lib.profiler.JsonTraceFileWriter.INDENT_4;
+import static com.google.devtools.build.lib.profiler.JsonTraceFileWriter.NO_INDENT;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
@@ -181,11 +184,11 @@ public final class Profiler {
     public void writeTraceData(JsonWriter jsonWriter, long profileStartTimeNanos)
         throws IOException {
       String eventType = durationNanos == 0 ? "i" : "X";
-      jsonWriter.setIndent("  ");
+      jsonWriter.setFormattingStyle(INDENT_2);
       jsonWriter.beginObject();
-      jsonWriter.setIndent("");
+      jsonWriter.setFormattingStyle(NO_INDENT);
       if (type == null) {
-        jsonWriter.setIndent("    ");
+        jsonWriter.setFormattingStyle(INDENT_4);
       } else {
         jsonWriter.name("cat").value(type.description);
       }
