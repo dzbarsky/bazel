@@ -34,7 +34,7 @@ public interface StatRecorder {
     private VfsHeuristics() {}
 
     static Map<String, ? extends Predicate<? super String>> vfsTypeHeuristics =
-        ImmutableMap.of(
+        ImmutableMap.<String, Predicate<? super String>>of(
             "blaze-out", (String path) -> path.contains("/blaze-out/"),
             "source", Predicates.<CharSequence>alwaysTrue());
 
