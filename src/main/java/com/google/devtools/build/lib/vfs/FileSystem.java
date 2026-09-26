@@ -21,7 +21,7 @@ import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
-import com.google.common.io.ByteSource;
+import com.google.common.hash.Hasher;
 import com.google.common.io.CharStreams;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import java.io.File;
@@ -61,6 +61,8 @@ public abstract class FileSystem {
   protected static final String ERR_PERMISSION_DENIED = " (Permission denied)";
   public static final String ERR_NOT_A_DIRECTORY = " (Not a directory)";
   public static final String ERR_NO_SUCH_FILE_OR_DIR = " (No such file or directory)";
+
+  private static final ThreadLocal<byte[]> digestBuffer = new ThreadLocal<>();
 
   private final DigestHashFunction digestFunction;
 
@@ -365,12 +367,23 @@ public abstract class FileSystem {
    * @throws IOException if the digest could not be computed for any reason
    */
   public byte[] getDigest(PathFragment path) throws IOException {
-    return new ByteSource() {
-      @Override
-      public InputStream openStream() throws IOException {
-        return getInputStream(path);
+    Hasher hasher = digestFunction.getHashFunction().newHasher();
+    byte[] buffer = digestBuffer.get();
+    if (buffer == null) {
+      buffer = new byte[8192];
+    } else {
+      // Clear while in use so that reentrant calls can't clobber it.
+      digestBuffer.set(null);
+    }
+    try (InputStream in = getInputStream(path)) {
+      int read;
+      while ((read = in.read(buffer)) != -1) {
+        hasher.putBytes(buffer, 0, read);
       }
-    }.hash(digestFunction.getHashFunction()).asBytes();
+    } finally {
+      digestBuffer.set(buffer);
+    }
+    return hasher.hash().asBytes();
   }
 
   /**
