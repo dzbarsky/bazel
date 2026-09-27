@@ -1,0 +1,145 @@
+name: Validate Bazel PRs 75-84
+
+on:
+  push:
+    branches:
+      - codex/bazel-pr75-84-validation
+
+permissions:
+  contents: read
+
+env:
+  # Change both values for the second push to validate the completed release.
+  SOURCE_REF: 18e200947b87ff7d7bdbc42f8db57bc65352127c
+  VALIDATION_KIND: upstream
+
+jobs:
+  validate:
+    name: Targeted Linux tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - name: Check out the exact source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          path: source
+          persist-credentials: false
+
+      - name: Install build tools and record source
+        id: setup
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_REF}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "${SOURCE_REF}" ]]
+          case "${VALIDATION_KIND}" in upstream|release) ;; *) exit 1 ;; esac
+          test "$(id -u)" -ne 0
+          df -h . /tmp
+          free -h
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential curl git openjdk-21-jdk-headless python3 unzip zip
+          curl --fail --location --retry 3 \
+            --output "${RUNNER_TEMP}/bazelisk" \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
+          chmod +x "${RUNNER_TEMP}/bazelisk"
+          mkdir -p "${RUNNER_TEMP}/validation"
+          git log -1 --format=fuller > "${RUNNER_TEMP}/validation/source.txt"
+          cp .bazelversion "${RUNNER_TEMP}/validation/bazelversion.txt"
+          printf 'Source: `%s`\n\nTest selection: `%s`\n' \
+            "${SOURCE_REF}" "${VALIDATION_KIND}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Run targeted tests
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${BUILDBUDDY_API_KEY}"
+          case "${VALIDATION_KIND}" in
+            upstream)
+              targets=(
+                //src/test/java/com/google/devtools/build/lib/bazel/repository/cache:RepositoryCacheTests
+                //src/test/java/net/starlark/java/eval:EvalTests
+                //src/test/java/com/google/devtools/build/lib/analysis/producers:ProducersTests
+                //src/test/java/com/google/devtools/build/lib/analysis/starlark:StarlarkTransitionTest
+                //src/test/java/com/google/devtools/build/lib/analysis/starlark:StarlarkTransitionCompositionTest
+                //src/test/java/com/google/devtools/build/lib/analysis:MaterializerRulesTest
+                //src/test/java/com/google/devtools/build/lib/analysis:MaterializerRulesRealDepsTest
+                //src/test/java/com/google/devtools/build/lib/cmdline:CmdLineTests
+                //src/test/java/com/google/devtools/build/lib/analysis/config:ExecutionInfoModifierTest
+                //src/test/py/bazel:repo_contents_cache_test
+              )
+              ;;
+            release)
+              targets=(
+                //src/test/java/com/google/devtools/build/lib/cmdline:CmdLineTests
+                //src/test/java/com/google/devtools/build/lib/analysis/config:ExecutionInfoModifierTest
+                //src/test/java/com/google/devtools/build/lib/analysis/producers:ProducersTests
+                //src/test/java/com/google/devtools/build/lib/rules/cpp:CompileCommandLineTest
+                //src/test/java/com/google/devtools/build/lib/collect/nestedset:NestedSetTests
+                //src/test/java/com/google/devtools/build/lib/bazel/bzlmod:BzlmodTests
+                //src/test/java/com/google/devtools/build/lib/remote:RemoteTests
+                //src/test/java/com/google/devtools/build/lib/remote/chunking:ChunkingTests
+                //src/test/java/com/google/devtools/build/lib/remote:ChunkedCacheFastCdcIntegrationTest
+                //src/test/java/com/google/devtools/build/lib/remote:ChunkedCacheRepMaxIntegrationTest
+              )
+              ;;
+          esac
+          printf '%s\n' "${targets[@]}" > "${RUNNER_TEMP}/validation/targets.txt"
+          "${RUNNER_TEMP}/bazelisk" \
+            --batch --nohome_rc --nosystem_rc --host_jvm_args=-Xmx4g \
+            test \
+            --jobs=2 \
+            --local_test_jobs=1 \
+            --local_resources=cpu=2 \
+            --local_resources=memory=8192 \
+            --worker_max_instances=1 \
+            --remote_cache=grpcs://remote.buildbuddy.io \
+            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
+            --remote_upload_local_results \
+            --remote_download_toplevel \
+            --remote_timeout=600 \
+            --bes_backend=grpcs://remote.buildbuddy.io \
+            --bes_results_url=https://app.buildbuddy.io/invocation/ \
+            --nocache_test_results \
+            --keep_going \
+            --test_output=errors \
+            --test_summary=detailed \
+            --verbose_failures \
+            --color=no \
+            --curses=no \
+            "${targets[@]}"
+
+      - name: Collect test logs and check disk
+        if: always() && steps.setup.outcome == 'success'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import tarfile
+
+          results = Path(os.environ["RUNNER_TEMP"]) / "validation"
+          logs = Path("bazel-testlogs")
+          if logs.is_dir():
+              with tarfile.open(results / "test-logs.tar.gz", "w:gz") as archive:
+                  for root, _, files in os.walk(logs, followlinks=True):
+                      for name in files:
+                          if name in ("test.log", "test.xml"):
+                              path = Path(root) / name
+                              archive.add(path, arcname=str(path.relative_to(logs)))
+          PY
+          df -h . /tmp
+
+      - name: Upload source record and test logs
+        if: always() && steps.setup.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-validation-${{ env.VALIDATION_KIND }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/validation
+          if-no-files-found: error
+          retention-days: 14
