@@ -143,11 +143,11 @@ public class BuildConfigurationKeyMapProducerTest extends ProducerTestCase {
 
     assertThat(result).isNotNull();
     assertThat(result.keySet()).containsExactly("first", "second", "third").inOrder();
-    assertThat(result.get("first").getOptions().get(DummyTestOptions.class).internalOption)
+    assertThat(result.get("first").getOptions().get(DummyTestOptions.class).getInternalOption())
         .isEqualTo("first");
-    assertThat(result.get("second").getOptions().get(DummyTestOptions.class).internalOption)
+    assertThat(result.get("second").getOptions().get(DummyTestOptions.class).getInternalOption())
         .isEqualTo("second");
-    assertThat(result.get("third").getOptions().get(DummyTestOptions.class).internalOption)
+    assertThat(result.get("third").getOptions().get(DummyTestOptions.class).getInternalOption())
         .isEqualTo("third");
   }
 
