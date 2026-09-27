@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.RequiredConfigFragmentsProvider;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
+import com.google.devtools.build.lib.analysis.TransitiveInfoProviderMapImpl;
 import com.google.devtools.build.lib.analysis.VisibilityProvider;
 import com.google.devtools.build.lib.analysis.VisibilityProviderImpl;
 import com.google.devtools.build.lib.analysis.config.ConfigMatchingProvider;
@@ -122,19 +123,22 @@ public final class AliasConfiguredTarget implements ConfiguredTarget, Structure 
           RequiredConfigFragmentsProvider.class, ruleContext.getRequiredConfigFragments());
     }
     return new AliasConfiguredTarget(
-        ruleContext.getOwner(), actual, allOverrides.build(), ruleContext.getConfigConditions());
+        ruleContext.getOwner(),
+        actual,
+        TransitiveInfoProviderMapImpl.copyOf(allOverrides.build()),
+        ruleContext.getConfigConditions());
   }
 
   private final ActionLookupKey actionLookupKey;
   private final ConfiguredTarget actual;
-  private final ImmutableClassToInstanceMap<TransitiveInfoProvider> overrides;
+  private final TransitiveInfoProviderMapImpl overrides;
   private final ImmutableMap<Label, ConfigMatchingProvider> configConditions;
 
   @VisibleForSerialization
   AliasConfiguredTarget(
       ActionLookupKey actionLookupKey,
       ConfiguredTarget actual,
-      ImmutableClassToInstanceMap<TransitiveInfoProvider> overrides,
+      TransitiveInfoProviderMapImpl overrides,
       ImmutableMap<Label, ConfigMatchingProvider> configConditions) {
     this.actionLookupKey = actionLookupKey;
     this.actual = checkNotNull(actual);
@@ -164,7 +168,8 @@ public final class AliasConfiguredTarget implements ConfiguredTarget, Structure 
 
   @Override
   public <P extends TransitiveInfoProvider> P getProvider(Class<P> provider) {
-    P p = overrides.getInstance(provider);
+    // Use the requested Class directly to preserve alias override matching.
+    P p = provider.cast(overrides.get(provider));
     return p != null ? p : actual.getProvider(provider);
   }
 
@@ -250,11 +255,16 @@ public final class AliasConfiguredTarget implements ConfiguredTarget, Structure 
 
   @Override
   public String toString() {
+    var overridesForDisplay =
+        ImmutableMap.builderWithExpectedSize(overrides.size());
+    for (int i = 0; i < overrides.size(); i++) {
+      overridesForDisplay.put(overrides.keyAt(i), overrides.valueAt(i));
+    }
     return MoreObjects.toStringHelper(this)
         .add("label", actionLookupKey.getLabel())
         .add("configurationKey", getConfigurationKey())
         .add("actual", actual)
-        .add("overrides", overrides)
+        .add("overrides", overridesForDisplay.buildOrThrow())
         .add("configConditions", configConditions)
         .toString();
   }
