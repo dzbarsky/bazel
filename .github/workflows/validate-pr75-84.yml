@@ -10,8 +10,8 @@ permissions:
 
 env:
   # Change both values for the second push to validate the completed release.
-  SOURCE_REF: 86bbf67a93ebbe572fd5283cebc292e534cb6a77
-  VALIDATION_KIND: release
+  SOURCE_REF: 16e388a20380d658a98f2136bca8ccd373a6464f
+  VALIDATION_KIND: upstream
 
 jobs:
   validate:
