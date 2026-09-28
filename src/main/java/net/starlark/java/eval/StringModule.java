@@ -17,6 +17,7 @@ package net.starlark.java.eval;
 import com.google.common.base.Ascii;
 import com.google.common.base.CharMatcher;
 import com.google.common.base.Joiner;
+import com.google.common.math.IntMath;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.regex.Matcher;
@@ -359,28 +360,46 @@ final class StringModule implements StarlarkValue {
     if (count < 0) {
       count = Integer.MAX_VALUE;
     }
-
-    StringBuilder sb = new StringBuilder();
-    int start = 0;
-    for (int i = 0; i < count; i++) {
-      if (oldString.isEmpty()) {
-        sb.append(newString);
-        if (start < self.length()) {
-          sb.append(self.charAt(start++));
-        } else {
-          break;
-        }
-      } else {
-        int end = self.indexOf(oldString, start);
-        if (end < 0) {
-          break;
-        }
-        sb.append(self, start, end).append(newString);
-        start = end + oldString.length();
-      }
+    if (count == 0) {
+      return self;
     }
-    sb.append(self, start, self.length());
-    return sb.toString();
+    if (oldString.isEmpty()) {
+      return replaceEmptyString(self, newString, count);
+    }
+    int end = self.indexOf(oldString);
+    if (end < 0) {
+      return self;
+    }
+    return replaceNonEmptyString(self, oldString, newString, count, end);
+  }
+
+  private static String replaceNonEmptyString(
+      String self, String oldString, String newString, int count, int end) {
+    int growth = newString.length() - oldString.length();
+    // Shrinking replacements may leave a much smaller result, so keep the default capacity.
+    int capacity = growth >= 0 ? IntMath.saturatedAdd(self.length(), growth) : 16;
+    StringBuilder sb = new StringBuilder(capacity);
+    int start = 0;
+    do {
+      if (end > start) {
+        sb.append(self, start, end);
+      }
+      sb.append(newString);
+      start = end + oldString.length();
+    } while (--count > 0 && (end = self.indexOf(oldString, start)) >= 0);
+    return sb.append(self, start, self.length()).toString();
+  }
+
+  private static String replaceEmptyString(String self, String newString, int count) {
+    StringBuilder sb = new StringBuilder();
+    int end = Math.min(self.length(), count);
+    for (int i = 0; i < end; i++) {
+      sb.append(newString).append(self.charAt(i));
+    }
+    if (count > self.length()) {
+      sb.append(newString);
+    }
+    return sb.append(self, end, self.length()).toString();
   }
 
   @StarlarkMethod(
