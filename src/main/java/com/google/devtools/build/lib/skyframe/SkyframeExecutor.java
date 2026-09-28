@@ -4065,11 +4065,16 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       logger.atInfo().log(
           "About to scan skyframe graph checking for filesystem nodes of types %s",
           Iterables.toString(fileTypesToCheck));
+      Map<SkyKey, SkyValue> doneValues = memoizingEvaluator.getDoneValues();
+      var filesystemChecker = DirtinessCheckerUtils.createBasicFilesystemDirtinessChecker();
+      // Filter raw keys before evaluating the done-value view for unrelated graph nodes.
+      Set<SkyKey> filesystemKeys =
+          Sets.filter(memoizingEvaluator.getValues().keySet(), filesystemChecker::applies);
       ImmutableBatchDirtyResult batchDirtyResult;
       try (SilentCloseable c = Profiler.instance().profile("fsvc.getDirtyKeys")) {
         batchDirtyResult =
             fsvc.getDirtyKeys(
-                memoizingEvaluator.getDoneValues(),
+                Maps.filterValues(Maps.asMap(filesystemKeys, doneValues::get), value -> value != null),
                 new UnionDirtinessChecker(ImmutableList.copyOf(dirtinessCheckers)));
       }
       if (externalDirtinessChecker != null) {
