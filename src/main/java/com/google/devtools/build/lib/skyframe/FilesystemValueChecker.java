@@ -672,8 +672,8 @@ public class FilesystemValueChecker {
         elapsedTimeNanos -> {
           if (elapsedTimeNanos > 0) {
             logger.atInfo().log(
-                "Spent %d nanoseconds checking %d filesystem nodes (%d scanned)",
-                elapsedTimeNanos, numKeysChecked.get(), keys.size());
+                "Spent %d nanoseconds checking %d filesystem nodes",
+                elapsedTimeNanos, numKeysChecked.get());
           }
         };
     try (AutoProfiler prof = AutoProfiler.create(elapsedTimeReceiver)) {
