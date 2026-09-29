@@ -13,8 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.actions;
 
-import static java.util.Comparator.comparing;
-
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
@@ -37,6 +35,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BiFunction;
+import java.util.function.UnaryOperator;
 import javax.annotation.Nullable;
 
 /** A cache of Artifacts, keyed by Path. */
@@ -70,18 +69,15 @@ public class ArtifactFactory implements ArtifactResolver {
      * for a given source path.
      *
      * <p>Since some use cases require case-insensitive lookups, the map uses a case-insensitive key
-     * lookup. A ConcurrentSkipListMap supports this without a PathFragment wrapper, which saves
-     * memory. The corresponding value is either a single Entry, or a list of Entry objects if there
-     * are multiple artifacts with case-insensitively equivalent paths. This structure is heavily
-     * optimized for the common case of a single artifact per case-insensitive equivalence class and
-     * may perform poorly if there are many artifacts with case-insensitively equivalent paths.
+     * lookup. A ConcurrentSkipListMap supports this without a PathFragment wrapper. Its keys are
+     * Unicode strings so paths are decoded once instead of on every comparison. The corresponding
+     * value is either a single Entry or a list of Entry objects if there are multiple artifacts
+     * with case-insensitively equivalent paths. This structure is heavily optimized for the common
+     * case of a single artifact per case-insensitive equivalence class and may perform poorly if
+     * there are many artifacts with case-insensitively equivalent paths.
      */
-    private final ConcurrentMap<PathFragment, Object /* Entry | CopyOnWriteArrayList<Entry> */>
-        pathToSourceArtifact =
-            new ConcurrentSkipListMap<>(
-                comparing(
-                    pathFragment -> StringEncoding.internalToUnicode(pathFragment.getPathString()),
-                    String.CASE_INSENSITIVE_ORDER));
+    private final ConcurrentMap<String, Object /* Entry | CopyOnWriteArrayList<Entry> */>
+        pathToSourceArtifact = new ConcurrentSkipListMap<>(String.CASE_INSENSITIVE_ORDER);
 
     /** Id of current build. Has to be increased every time before analysis starts. */
     private int buildId = -1;
@@ -109,36 +105,39 @@ public class ArtifactFactory implements ArtifactResolver {
 
     @Nullable
     private Entry getEntry(PathFragment execPath) {
-      return unwrapCacheObject(execPath, pathToSourceArtifact.get(execPath));
+      return unwrapCacheObject(
+          execPath,
+          pathToSourceArtifact.get(StringEncoding.internalToUnicode(execPath.getPathString())));
     }
 
-    private Entry computeEntry(
-        PathFragment execPath, BiFunction<PathFragment, Entry, Entry> computeFunction) {
+    private Entry computeEntry(PathFragment execPath, UnaryOperator<Entry> computeFunction) {
       return unwrapCacheObject(
-          execPath, pathToSourceArtifact.compute(execPath, liftToCacheObject(computeFunction)));
+          execPath,
+          pathToSourceArtifact.compute(
+              StringEncoding.internalToUnicode(execPath.getPathString()),
+              liftToCacheObject(execPath, computeFunction)));
     }
 
     @SuppressWarnings("unchecked")
-    private static BiFunction<PathFragment, Object, Object> liftToCacheObject(
-        BiFunction<PathFragment, Entry, Entry> computeFunction) {
-      return (execPath, cacheObject) ->
+    private static BiFunction<String, Object, Object> liftToCacheObject(
+        PathFragment execPath, UnaryOperator<Entry> computeFunction) {
+      return (unused, cacheObject) ->
           switch (cacheObject) {
             // No entry for this case-insensitive path, thus also not for this exact casing.
-            case null -> computeFunction.apply(execPath, null);
+            case null -> computeFunction.apply(null);
             // The lookup was case-insensitive, so the single cache entry may not be valid
             // for this exact casing. If it isn't, switch to a list.
             case Entry entry ->
                 entry.artifact().getExecPath().equals(execPath)
-                    ? computeFunction.apply(execPath, entry)
-                    : new CopyOnWriteArrayList<>(
-                        new Entry[] {entry, computeFunction.apply(execPath, null)});
+                    ? computeFunction.apply(entry)
+                    : new CopyOnWriteArrayList<>(new Entry[] {entry, computeFunction.apply(null)});
             case CopyOnWriteArrayList<?> rawEntries -> {
               var entries = (CopyOnWriteArrayList<Entry>) rawEntries;
               for (int i = 0; i < entries.size(); i++) {
                 // Update the existing entry for this exact casing if it exists.
                 Entry entry = entries.get(i);
                 if (entry.artifact().getExecPath().equals(execPath)) {
-                  Entry newEntry = computeFunction.apply(execPath, entry);
+                  Entry newEntry = computeFunction.apply(entry);
                   if (newEntry != entry) {
                     entries.set(i, newEntry);
                   }
@@ -146,7 +145,7 @@ public class ArtifactFactory implements ArtifactResolver {
                 }
               }
               // No entry for this exact casing, add a new one.
-              entries.add(computeFunction.apply(execPath, null));
+              entries.add(computeFunction.apply(null));
               yield entries;
             }
             default ->
@@ -185,7 +184,8 @@ public class ArtifactFactory implements ArtifactResolver {
     @SuppressWarnings("unchecked")
     @ThreadSafe
     private ImmutableList<Entry> getEntriesWithAsciiCaseInsensitivePath(PathFragment execPath) {
-      Object cacheObject = pathToSourceArtifact.get(execPath);
+      Object cacheObject =
+          pathToSourceArtifact.get(StringEncoding.internalToUnicode(execPath.getPathString()));
       return switch (cacheObject) {
         case null -> ImmutableList.of();
         case Entry entry -> ImmutableList.of(entry);
@@ -439,7 +439,7 @@ public class ArtifactFactory implements ArtifactResolver {
     SourceArtifactCache.Entry newEntry =
         sourceArtifactCache.computeEntry(
             execPath,
-            (k, entry) -> {
+            entry -> {
               if (entry == null
                   || entry.artifact() == null
                   || entry.artifact().differentOwnerOrRoot(owner, root)) {
@@ -698,7 +698,7 @@ public class ArtifactFactory implements ArtifactResolver {
       var unused =
           sourceArtifactCache.computeEntry(
               execPath,
-              (k, cacheEntry) -> {
+              cacheEntry -> {
                 SourceArtifact validArtifact = cacheEntry.artifact();
                 if (cacheEntry.isInvalid(sourceArtifactCache.buildId)) {
                   // Wasn't previously known to be valid.
