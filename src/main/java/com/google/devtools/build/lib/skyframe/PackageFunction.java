@@ -29,7 +29,6 @@ import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
-import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.StoredEventHandler;
@@ -637,8 +636,7 @@ public abstract class PackageFunction implements SkyFunction {
     if (packageoid instanceof Package pkg) {
       return new PackageValue(pkg);
     } else if (packageoid instanceof PackagePiece.ForBuildFile pkgPiece) {
-      return new PackagePieceValue.ForBuildFile(
-          pkgPiece, starlarkBuiltinsValue.starlarkSemantics, pkgBuilder.getMainRepoMapping());
+      return new PackagePieceValue.ForBuildFile(pkgPiece, starlarkBuiltinsValue.starlarkSemantics);
     } else {
       throw new IllegalStateException("Unexpected packageoid type: " + packageoid.getClass());
     }
@@ -1011,8 +1009,6 @@ public abstract class PackageFunction implements SkyFunction {
     RepositoryMappingValue repositoryMappingValue =
         (RepositoryMappingValue)
             env.getValue(RepositoryMappingValue.key(packageId.getRepository()));
-    RepositoryMappingValue mainRepositoryMappingValue =
-        (RepositoryMappingValue) env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN));
     RootedPath buildFileRootedPath = packageLookupValue.getRootedPath(packageId);
     FileValue buildFileValue = getBuildFileValue(env, buildFileRootedPath);
     RuleVisibility defaultVisibility = PrecomputedValue.DEFAULT_VISIBILITY.get(env);
@@ -1042,7 +1038,6 @@ public abstract class PackageFunction implements SkyFunction {
     }
 
     RepositoryMapping repositoryMapping = repositoryMappingValue.repositoryMapping();
-    RepositoryMapping mainRepositoryMapping = mainRepositoryMappingValue.repositoryMapping();
     Label preludeLabel = null;
 
     // Load (optional) prelude, which determines environment.
@@ -1082,7 +1077,8 @@ public abstract class PackageFunction implements SkyFunction {
     }
     boolean committed = false;
     try (SilentCloseable c =
-        Profiler.instance().profile(ProfilerTask.CREATE_PACKAGE, packageId.toString())) {
+            Profiler.instance().profile(ProfilerTask.CREATE_PACKAGE, packageId.toString());
+        var mainRepositoryMapping = new MainRepositoryMappingSupplier(env)) {
       CompiledBuildFile compiled = state.compiledBuildFile;
       if (compiled == null) {
         if (showLoadingProgress.get()) {
@@ -1161,9 +1157,8 @@ public abstract class PackageFunction implements SkyFunction {
         }
       }
 
-      // From this point on, no matter whether the function returns
-      // successfully or throws an exception, there will be no more
-      // Skyframe restarts.
+      // Discard compiled input on completion or error, except when a lazily requested main repo
+      // mapping requires another evaluation attempt.
       committed = true;
 
       long startTimeNanos = BlazeClock.nanoTime();
@@ -1220,6 +1215,10 @@ public abstract class PackageFunction implements SkyFunction {
             compiled.predeclared,
             loadedModules,
             starlarkBuiltinsValue.starlarkSemantics);
+        if (mainRepositoryMapping.isMissing()) {
+          committed = false;
+          return null;
+        }
         // TODO: b/155396641 - Validate that transitive visibility groups are correctly declared and
         // that this package is a member of all transitive visibility groups it declares, but
         // probably not in this part of the code.
@@ -1233,6 +1232,10 @@ public abstract class PackageFunction implements SkyFunction {
                 .handle(Package.error(null, ex.getMessageWithStack(), Code.STARLARK_EVAL_ERROR));
             pkgBuilder.setContainsErrors();
           }
+        }
+        if (mainRepositoryMapping.isMissing()) {
+          committed = false;
+          return null;
         }
       } else {
         // Execution not attempted due to static errors.
@@ -1450,7 +1453,6 @@ public abstract class PackageFunction implements SkyFunction {
             buildFilePiece.getMetadata(),
             buildFilePiece.getDeclarations(),
             nonFinalizerPackagePiecesValue.starlarkSemantics(),
-            nonFinalizerPackagePiecesValue.mainRepositoryMapping(),
             cpuBoundSemaphore.get(),
             /* generatorMap= */ null,
             configSettingVisibilityPolicy,

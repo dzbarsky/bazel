@@ -34,6 +34,7 @@ import com.google.devtools.build.lib.packages.Package.ConfigSettingVisibilityPol
 import com.google.devtools.build.lib.packages.Package.Declarations;
 import com.google.devtools.build.lib.packages.Package.Metadata;
 import com.google.devtools.build.lib.packages.TargetRecorder.MacroNamespaceViolationException;
+import com.google.devtools.build.lib.supplier.InterruptibleSupplier;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.Collection;
@@ -214,7 +215,7 @@ public abstract sealed class PackagePiece extends Packageoid
         boolean noImplicitFileExport,
         boolean simplifyUnconditionalSelectsInRuleAttrs,
         RepositoryMapping repositoryMapping,
-        RepositoryMapping mainRepositoryMapping,
+        InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
         @Nullable Semaphore cpuBoundSemaphore,
         PackageOverheadEstimator packageOverheadEstimator,
         @Nullable ImmutableMap<Location, String> generatorMap,
@@ -303,7 +304,7 @@ public abstract sealed class PackagePiece extends Packageoid
           boolean precomputeTransitiveLoads,
           boolean noImplicitFileExport,
           boolean simplifyUnconditionalSelectsInRuleAttrs,
-          RepositoryMapping mainRepositoryMapping,
+          InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
           @Nullable Semaphore cpuBoundSemaphore,
           PackageOverheadEstimator packageOverheadEstimator,
           @Nullable ImmutableMap<Location, String> generatorMap,
@@ -428,7 +429,7 @@ public abstract sealed class PackagePiece extends Packageoid
         MacroInstance evaluatedMacro,
         PackagePieceIdentifier parentIdentifier,
         boolean simplifyUnconditionalSelectsInRuleAttrs,
-        RepositoryMapping mainRepositoryMapping,
+        InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
         @Nullable Semaphore cpuBoundSemaphore,
         PackageOverheadEstimator packageOverheadEstimator,
         boolean enableNameConflictChecking,
@@ -515,7 +516,7 @@ public abstract sealed class PackagePiece extends Packageoid
       private Builder(
           ForMacro forMacro,
           boolean simplifyUnconditionalSelectsInRuleAttrs,
-          RepositoryMapping mainRepositoryMapping,
+          InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
           @Nullable Semaphore cpuBoundSemaphore,
           PackageOverheadEstimator packageOverheadEstimator,
           boolean enableNameConflictChecking,

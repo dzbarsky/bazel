@@ -78,9 +78,9 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/rules:repository/repository_directory_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:already_reported_exception",
         "//src/main/java/com/google/devtools/build/lib/skyframe:ignored_subdirectories_value",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:main_repository_mapping_supplier",
         "//src/main/java/com/google/devtools/build/lib/skyframe:precomputed_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:repo_environment_function",
-        "//src/main/java/com/google/devtools/build/lib/skyframe:repository_mapping_value",
         "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//src/main/java/com/google/devtools/build/skyframe",
@@ -143,11 +143,14 @@ java_library(
     srcs = ["RepoDefinitionValue.java"],
     deps = [
         ":repo_definition",
+        "//src/main/java/com/google/devtools/build/lib/bazel/bzlmod:common",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:visible-for-serialization",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//src/main/java/net/starlark/java/eval",
+        "//third_party:guava",
     ],
 )
 

@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.bazel.repository;
 
+import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
@@ -22,46 +23,55 @@ import com.google.devtools.build.skyframe.AbstractSkyKey;
 import com.google.devtools.build.skyframe.NotComparableSkyValue;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
+import com.google.devtools.build.skyframe.SkyValue;
+import net.starlark.java.eval.Dict;
 
 /**
  * The result of {@link RepoDefinitionFunction}, holding a repository rule instance.
  *
- * <p>This has to be a {@link NotComparableSkyValue} for a very subtle reason. Two {@link
- * RepoDefinitionValue}s can compare equal if, for example, the .bzl file containing the repo rule
- * hasn't changed across a Bazel invocation, and the attributes stay the same. However, this doesn't
- * mean that the two definitions are actually equivalent, because certain information the repo rule
- * has access to (notably, the repo mapping applicable to the .bzl file) is *not* encoded in the
- * {@link RepoRule} object. In the particular case of the repo mapping (usable by the Starlark
- * {@code Label()} function), the repo rule's impl function essentially closes over it, but the
- * {@link net.starlark.java.eval.StarlarkCallable} object stored in {@link RepoRule} does *not*
- * compare unequal if only its containing .bzl's repo mapping is different.
- *
- * <p>Certainly, we can fix this by somehow making {@link RepoRule} store all the information it
- * could technically close over, and use that to influence its {@code equals} method; but we can't
- * easily guarantee the exhaustiveness of this (it's just very subtle). Instead, we declare {@link
- * RepoDefinitionValue} to be a {@link NotComparableSkyValue}, which inherits the condition that we
- * used to have when repo definitions were stored as {@code Rule}s in {@code Package}s; and no
- * {@code Package}s compare equal, ever.
- *
- * <p>This means that we're relying on the repo marker files to be the ultimate "change pruners" of
- * this SkyValue.
+ * <p>Structural equality of {@link RepoRule} is insufficient: its Starlark callable closes over the
+ * defining module's repo mapping, but callable equality does not compare that mapping. {@link
+ * Found} therefore requires the same memoized rule object, which is only reused while the evaluated
+ * definition and its closed-over context are unchanged.
  */
-public sealed interface RepoDefinitionValue extends NotComparableSkyValue {
+public sealed interface RepoDefinitionValue extends SkyValue {
   SkyFunctionName REPO_DEFINITION = SkyFunctionName.createHermetic("REPO_DEFINITION");
 
   RepoDefinitionValue NOT_FOUND = new NotFound();
 
   /** No repo found with the given name. */
   @AutoCodec
-  record NotFound() implements RepoDefinitionValue {}
+  record NotFound() implements RepoDefinitionValue, NotComparableSkyValue {}
 
   /** Symlink to target directory. */
   @AutoCodec
-  record RepoOverride(PathFragment repoPath) implements RepoDefinitionValue {}
+  record RepoOverride(PathFragment repoPath)
+      implements RepoDefinitionValue, NotComparableSkyValue {}
 
   /** A repo with the given name is found. */
   @AutoCodec
-  record Found(RepoDefinition repoDefinition) implements RepoDefinitionValue {}
+  record Found(RepoDefinition repoDefinition) implements RepoDefinitionValue {
+    @Override
+    public boolean equals(Object obj) {
+      if (!(obj instanceof Found other)
+          || repoDefinition.repoRule() != other.repoDefinition.repoRule()
+          || !repoDefinition.equals(other.repoDefinition)) {
+        return false;
+      }
+      var attributes = repoDefinition.attrValues().attributes();
+      var otherAttributes = other.repoDefinition.attrValues().attributes();
+      // Repository dict attributes contain scalars or scalar lists, not nested dictionaries.
+      // Their entry order is observable even though Dict.equals ignores it.
+      for (var entry : attributes.entrySet()) {
+        if (entry.getValue() instanceof Dict<?, ?> dict
+            && !Iterables.elementsEqual(
+                dict.entrySet(), ((Dict<?, ?>) otherAttributes.get(entry.getKey())).entrySet())) {
+          return false;
+        }
+      }
+      return true;
+    }
+  }
 
   static Key key(RepositoryName repositoryName) {
     return Key.create(repositoryName);
