@@ -12,7 +12,7 @@ fi
 
 artifacts_dir="${1:-artifacts}"
 notes_file="${RELEASE_NOTES_FILE:-$(dirname "${BASH_SOURCE[0]}")/../release-notes/${RELEASE_TAG}.md}"
-release_body="Bazel 9.3 binaries for Linux and macOS. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
+release_body="Bazel 9.3 binaries for Linux, macOS, and Windows. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
 if [[ -f "${notes_file}" ]]; then
   test -s "${notes_file}"
   release_body+=$'\n\n'"$(cat "${notes_file}")"
@@ -30,9 +30,12 @@ else
 fi
 
 assets=()
-for artifact_os in linux darwin; do
+for artifact_os in linux darwin windows; do
   for artifact_arch in x86_64 arm64; do
     asset_name="bazel-${RELEASE_TAG}-${artifact_os}-${artifact_arch}"
+    if [[ "${artifact_os}" == windows ]]; then
+      asset_name+=".exe"
+    fi
     for suffix in '' .sha256 .intoto.jsonl; do
       asset="${artifacts_dir}/${asset_name}${suffix}"
       test -s "${asset}"
