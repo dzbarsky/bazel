@@ -36,6 +36,9 @@ jobs:
       - name: Test immutable release publication
         run: bash .github/scripts/publish-bazel-release-test.sh
 
+      - name: Test Windows executable verification
+        run: python3 -B .github/scripts/verify-windows-bazel-test.py
+
       - name: Select release tag
         id: release_tag
         env:
@@ -97,10 +100,38 @@ jobs:
             bazelisk_arch: arm64
             artifact_os: darwin
             artifact_arch: arm64
+          - runner: windows-2022
+            bazelisk_os: windows
+            bazelisk_arch: amd64
+            artifact_os: windows
+            artifact_arch: x86_64
+          - runner: windows-2022
+            bazelisk_os: windows
+            bazelisk_arch: amd64
+            artifact_os: windows
+            artifact_arch: arm64
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
       BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+      ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
     steps:
+      - name: Set up Windows build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config --system core.longpaths true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bash = 'C:/msys64/usr/bin/bash.exe'
+          & $bash -lc 'pacman --noconfirm --needed -S zip unzip patch'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$vs) { throw 'Visual Studio x64 and ARM64 tools are required.' }
+          "BAZEL_VC=$vs/VC" >> $env:GITHUB_ENV
+          "BAZEL_SH=$bash" >> $env:GITHUB_ENV
+          'C:/msys64/usr/bin' >> $env:GITHUB_PATH
+
       - name: Install Linux build tools
         if: runner.os == 'Linux'
         run: |
@@ -124,12 +155,15 @@ jobs:
           BAZELISK_ARCH: ${{ matrix.bazelisk_arch }}
         run: |
           set -euo pipefail
+          suffix=''
+          if [[ "${BAZELISK_OS}" == windows ]]; then suffix=.exe; fi
           curl --fail --location --retry 3 \
-            --output bazelisk \
-            "https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-${BAZELISK_OS}-${BAZELISK_ARCH}"
-          chmod +x bazelisk
+            --output "bazelisk${suffix}" \
+            "https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-${BAZELISK_OS}-${BAZELISK_ARCH}${suffix}"
+          chmod +x "bazelisk${suffix}"
 
       - name: Build Bazel
+        if: runner.os != 'Windows'
         run: |
           set -euo pipefail
           if [[ -z "${BUILDBUDDY_API_KEY}" ]]; then
@@ -146,7 +180,23 @@ jobs:
             "--embed_label=${RELEASE_TAG}" \
             //src:bazel
 
+      - name: Build Windows Bazel
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (!$env:BUILDBUDDY_API_KEY) { throw 'Missing the BUILDBUDDY_API_KEY Actions secret.' }
+          $config = @()
+          if ($env:ARTIFACT_ARCH -eq 'arm64') { $config += '--config=windows_arm64' }
+          ./bazelisk.exe --output_user_root=C:/b --batch --nohome_rc --nosystem_rc build `
+            --config=buildbuddy-cache `
+            "--remote_header=x-buildbuddy-api-key=$env:BUILDBUDDY_API_KEY" `
+            --verbose_failures --compilation_mode=opt --jobs=2 --stamp `
+            "--embed_label=$env:RELEASE_TAG" @config //src:bazel.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Verify and package Bazel
+        if: runner.os != 'Windows'
         env:
           ARTIFACT_OS: ${{ matrix.artifact_os }}
           ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
@@ -164,6 +214,25 @@ jobs:
             (cd artifacts && shasum -a 256 "${asset_name}" > "${asset_name}.sha256")
           fi
 
+      - name: Verify and package Windows Bazel
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $asset = "bazel-$env:RELEASE_TAG-windows-$env:ARTIFACT_ARCH.exe"
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Copy-Item bazel-bin/src/bazel.exe "artifacts/$asset"
+          python .github/scripts/verify-windows-bazel.py "artifacts/$asset" $env:ARTIFACT_ARCH
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($env:ARTIFACT_ARCH -eq 'x86_64') {
+            $version = & "./artifacts/$asset" --output_user_root=C:/v --batch --ignore_all_rc_files version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $version
+            if ($version -notcontains "Build label: $env:RELEASE_TAG") { throw 'Incorrect Bazel release label.' }
+          }
+          $hash = (Get-FileHash "artifacts/$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$pwd/artifacts/$asset.sha256", "$hash  $asset`n")
+
       - name: Upload Bazel artifact
         uses: actions/upload-artifact@v4
         with:
@@ -172,11 +241,46 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  verify-windows-arm64:
+    name: Run Windows ARM64 Bazel
+    needs:
+      - prepare
+      - build
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+    steps:
+      - name: Check out Bazel
+        uses: actions/checkout@v4
+
+      - name: Download Windows ARM64 Bazel
+        uses: actions/download-artifact@v4
+        with:
+          name: bazel-${{ needs.prepare.outputs.release_tag }}-windows-arm64
+          path: artifacts
+
+      - name: Verify Windows ARM64 Bazel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ARCH -ne 'ARM64') { throw 'An ARM64 runner is required.' }
+          $asset = "bazel-$env:RELEASE_TAG-windows-arm64.exe"
+          $hash = (Get-FileHash "artifacts/$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ((Get-Content "artifacts/$asset.sha256") -ne "$hash  $asset") { throw 'Incorrect SHA256 checksum.' }
+          python .github/scripts/verify-windows-bazel.py "artifacts/$asset" arm64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = & "./artifacts/$asset" --output_user_root=C:/v --batch --ignore_all_rc_files version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version
+          if ($version -notcontains "Build label: $env:RELEASE_TAG") { throw 'Incorrect Bazel release label.' }
+
   publish:
     name: Publish GitHub release
     needs:
       - prepare
       - build
+      - verify-windows-arm64
     runs-on: ubuntu-24.04
     permissions:
       attestations: write
@@ -199,9 +303,10 @@ jobs:
       - name: Verify Bazel artifacts
         run: |
           set -euo pipefail
-          for artifact_os in linux darwin; do
+          for artifact_os in linux darwin windows; do
             for artifact_arch in x86_64 arm64; do
               asset_name="bazel-${RELEASE_TAG}-${artifact_os}-${artifact_arch}"
+              if [[ "${artifact_os}" == windows ]]; then asset_name+=.exe; fi
               test -f "artifacts/${asset_name}"
               test -f "artifacts/${asset_name}.sha256"
               (cd artifacts && sha256sum --check "${asset_name}.sha256")
@@ -217,6 +322,8 @@ jobs:
             artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-linux-arm64
             artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-darwin-x86_64
             artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-darwin-arm64
+            artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-windows-x86_64.exe
+            artifacts/bazel-${{ needs.prepare.outputs.release_tag }}-windows-arm64.exe
 
       - name: Write Bazel artifact attestations
         env:
@@ -224,9 +331,10 @@ jobs:
         run: |
           set -euo pipefail
           test -s "${ATTESTATION_BUNDLE}"
-          for artifact_os in linux darwin; do
+          for artifact_os in linux darwin windows; do
             for artifact_arch in x86_64 arm64; do
               asset_name="bazel-${RELEASE_TAG}-${artifact_os}-${artifact_arch}"
+              if [[ "${artifact_os}" == windows ]]; then asset_name+=.exe; fi
               jq --compact-output . "${ATTESTATION_BUNDLE}" \
                 > "artifacts/${asset_name}.intoto.jsonl"
               test -s "artifacts/${asset_name}.intoto.jsonl"

@@ -41,7 +41,7 @@ if args[:2] == ['release', 'upload']:
     release = json.loads((state / 'release.json').read_text())
     assert release['draft'] is True
     files = args[3:args.index('--repo')]
-    assert len(files) == 12
+    assert len(files) == 18
     release['assets'] = [dict(name=pathlib.Path(p).name, size=pathlib.Path(p).stat().st_size,
         digest='sha256:' + hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest(),
         state='uploaded') for p in files]
@@ -73,7 +73,7 @@ elif method == 'POST' and endpoint == repo + '/releases':
     assert fields['draft'] == 'true'
     assert fields['target_commitish'] == sha
     assert fields['tag_name'] == tag
-    expected_body = f'Bazel 9.3 binaries for Linux and macOS. Use USE_BAZEL_VERSION=dzbarsky/{tag} with Bazelisk.'
+    expected_body = f'Bazel 9.3 binaries for Linux, macOS, and Windows. Use USE_BAZEL_VERSION=dzbarsky/{tag} with Bazelisk.'
     if case == 'release_notes':
         expected_body += '\n\n## Changes\n\n- Preserve `toolchain_type` aliases.'
     assert fields['body'] == expected_body, fields['body']
@@ -118,13 +118,22 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
              'create_error', 'upload_error', 'verify_api_error', 'missing_remote_asset',
              'wrong_remote_digest', 'wrong_remote_target', 'publish_error',
              'mutable_release', 'wrong_tag']
+    windows_failures = {
+        f'windows_{architecture}_{failure}': (architecture, failure)
+        for architecture in ('x86_64', 'arm64')
+        for failure in ('missing_exe', 'missing_checksum', 'missing_attestation',
+                        'unsuffixed_exe', 'bad_checksum')
+    }
+    cases.extend(windows_failures)
     for case in cases:
         directory = temporary / case
         artifacts = directory / 'artifacts'
         artifacts.mkdir(parents=True)
-        for system in ('linux', 'darwin'):
+        for system in ('linux', 'darwin', 'windows'):
             for architecture in ('x86_64', 'arm64'):
                 name = f"bazel-{environment['RELEASE_TAG']}-{system}-{architecture}"
+                if system == 'windows':
+                    name += '.exe'
                 data = f'Mock binary for {system}-{architecture}\n'.encode()
                 (artifacts / name).write_bytes(data)
                 (artifacts / (name + '.sha256')).write_text(hashlib.sha256(data).hexdigest() + '  ' + name + '\n')
@@ -132,6 +141,24 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
         target = artifacts / f"bazel-{environment['RELEASE_TAG']}-linux-x86_64"
         if case == 'missing_local_asset': target.unlink()
         if case == 'bad_checksum': target.write_text('Corrupted mock binary\n')
+        if case in windows_failures:
+            architecture, failure = windows_failures[case]
+            name = f"bazel-{environment['RELEASE_TAG']}-windows-{architecture}.exe"
+            target = artifacts / name
+            if failure == 'missing_exe':
+                target.unlink()
+            elif failure == 'missing_checksum':
+                (artifacts / (name + '.sha256')).unlink()
+            elif failure == 'missing_attestation':
+                (artifacts / (name + '.intoto.jsonl')).unlink()
+            elif failure == 'unsuffixed_exe':
+                unsuffixed_name = name[:-4]
+                for suffix in ('', '.sha256', '.intoto.jsonl'):
+                    (artifacts / (name + suffix)).rename(artifacts / (unsuffixed_name + suffix))
+                checksum = artifacts / (unsuffixed_name + '.sha256')
+                checksum.write_text(checksum.read_text().replace(name, unsuffixed_name))
+            elif failure == 'bad_checksum':
+                target.write_text('Corrupted mock Windows binary\n')
         # Unrelated files must not be uploaded by a broad artifacts/* argument.
         (artifacts / 'unrelated.txt').write_text('Not a release asset\n')
         if case == 'release_notes':
@@ -147,6 +174,8 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
         assert (result.returncode == 0) == (case in ('success', 'release_notes')), (case, result.stdout)
         if case in ('success', 'release_notes'):
             assert events == ['tags', 'releases', 'create', 'upload', 'draft', 'publish', 'published', 'tag'], events
+        elif case in windows_failures or case in ('missing_notes', 'missing_local_asset', 'bad_checksum'):
+            assert events == [], (case, events)
         elif case not in ('publish_error', 'mutable_release', 'wrong_tag'):
             assert 'publish' not in events, (case, events)
         print('PASS', case)
@@ -167,5 +196,5 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
     subprocess.run(['bash', '-c', '\n'.join(code)], env=env, check=True)
     assert output.read_text() == 'release_tag=9.3.0-dzbarsky17\n', output.read_text()
     print('PASS numbering_16_to_17')
-print('All 21 mocked publication checks passed; no network calls or GitHub mutations.')
+print(f'All {len(cases) + 1} mocked publication checks passed; no network calls or GitHub mutations.')
 PY
