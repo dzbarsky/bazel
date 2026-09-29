@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.cmdline;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.testing.EqualsTester;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -24,6 +25,29 @@ import org.junit.runners.JUnit4;
 /** Tests for {@link RepositoryMapping}. */
 @RunWith(JUnit4.class)
 public final class RepositoryMappingTest {
+
+  @Test
+  public void equalityWithCachedHashes() throws Exception {
+    var entries = ImmutableMap.of("Aa", RepositoryName.MAIN);
+    var context = RepositoryName.create("Aa");
+    var mapping = RepositoryMapping.create(entries, context);
+    var collidingEntries =
+        RepositoryMapping.create(ImmutableMap.of("BB", RepositoryName.MAIN), context);
+    var collidingContext = RepositoryMapping.create(entries, RepositoryName.create("BB"));
+    assertThat(collidingEntries.hashCode()).isEqualTo(mapping.hashCode());
+    assertThat(collidingContext.hashCode()).isEqualTo(mapping.hashCode());
+
+    new EqualsTester()
+        .addEqualityGroup(
+            mapping,
+            RepositoryMapping.createWithKnownEntriesHashCode(entries, entries.hashCode(), context),
+            mapping.withCachedInverseMap())
+        .addEqualityGroup(collidingEntries)
+        .addEqualityGroup(collidingContext)
+        .addEqualityGroup(
+            RepositoryMapping.create(ImmutableMap.of("other", RepositoryName.MAIN), context))
+        .testEquals();
+  }
 
   @Test
   public void neverFallback() throws Exception {
