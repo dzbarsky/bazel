@@ -480,6 +480,62 @@ public final class FilesystemValueCheckerTest {
         .containsExactly(actionLookupData(1));
   }
 
+  private enum SymlinkChange {
+    UNCHANGED,
+    RETARGETED,
+    DELETED,
+    REPLACED_WITH_FILE,
+    READLINK_ERROR
+  }
+
+  @Test
+  public void getDirtyActionValues_unresolvedSymlink(@TestParameter SymlinkChange change)
+      throws Exception {
+    ArtifactRoot root = ArtifactRoot.asDerivedRoot(fs.getPath("/"), RootType.OUTPUT, "bin");
+    SpecialArtifact artifact = ActionsTestUtil.createUnresolvedSymlinkArtifact(root, "link");
+    artifact.setGeneratingActionKey(ActionsTestUtil.NULL_ACTION_LOOKUP_DATA);
+    Path path = artifact.getPath();
+    path.getParentDirectory().createDirectoryAndParents();
+    path.createSymbolicLink(PathFragment.create("missing-target"));
+    ActionExecutionValue value =
+        ActionsTestUtil.createActionExecutionValue(
+            ImmutableMap.of(artifact, FileArtifactValue.createForUnresolvedSymlink(artifact)));
+
+    switch (change) {
+      case UNCHANGED -> {}
+      case RETARGETED -> {
+        path.delete();
+        path.createSymbolicLink(PathFragment.create("other-target"));
+      }
+      case DELETED -> path.delete();
+      case REPLACED_WITH_FILE -> {
+        path.delete();
+        writeFile(path, "missing-target");
+      }
+      case READLINK_ERROR -> fs.readlinkThrowsIoException = true;
+    }
+
+    Collection<SkyKey> dirtyKeys =
+        new FilesystemValueChecker(
+                null,
+                SyscallCache.NO_CACHE,
+                XattrProviderOverrider.NO_OVERRIDE,
+                FSVC_THREADS_FOR_TEST)
+            .getDirtyActionValues(
+                ImmutableMap.of(ACTION_LOOKUP_DATA, value),
+                batchStat.getBatchStat(fs),
+                ModifiedFileSet.EVERYTHING_MODIFIED,
+                OutputChecker.TRUST_LOCAL_ONLY,
+                mockModifiedOutputsReceiver);
+    if (change == SymlinkChange.UNCHANGED) {
+      assertThat(dirtyKeys).isEmpty();
+      assertThat(modifiedOutputsCaptor.getAllValues()).isEmpty();
+    } else {
+      assertThat(dirtyKeys).containsExactly(ACTION_LOOKUP_DATA);
+      assertThat(modifiedOutputsCaptor.getAllValues()).containsExactly(artifact);
+    }
+  }
+
   private Collection<SkyKey> getDirtyActionValues(ActionExecutionValue actionExecutionValue)
       throws InterruptedException {
     return getDirtyActionValues(ImmutableMap.of(ACTION_LOOKUP_DATA, actionExecutionValue));
