@@ -1196,6 +1196,7 @@ public final class RemoteModule extends BlazeModule {
       return;
     }
     actionContextProvider.registerSpawnCache(registryBuilder);
+    actionContextProvider.registerFileWriteStrategy(registryBuilder);
 
     // For skymeld, a non-toplevel target might become a toplevel after it has been executed. This
     // is the last chance to download the missing toplevel outputs in this case before sending out
