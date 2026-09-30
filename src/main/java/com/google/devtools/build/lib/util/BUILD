@@ -293,8 +293,14 @@ java_library(
 
 java_library(
     name = "deterministic_writer",
-    srcs = ["DeterministicWriter.java"],
-    deps = ["@com_google_protobuf//:protobuf_java"],
+    srcs = [
+        "DeterministicWriter.java",
+        "DeterministicWriterInputStream.java",
+    ],
+    deps = [
+        "//third_party:guava",
+        "@com_google_protobuf//:protobuf_java",
+    ],
 )
 
 java_library(
