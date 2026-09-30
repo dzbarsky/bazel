@@ -31,6 +31,9 @@ import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.RegexFilter;
+import com.google.devtools.common.options.Option;
+import com.google.devtools.common.options.OptionDocumentationCategory;
+import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionsBase;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,10 +41,29 @@ import java.util.Map;
 
 /** Module which registers the strategy options for Bazel. */
 public class BazelStrategyModule extends BlazeModule {
+  /** Strategy options that only exist in Bazel. */
+  public static class Options extends OptionsBase {
+    @Option(
+        name = "file_write_strategy",
+        defaultValue = "local",
+        documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+        effectTags = {OptionEffectTag.EXECUTION},
+        help =
+            "Specifies which strategy to use for file write actions such as ctx.actions.write and"
+                + " ctx.actions.expand_template. 'local' writes the file to disk. 'remote' requires"
+                + " a disk or remote cache and stores the contents there, recording them as a"
+                + " remote output when building without the bytes, so that the file is only"
+                + " written to disk if it is needed by a local action or requested via"
+                + " --remote_download_outputs or --remote_download_regex. If there is no disk cache"
+                + " and Bazel isn't allowed to upload to the remote cache, the file is only kept"
+                + " off disk if the remote cache already contains its contents.")
+    public String fileWriteStrategy;
+  }
+
   @Override
   public Iterable<Class<? extends OptionsBase>> getCommandOptions(String commandName) {
     return commandName.equals("build")
-        ? ImmutableList.of(ExecutionOptions.class, RemoteOptions.class)
+        ? ImmutableList.of(ExecutionOptions.class, RemoteOptions.class, Options.class)
         : ImmutableList.of();
   }
 
@@ -50,10 +72,11 @@ public class BazelStrategyModule extends BlazeModule {
       ModuleActionContextRegistry.Builder registryBuilder,
       CommandEnvironment env,
       BuildRequest buildRequest) {
+    Options options = env.getOptions().getOptions(Options.class);
     registryBuilder
         .restrictTo(CppIncludeExtractionContext.class, "")
         .restrictTo(CppIncludeScanningContext.class, "")
-        .restrictTo(FileWriteActionContext.class, "")
+        .restrictTo(FileWriteActionContext.class, options.fileWriteStrategy)
         .restrictTo(TemplateExpansionContext.class, "")
         .restrictTo(SpawnCache.class, "");
   }
