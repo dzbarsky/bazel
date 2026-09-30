@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.remote;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -28,6 +29,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
 import com.google.common.eventbus.EventBus;
 import com.google.common.hash.HashCode;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.devtools.build.lib.actions.ActionExecutionMetadata;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputPrefetcher.Priority;
 import com.google.devtools.build.lib.actions.ActionInputPrefetcher.Reason;
@@ -54,6 +57,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
+import javax.annotation.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -234,6 +238,53 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
 
     verify(input, never()).getExecPath();
     assertThat(prefetcher.downloadedFiles()).isEmpty();
+    assertThat(prefetcher.downloadsInProgress()).isEmpty();
+  }
+
+  @Test
+  public void prefetchFiles_inlineFile_isMaterialized() throws Exception {
+    byte[] contents = "hello world".getBytes(StandardCharsets.UTF_8);
+    FileArtifactValue metadata =
+        FileArtifactValue.createForInlineFile(contents, HASH_FUNCTION.getHashFunction());
+    ActionInput input = mock(ActionInput.class);
+    when(input.getExecPath()).thenReturn(PathFragment.create("file"));
+    AbstractActionInputPrefetcher prefetcher =
+        new AbstractActionInputPrefetcher(
+            new Reporter(eventBus),
+            execRoot,
+            tempPathGenerator,
+            DUMMY_REMOTE_OUTPUT_CHECKER,
+            ActionOutputDirectoryHelper.createForTesting(),
+            OutputPermissions.READONLY) {
+          @Override
+          protected boolean canDownloadFile(Path path, FileArtifactValue metadata) {
+            return metadata.isInline();
+          }
+
+          @Override
+          protected ListenableFuture<Void> doDownloadFile(
+              @Nullable ActionExecutionMetadata action,
+              Reporter reporter,
+              ActionInput input,
+              Path tempPath,
+              FileArtifactValue metadata,
+              Priority priority,
+              Reason reason)
+              throws IOException {
+            try (var in = metadata.getInputStream()) {
+              FileSystemUtils.writeContent(tempPath, in.readAllBytes());
+            }
+            return immediateVoidFuture();
+          }
+        };
+
+    wait(
+        prefetcher.prefetchFilesInterruptibly(
+            action, ImmutableList.of(input), unused -> metadata, Priority.MEDIUM, Reason.INPUTS));
+
+    Path path = execRoot.getRelative("file");
+    assertThat(FileSystemUtils.readContent(path)).isEqualTo(contents);
+    assertThat(prefetcher.downloadedFiles()).containsExactly(path);
     assertThat(prefetcher.downloadsInProgress()).isEmpty();
   }
 
