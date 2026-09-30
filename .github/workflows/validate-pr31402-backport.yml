@@ -1,0 +1,114 @@
+name: Validate PR 31402 metadata backport
+
+on:
+  push:
+    branches:
+      - codex/bazel-pr31402-metadata-validation
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Tests (${{ matrix.kind }})
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [unit, remote-integration]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      SOURCE_REF: e527b3849edba726c05a12bb45835ec13abab65c
+      VALIDATION_KIND: ${{ matrix.kind }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - name: Check out the exact source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          path: source
+          persist-credentials: false
+
+      - name: Install build tools and record source
+        id: setup
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_REF}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "${SOURCE_REF}" ]]
+          test "$(id -u)" -ne 0
+          df -h . /tmp
+          free -h
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential curl git openjdk-21-jdk-headless python3 unzip zip
+          curl --fail --location --retry 3 \
+            --output "${RUNNER_TEMP}/bazelisk" \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
+          chmod +x "${RUNNER_TEMP}/bazelisk"
+          mkdir -p "${RUNNER_TEMP}/validation"
+          git log -1 --format=fuller > "${RUNNER_TEMP}/validation/source.txt"
+          printf 'Source: `%s`\n\nTest selection: `%s`\n' \
+            "${SOURCE_REF}" "${VALIDATION_KIND}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Run targeted tests without cached results
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${BUILDBUDDY_API_KEY}"
+          case "${VALIDATION_KIND}" in
+            unit)
+              targets=(
+                //src/test/java/com/google/devtools/build/lib/remote:RemoteTests
+              )
+              ;;
+            remote-integration)
+              targets=(//src/test/java/com/google/devtools/build/lib/remote:BuildWithoutTheBytesIntegrationTest)
+              ;;
+            *) exit 1 ;;
+          esac
+          printf '%s\n' "${targets[@]}" > "${RUNNER_TEMP}/validation/targets.txt"
+          "${RUNNER_TEMP}/bazelisk" \
+            --batch --nohome_rc --nosystem_rc --host_jvm_args=-Xmx4g \
+            test \
+            --jobs=2 --local_test_jobs=1 \
+            --local_resources=cpu=2 --local_resources=memory=8192 \
+            --worker_max_instances=1 \
+            --config=buildbuddy-cache \
+            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
+            --nocache_test_results --test_timeout=1800 --keep_going \
+            --test_output=errors --test_summary=detailed --verbose_failures \
+            --color=no --curses=no \
+            "${targets[@]}"
+
+      - name: Collect test logs
+        if: always() && steps.setup.outcome == 'success'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import tarfile
+          results = Path(os.environ["RUNNER_TEMP"]) / "validation"
+          logs = Path("bazel-testlogs")
+          if logs.is_dir():
+              with tarfile.open(results / "test-logs.tar.gz", "w:gz") as archive:
+                  for root, _, files in os.walk(logs, followlinks=True):
+                      for name in files:
+                          if name in ("test.log", "test.xml"):
+                              path = Path(root) / name
+                              archive.add(path, arcname=str(path.relative_to(logs)))
+          PY
+          df -h . /tmp
+
+      - name: Upload source record and test logs
+        if: always() && steps.setup.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-pr31402-update-${{ matrix.kind }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/validation
+          if-no-files-found: error
+          retention-days: 14
