@@ -432,6 +432,16 @@ public class CombinedCache extends AbstractReferenceCounted {
    */
   public ListenableFuture<Void> uploadBlob(
       RemoteActionExecutionContext context, Digest digest, Blob blob) {
+    return uploadBlob(context, digest, blob, /* force= */ false);
+  }
+
+  /**
+   * Uploads a blob, repeating a completed remote upload if {@code force} is true. In-progress
+   * remote uploads are still shared. Use this after the remote cache reports a previously uploaded
+   * digest as missing.
+   */
+  public ListenableFuture<Void> uploadBlob(
+      RemoteActionExecutionContext context, Digest digest, Blob blob, boolean force) {
     if (digest.getSizeBytes() == 0) {
       return COMPLETED_SUCCESS;
     }
@@ -443,7 +453,7 @@ public class CombinedCache extends AbstractReferenceCounted {
 
     ListenableFuture<Void> remoteCacheFuture = Futures.immediateVoidFuture();
     if (remoteCacheClient != null && context.getWriteCachePolicy().allowRemoteCache()) {
-      remoteCacheFuture = remoteCacheClient.uploadBlob(context, digest, blob, /* force= */ false);
+      remoteCacheFuture = remoteCacheClient.uploadBlob(context, digest, blob, force);
     }
 
     return Futures.whenAllSucceed(diskCacheFuture, remoteCacheFuture)
