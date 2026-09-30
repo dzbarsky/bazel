@@ -24,6 +24,7 @@ import com.google.devtools.build.lib.bazel.repository.RepoDefinitionValue.Found;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
 import com.google.devtools.build.skyframe.EvaluationResult;
+import net.starlark.java.eval.Dict;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -31,6 +32,54 @@ import org.junit.runners.JUnit4;
 /** Tests for {@link RepoDefinitionFunction}. */
 @RunWith(JUnit4.class)
 public final class RepoDefinitionFunctionTest extends BuildViewTestCase {
+
+  @Test
+  public void testRepoDefinitionDictionaryOrderAffectsEquality() throws Exception {
+    scratch.file("BUILD");
+    scratch.file(
+        "repo.bzl",
+        """
+        def _impl(ctx):
+            pass
+
+        repo = repository_rule(
+            implementation = _impl,
+            attrs = {"entries": attr.string_dict()},
+        )
+        """);
+    scratch.overwriteFile(
+        "MODULE.bazel",
+        """
+        repo = use_repo_rule("//:repo.bzl", "repo")
+        repo(name = "first", entries = {"first": "1", "second": "2"})
+        repo(name = "second", entries = {"second": "2", "first": "1"})
+        """);
+    invalidatePackages(false);
+
+    var firstKey = RepoDefinitionValue.key(RepositoryName.create("+repo+first"));
+    var firstResult =
+        SkyframeExecutorTestUtils.evaluate(skyframeExecutor, firstKey, false, reporter);
+    assertThat(firstResult.hasError()).isFalse();
+    var first = ((Found) firstResult.get(firstKey)).repoDefinition();
+    var secondKey = RepoDefinitionValue.key(RepositoryName.create("+repo+second"));
+    var secondResult =
+        SkyframeExecutorTestUtils.evaluate(skyframeExecutor, secondKey, false, reporter);
+    assertThat(secondResult.hasError()).isFalse();
+    var second = ((Found) secondResult.get(secondKey)).repoDefinition();
+
+    assertThat(first.repoRule()).isSameInstanceAs(second.repoRule());
+    assertThat(first.attrValues()).isEqualTo(second.attrValues());
+    assertThat(((Dict<?, ?>) first.attrValues().attributes().get("entries")).keySet())
+        .containsExactly("first", "second")
+        .inOrder();
+    assertThat(((Dict<?, ?>) second.attrValues().attributes().get("entries")).keySet())
+        .containsExactly("second", "first")
+        .inOrder();
+    var reordered =
+        new RepoDefinition(
+            first.repoRule(), second.attrValues(), first.name(), first.originalName());
+    assertThat(new Found(first)).isNotEqualTo(new Found(reordered));
+  }
 
   @Test
   public void testRepoSpec_bazelModule() throws Exception {

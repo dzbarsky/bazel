@@ -42,6 +42,7 @@ import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading.Code;
+import com.google.devtools.build.lib.supplier.InterruptibleSupplier;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
@@ -219,7 +220,7 @@ public final class PackageFactory {
       Optional<String> associatedModuleVersion,
       StarlarkSemantics starlarkSemantics,
       RepositoryMapping repositoryMapping,
-      RepositoryMapping mainRepositoryMapping,
+      InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
       @Nullable Semaphore cpuBoundSemaphore,
       @Nullable ImmutableMap<Location, String> generatorMap,
       @Nullable ConfigSettingVisibilityPolicy configSettingVisibilityPolicy,
@@ -253,7 +254,6 @@ public final class PackageFactory {
       Package.Metadata metadata,
       Package.Declarations declarations,
       StarlarkSemantics starlarkSemantics,
-      RepositoryMapping mainRepositoryMapping,
       @Nullable Semaphore cpuBoundSemaphore,
       @Nullable ImmutableMap<Location, String> generatorMap,
       @Nullable ConfigSettingVisibilityPolicy configSettingVisibilityPolicy,
@@ -266,7 +266,7 @@ public final class PackageFactory {
         starlarkSemantics.getBool(BuildLanguageOptions.INCOMPATIBLE_NO_IMPLICIT_FILE_EXPORT),
         starlarkSemantics.getBool(
             BuildLanguageOptions.INCOMPATIBLE_SIMPLIFY_UNCONDITIONAL_SELECTS_IN_RULE_ATTRS),
-        mainRepositoryMapping,
+        () -> RepositoryMapping.EMPTY,
         cpuBoundSemaphore,
         packageOverheadEstimator,
         generatorMap,
@@ -287,7 +287,7 @@ public final class PackageFactory {
       Optional<String> associatedModuleVersion,
       StarlarkSemantics starlarkSemantics,
       RepositoryMapping repositoryMapping,
-      RepositoryMapping mainRepositoryMapping,
+      InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
       @Nullable Semaphore cpuBoundSemaphore,
       @Nullable ImmutableMap<Location, String> generatorMap,
       @Nullable ConfigSettingVisibilityPolicy configSettingVisibilityPolicy,
@@ -323,7 +323,7 @@ public final class PackageFactory {
       MacroInstance macro,
       PackagePieceIdentifier parentIdentifier,
       StarlarkSemantics starlarkSemantics,
-      RepositoryMapping mainRepositoryMapping,
+      InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
       @Nullable Semaphore cpuBoundSemaphore,
       @Nullable ImmutableMap<String, Rule> existingRulesMapForFinalizer) {
     return PackagePiece.ForMacro.newBuilder(

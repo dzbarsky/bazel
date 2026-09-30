@@ -18,6 +18,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Streams.stream;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
+import static com.google.devtools.build.lib.bazel.bzlmod.BzlmodTestUtil.createModuleKey;
 import static com.google.devtools.build.skyframe.EvaluationResultSubjectFactory.assertThatEvaluationResult;
 import static java.util.Arrays.stream;
 import static org.junit.Assert.assertThrows;
@@ -282,6 +283,110 @@ public class PackageFunctionTest extends BuildViewTestCase {
     preparePackageLoading(computationMode);
     Packageoid pkg = validPackageoidWithoutErrors("pkg");
     assertThat(pkg.getTargetOrNull("foo")).isNotNull();
+  }
+
+  @Test
+  public void unusedMainRepositoryMappingDoesNotReloadExternalPackage(
+      @TestParameter ComputationMode computationMode) throws Exception {
+    scratch.overwriteFile("MODULE.bazel", "bazel_dep(name = 'foo', version = '1.0')");
+    registry
+        .addModule(createModuleKey("foo", "1.0"), "module(name = 'foo', version = '1.0')")
+        .addModule(createModuleKey("unused", "1.0"), "module(name = 'unused', version = '1.0')");
+    Path fooDir = moduleRoot.getRelative("foo+1.0");
+    scratch.file(fooDir.getRelative("REPO.bazel").getPathString());
+    scratch.file(
+        fooDir.getRelative("BUILD").getPathString(),
+        "load(':defs.bzl', 'target_name')",
+        "filegroup(name = target_name, srcs = glob(['*.txt']))");
+    scratch.file(fooDir.getRelative("defs.bzl").getPathString(), "target_name = 'target'");
+    scratch.file(fooDir.getRelative("input.txt").getPathString());
+    preparePackageLoading(computationMode);
+    PackageIdentifier pkgId = PackageIdentifier.parse("@@foo+//");
+    SkyKey key =
+        computationMode.equals(ComputationMode.PACKAGE_PIECE_FOR_BUILD_FILE)
+            ? new PackagePieceIdentifier.ForBuildFile(pkgId)
+            : pkgId;
+    EvaluationResult<PackageoidValue> before =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), key, /* keepGoing= */ false, reporter);
+    assertThatEvaluationResult(before).hasNoError();
+    assertThat(before.get(key).getPackageoid().containsErrors()).isFalse();
+
+    scratch.overwriteFile(
+        "MODULE.bazel",
+        "bazel_dep(name = 'foo', version = '1.0')",
+        "bazel_dep(name = 'unused', version = '1.0')");
+    getSkyframeExecutor()
+        .invalidateFilesUnderPathForTesting(
+            reporter,
+            ModifiedFileSet.builder().modify(PathFragment.create("MODULE.bazel")).build(),
+            Root.fromPath(rootDirectory));
+
+    EvaluationResult<PackageoidValue> after =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), key, /* keepGoing= */ false, reporter);
+    assertThatEvaluationResult(after).hasNoError();
+    assertThat(after.get(key).getPackageoid()).isSameInstanceAs(before.get(key).getPackageoid());
+  }
+
+  @Test
+  public void externalPackageLabelDiagnosticsFollowMainRepositoryAlias(
+      @TestParameter ComputationMode computationMode) throws Exception {
+    scratch.overwriteFile(
+        "MODULE.bazel", "bazel_dep(name = 'foo', version = '1.0', repo_name = 'before')");
+    registry.addModule(createModuleKey("foo", "1.0"), "module(name = 'foo', version = '1.0')");
+    Path fooDir = moduleRoot.getRelative("foo+1.0");
+    scratch.file(fooDir.getRelative("REPO.bazel").getPathString());
+    scratch.file(
+        fooDir.getRelative("BUILD").getPathString(),
+        "load(':defs.bzl', 'target', 'symbolic')",
+        "print('BUILD', target)",
+        "symbolic(name = 'target')");
+    scratch.file(
+        fooDir.getRelative("defs.bzl").getPathString(),
+        """
+        target = Label('//:target')
+        def _impl(name, visibility):
+            print('MACRO', target)
+            native.filegroup(name = name, visibility = visibility)
+        symbolic = macro(implementation = _impl)
+        """);
+    preparePackageLoading(computationMode);
+    PackageIdentifier pkgId = PackageIdentifier.parse("@@foo+//");
+    SkyKey key =
+        computationMode.equals(ComputationMode.PACKAGE_PIECE_FOR_BUILD_FILE)
+            ? new PackagePieceIdentifier.ForBuildFile(pkgId)
+            : pkgId;
+    EvaluationResult<PackageoidValue> before =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), key, /* keepGoing= */ false, reporter);
+    assertThatEvaluationResult(before).hasNoError();
+    assertThat(before.get(key).getPackageoid().containsErrors()).isFalse();
+    assertContainsEvent("BUILD @before//:target");
+    if (!computationMode.equals(ComputationMode.PACKAGE_PIECE_FOR_BUILD_FILE)) {
+      assertContainsEvent("MACRO @before//:target");
+    }
+    assertDoesNotContainEvent("@@foo+//:target");
+    eventCollector.clear();
+    scratch.overwriteFile(
+        "MODULE.bazel", "bazel_dep(name = 'foo', version = '1.0', repo_name = 'after')");
+    getSkyframeExecutor()
+        .invalidateFilesUnderPathForTesting(
+            reporter,
+            ModifiedFileSet.builder().modify(PathFragment.create("MODULE.bazel")).build(),
+            Root.fromPath(rootDirectory));
+
+    EvaluationResult<PackageoidValue> after =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), key, /* keepGoing= */ false, reporter);
+    assertThatEvaluationResult(after).hasNoError();
+    assertThat(after.get(key).getPackageoid().containsErrors()).isFalse();
+    assertContainsEvent("BUILD @after//:target");
+    if (!computationMode.equals(ComputationMode.PACKAGE_PIECE_FOR_BUILD_FILE)) {
+      assertContainsEvent("MACRO @after//:target");
+    }
+    assertDoesNotContainEvent("@before//:target");
+    assertDoesNotContainEvent("@@foo+//:target");
   }
 
   @Test

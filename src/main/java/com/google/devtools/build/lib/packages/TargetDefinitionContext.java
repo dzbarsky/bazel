@@ -39,6 +39,7 @@ import com.google.devtools.build.lib.packages.TargetRecorder.MacroFrame;
 import com.google.devtools.build.lib.packages.TargetRecorder.NameConflictException;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.supplier.InterruptibleSupplier;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.StringUtil;
 import com.google.devtools.build.lib.vfs.RootedPath;
@@ -389,7 +390,7 @@ public abstract class TargetDefinitionContext extends StarlarkThreadContext {
       Packageoid pkg,
       SymbolGenerator<?> symbolGenerator,
       boolean simplifyUnconditionalSelectsInRuleAttrs,
-      RepositoryMapping mainRepositoryMapping,
+      InterruptibleSupplier<RepositoryMapping> mainRepositoryMapping,
       @Nullable Semaphore cpuBoundSemaphore,
       PackageOverheadEstimator packageOverheadEstimator,
       @Nullable ImmutableMap<Location, String> generatorMap,
@@ -398,7 +399,7 @@ public abstract class TargetDefinitionContext extends StarlarkThreadContext {
       boolean trackFullMacroInformation,
       boolean enableTargetMapSnapshotting,
       PackageLimits packageLimits) {
-    super(() -> mainRepositoryMapping);
+    super(mainRepositoryMapping);
     this.metadata = metadata;
     this.pkg = pkg;
     this.symbolGenerator = symbolGenerator;
