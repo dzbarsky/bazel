@@ -287,8 +287,10 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
   }
 
   /**
-   * Returns whether the file should be downloaded. For regular files with local metadata, this must
-   * only return true when forceRefetch returns true; other local files are skipped earlier.
+   * Returns whether the file at the given path with the given metadata should be downloaded.
+   *
+   * <p>Must only return true for regular files with local metadata if {@link #forceRefetch} returns
+   * true for them, as such files are otherwise skipped without calling this method.
    */
   protected abstract boolean canDownloadFile(Path path, FileArtifactValue metadata);
 
@@ -451,6 +453,7 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
       // Regular files that are already present locally and have no symlinks to plant only need to
       // be prefetched if they are outputs of rewound actions.
       if (!metadata.isRemote()
+          && !metadata.isInline()
           && metadata.getType() == FileStateType.REGULAR_FILE
           && metadata.getResolvedPath() == null
           && !(input instanceof TreeFileArtifact)
