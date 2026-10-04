@@ -37,7 +37,6 @@ import com.google.devtools.build.lib.bazel.repository.starlark.RepoMetadata.Repr
 import com.google.devtools.build.lib.bazel.repository.starlark.StarlarkRepositoryContext;
 import com.google.devtools.build.lib.bazel.repository.starlark.StarlarkRepositoryDefinitionLocationEvent;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
-import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.cmdline.StarlarkThreadContext;
 import com.google.devtools.build.lib.events.Event;
@@ -56,9 +55,9 @@ import com.google.devtools.build.lib.runtime.RemoteRepoContentsCache;
 import com.google.devtools.build.lib.runtime.RepositoryRemoteExecutor;
 import com.google.devtools.build.lib.skyframe.AlreadyReportedException;
 import com.google.devtools.build.lib.skyframe.IgnoredSubdirectoriesValue;
+import com.google.devtools.build.lib.skyframe.MainRepositoryMappingSupplier;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.RepoEnvironmentFunction;
-import com.google.devtools.build.lib.skyframe.RepositoryMappingValue;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -609,19 +608,6 @@ public final class RepositoryFetchFunction implements SkyFunction {
       return null;
     }
 
-    @Nullable RepositoryMapping mainRepoMapping;
-    if (NonRegistryOverride.BOOTSTRAP_REPO_RULES.contains(repoDefinition.repoRule().id())) {
-      // Avoid a cycle.
-      mainRepoMapping = null;
-    } else {
-      var mainRepoMappingValue =
-          (RepositoryMappingValue) env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN));
-      if (mainRepoMappingValue == null) {
-        return null;
-      }
-      mainRepoMapping = mainRepoMappingValue.repositoryMapping();
-    }
-
     IgnoredSubdirectoriesValue ignoredSubdirectories =
         (IgnoredSubdirectoriesValue) env.getValue(IgnoredSubdirectoriesValue.key());
     if (env.valuesMissing()) {
@@ -630,7 +616,9 @@ public final class RepositoryFetchFunction implements SkyFunction {
 
     ImmutableList<RepoRecordedInput.WithValue> recordedInputValues;
     RepoMetadata repoMetadata;
-    try (Mutability mu = Mutability.create("Starlark repository");
+    var mainRepoMapping = new MainRepositoryMappingSupplier(env);
+    try (mainRepoMapping;
+        Mutability mu = Mutability.create("Starlark repository");
         StarlarkRepositoryContext starlarkRepositoryContext =
             new StarlarkRepositoryContext(
                 repoDefinition,
@@ -647,18 +635,23 @@ public final class RepositoryFetchFunction implements SkyFunction {
                 repositoryRemoteExecutor,
                 syscallCache,
                 directories)) {
+      // Profiling also reads this description; it must not depend on the main repo mapping.
       StarlarkThread thread =
           StarlarkThread.create(
               mu,
               starlarkSemantics,
-              "repository " + repoName.getDisplayForm(mainRepoMapping),
+              "repository " + repoName,
               SymbolGenerator.create("fetching " + repoName));
       thread.setPrintHandler(Event.makeDebugPrintHandler(env.getListener()));
       starlarkRepositoryContext.storeRepoMappingRecorderInThread(thread);
 
       // We sort of want a starlark thread context here, but no extra info is needed. So we just
       // use an anonymous class.
-      new StarlarkThreadContext(() -> mainRepoMapping) {}.storeInThread(thread);
+      new StarlarkThreadContext(
+          NonRegistryOverride.BOOTSTRAP_REPO_RULES.contains(repoDefinition.repoRule().id())
+              // Avoid a cycle.
+              ? () -> null
+              : mainRepoMapping) {}.storeInThread(thread);
       if (starlarkRepositoryContext.isRemotable()) {
         // If a rule is declared remotable then invalidate it if remote execution gets
         // enabled or disabled.
@@ -676,6 +669,9 @@ public final class RepositoryFetchFunction implements SkyFunction {
       try (SilentCloseable c =
           Profiler.instance().profile(ProfilerTask.STARLARK_REPOSITORY_FN, repoDefinition::name)) {
         result = Starlark.positionalOnlyCall(thread, function, starlarkRepositoryContext);
+        if (mainRepoMapping.isMissing()) {
+          return null;
+        }
         starlarkRepositoryContext.markSuccessful();
       }
 
@@ -707,6 +703,9 @@ public final class RepositoryFetchFunction implements SkyFunction {
     } catch (NeedsSkyframeRestartException e) {
       return null;
     } catch (EvalException e) {
+      if (mainRepoMapping.isMissing()) {
+        return null;
+      }
       env.getListener()
           .handle(
               Event.error(

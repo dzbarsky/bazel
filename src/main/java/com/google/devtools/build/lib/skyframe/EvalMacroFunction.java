@@ -22,7 +22,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
-import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.packages.MacroClass;
 import com.google.devtools.build.lib.packages.MacroInstance;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
@@ -144,75 +143,82 @@ public final class EvalMacroFunction implements SkyFunction {
       }
     }
 
-    // Expand the macro.
-    long startTimeNanos = BlazeClock.nanoTime();
-    PackagePiece.ForMacro.Builder packagePieceBuilder =
-        packageFactory.newPackagePieceForMacroBuilder(
-            packageDeclarationsValue.metadata(),
-            packageDeclarationsValue.declarations(),
-            macroInstance,
-            key.getParentIdentifier(),
-            packageDeclarationsValue.starlarkSemantics(),
-            packageDeclarationsValue.mainRepositoryMapping(),
-            cpuBoundSemaphore.get(),
-            existingRulesMapForFinalizer);
-    if (nonFinalizerPackagePiecesValue != null && nonFinalizerPackagePiecesValue.containsErrors()) {
-      // Error within one non-finalizer package piece or a name conflict between package pieces. It
-      // was already reported as an event with stack trace by the computation of the
-      // PackagePieceValue or NonFinalizerPackagePiecesValue, so we don't need to repeat the stack
-      // trace - just a brief summary.
-      if (!nonFinalizerPackagePiecesValue.getErrorKeys().isEmpty()) {
-        PackagePieceIdentifier errorKey = nonFinalizerPackagePiecesValue.getErrorKeys().getFirst();
-        PackagePiece errorPiece = nonFinalizerPackagePiecesValue.getPackagePieces().get(errorKey);
-        handleFinalizerDependencyError(
-            packagePieceBuilder, "error in " + errorPiece.getShortDescription());
-      } else {
-        handleFinalizerDependencyError(
-            packagePieceBuilder,
-            nonFinalizerPackagePiecesValue
-                .nameConflictBetweenPackagePiecesException()
-                .getMessage());
-      }
-      packagePieceBuilder.setContainsErrors();
-    } else {
-      try {
-        MacroClass.executeMacroImplementation(
-            macroInstance, packagePieceBuilder, packageDeclarationsValue.starlarkSemantics());
-      } catch (EvalException e) {
-        packagePieceBuilder
-            .getLocalEventHandler()
-            .handle(
-                Package.error(
-                    e.getInnermostLocation(), e.getMessageWithStack(), Code.STARLARK_EVAL_ERROR));
+    try (var mainRepositoryMapping = new MainRepositoryMappingSupplier(env)) {
+      // Expand the macro.
+      long startTimeNanos = BlazeClock.nanoTime();
+      PackagePiece.ForMacro.Builder packagePieceBuilder =
+          packageFactory.newPackagePieceForMacroBuilder(
+              packageDeclarationsValue.metadata(),
+              packageDeclarationsValue.declarations(),
+              macroInstance,
+              key.getParentIdentifier(),
+              packageDeclarationsValue.starlarkSemantics(),
+              mainRepositoryMapping,
+              cpuBoundSemaphore.get(),
+              existingRulesMapForFinalizer);
+      if (nonFinalizerPackagePiecesValue != null
+          && nonFinalizerPackagePiecesValue.containsErrors()) {
+        // Error within one non-finalizer package piece or a name conflict between package pieces.
+        // It was already reported as an event with stack trace by the computation of the
+        // PackagePieceValue or NonFinalizerPackagePiecesValue, so we don't need to repeat the stack
+        // trace - just a brief summary.
+        if (!nonFinalizerPackagePiecesValue.getErrorKeys().isEmpty()) {
+          PackagePieceIdentifier errorKey =
+              nonFinalizerPackagePiecesValue.getErrorKeys().getFirst();
+          PackagePiece errorPiece = nonFinalizerPackagePiecesValue.getPackagePieces().get(errorKey);
+          handleFinalizerDependencyError(
+              packagePieceBuilder, "error in " + errorPiece.getShortDescription());
+        } else {
+          handleFinalizerDependencyError(
+              packagePieceBuilder,
+              nonFinalizerPackagePiecesValue
+                  .nameConflictBetweenPackagePiecesException()
+                  .getMessage());
+        }
         packagePieceBuilder.setContainsErrors();
+      } else {
+        try {
+          MacroClass.executeMacroImplementation(
+              macroInstance, packagePieceBuilder, packageDeclarationsValue.starlarkSemantics());
+        } catch (EvalException e) {
+          packagePieceBuilder
+              .getLocalEventHandler()
+              .handle(
+                  Package.error(
+                      e.getInnermostLocation(), e.getMessageWithStack(), Code.STARLARK_EVAL_ERROR));
+          packagePieceBuilder.setContainsErrors();
+        }
       }
-    }
-    long loadTimeNanos = max(BlazeClock.nanoTime() - startTimeNanos, 0L);
+      if (mainRepositoryMapping.isMissing()) {
+        return null;
+      }
+      long loadTimeNanos = max(BlazeClock.nanoTime() - startTimeNanos, 0L);
 
-    try {
-      packagePieceBuilder.buildPartial();
-      // TODO(https://github.com/bazelbuild/bazel/issues/23852): verify labels using
-      // PackageFunction#handleLabelsCrossingSubpackagesAndPropagateInconsistentFilesystemExceptions
-    } catch (NoSuchPackageException e) {
-      throw new EvalMacroFunctionException(e);
-    }
-    PackagePiece.ForMacro packagePiece = packagePieceBuilder.finishBuild();
-    packagePieceBuilder.getLocalEventHandler().replayOn(env.getListener());
+      try {
+        packagePieceBuilder.buildPartial();
+        // TODO(https://github.com/bazelbuild/bazel/issues/23852): verify labels using
+        // PackageFunction#handleLabelsCrossingSubpackagesAndPropagateInconsistentFilesystemExceptions
+      } catch (NoSuchPackageException e) {
+        throw new EvalMacroFunctionException(e);
+      }
+      PackagePiece.ForMacro packagePiece = packagePieceBuilder.finishBuild();
+      packagePieceBuilder.getLocalEventHandler().replayOn(env.getListener());
 
-    try {
-      packageFactory.afterDoneLoadingPackagePiece(
-          packagePiece,
-          packageDeclarationsValue.starlarkSemantics(),
-          new Metrics(
-              loadTimeNanos,
-              // Symbolic macros don't use `native.glob`.
-              /* globFilesystemOperationCost= */ 0L),
-          env.getListener());
-    } catch (InvalidPackagePieceException e) {
-      throw new EvalMacroFunctionException(e);
-    }
+      try {
+        packageFactory.afterDoneLoadingPackagePiece(
+            packagePiece,
+            packageDeclarationsValue.starlarkSemantics(),
+            new Metrics(
+                loadTimeNanos,
+                // Symbolic macros don't use `native.glob`.
+                /* globFilesystemOperationCost= */ 0L),
+            env.getListener());
+      } catch (InvalidPackagePieceException e) {
+        throw new EvalMacroFunctionException(e);
+      }
 
-    return new PackagePieceValue.ForMacro(packagePiece);
+      return new PackagePieceValue.ForMacro(packagePiece);
+    }
   }
 
   private static void handleFinalizerDependencyError(
@@ -240,9 +246,8 @@ public final class EvalMacroFunction implements SkyFunction {
     private final LinkedHashMap<PackagePieceIdentifier, PackagePiece> packagePieces =
         new LinkedHashMap<>();
     private final LinkedHashSet<PackagePieceIdentifier> errorKeys = new LinkedHashSet<>();
-    // The following two fields are set by a successful expansion of a PackagePiece.ForBuildFile.
+    // Set by a successful expansion of a PackagePiece.ForBuildFile.
     @Nullable private StarlarkSemantics starlarkSemantics;
-    @Nullable private RepositoryMapping mainRepositoryMapping;
 
     @Override
     public ImmutableMap<PackagePieceIdentifier, PackagePiece> getPackagePieces() {
@@ -262,11 +267,6 @@ public final class EvalMacroFunction implements SkyFunction {
     @Nullable
     StarlarkSemantics getStarlarkSemantics() {
       return starlarkSemantics;
-    }
-
-    @Nullable
-    RepositoryMapping getMainRepositoryMapping() {
-      return mainRepositoryMapping;
     }
 
     /**
@@ -336,7 +336,6 @@ public final class EvalMacroFunction implements SkyFunction {
         }
         if (packagePieceValue instanceof PackagePieceValue.ForBuildFile forBuildFileValue) {
           starlarkSemantics = forBuildFileValue.starlarkSemantics();
-          mainRepositoryMapping = forBuildFileValue.mainRepositoryMapping();
         }
         packagePieces.put(key, packagePieceValue.getPackagePiece());
         if (packagePieceValue.getPackagePiece().containsErrors()) {
@@ -391,7 +390,6 @@ public final class EvalMacroFunction implements SkyFunction {
       }
       RecursiveExpander expander = new RecursiveExpander();
       expander.starlarkSemantics = nonFinalizerPackagePieces.starlarkSemantics();
-      expander.mainRepositoryMapping = nonFinalizerPackagePieces.mainRepositoryMapping();
       expander.packagePieces.putAll(nonFinalizerPackagePieces.getPackagePieces());
       expander.errorKeys.addAll(nonFinalizerPackagePieces.getErrorKeys());
       return expander.expand(unexpandedKeys, env, /* expandFinalizers= */ true);

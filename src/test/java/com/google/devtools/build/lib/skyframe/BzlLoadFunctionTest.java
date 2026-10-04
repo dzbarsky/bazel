@@ -18,6 +18,8 @@ import static com.google.devtools.build.lib.bazel.bzlmod.BzlmodTestUtil.createMo
 import static com.google.devtools.build.skyframe.EvaluationResultSubjectFactory.assertThatEvaluationResult;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -27,6 +29,7 @@ import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.cmdline.BazelModuleContext;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.cmdline.StarlarkThreadContext;
 import com.google.devtools.build.lib.packages.RuleVisibility;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.pkgcache.PackageOptions;
@@ -46,6 +49,7 @@ import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.devtools.build.skyframe.ErrorInfo;
 import com.google.devtools.build.skyframe.EvaluationResult;
+import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.common.options.Options;
 import com.google.devtools.common.options.OptionsParser;
@@ -56,7 +60,11 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.Mutability;
+import net.starlark.java.eval.Printer;
 import net.starlark.java.eval.StarlarkInt;
+import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkThread;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -1089,6 +1097,81 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
     // Note that we're not testing the case of a non-registry override using @bazel_tools here, but
     // that is incredibly hard to set up in a unit test. So we should just rely on integration tests
     // for that.
+  }
+
+  @Test
+  public void unusedMainRepositoryMappingDoesNotReloadExternalBzl() throws Exception {
+    scratch.overwriteFile("MODULE.bazel", "bazel_dep(name = 'foo', version = '1.0')");
+    registry
+        .addModule(createModuleKey("foo", "1.0"), "module(name = 'foo', version = '1.0')")
+        .addModule(createModuleKey("unused", "1.0"), "module(name = 'unused', version = '1.0')");
+    Path fooDir = moduleRoot.getRelative("foo+1.0");
+    scratch.file(fooDir.getRelative("REPO.bazel").getPathString());
+    scratch.file(fooDir.getRelative("BUILD").getPathString());
+    scratch.file(fooDir.getRelative("defs.bzl").getPathString(), "target = Label('//:target')");
+    SkyKey key = key("@@foo+//:defs.bzl");
+    BzlLoadValue before = get(key).get(key);
+
+    scratch.overwriteFile(
+        "MODULE.bazel",
+        "bazel_dep(name = 'foo', version = '1.0')",
+        "bazel_dep(name = 'unused', version = '1.0')");
+    getSkyframeExecutor()
+        .invalidateFilesUnderPathForTesting(
+            reporter,
+            ModifiedFileSet.builder().modify(PathFragment.create("MODULE.bazel")).build(),
+            Root.fromPath(rootDirectory));
+
+    assertThat(get(key).get(key)).isSameInstanceAs(before);
+  }
+
+  @Test
+  public void externalBzlLabelDiagnosticsFollowMainRepositoryAlias() throws Exception {
+    scratch.overwriteFile(
+        "MODULE.bazel", "bazel_dep(name = 'foo', version = '1.0', repo_name = 'before')");
+    registry.addModule(createModuleKey("foo", "1.0"), "module(name = 'foo', version = '1.0')");
+    Path fooDir = moduleRoot.getRelative("foo+1.0");
+    scratch.file(fooDir.getRelative("REPO.bazel").getPathString());
+    scratch.file(fooDir.getRelative("BUILD").getPathString());
+    scratch.file(fooDir.getRelative("defs.bzl").getPathString(), "print(Label('//:target'))");
+    SkyKey key = key("@@foo+//:defs.bzl");
+
+    get(key);
+    assertContainsEvent("@before//:target");
+    assertDoesNotContainEvent("@@foo+//:target");
+    eventCollector.clear();
+    scratch.overwriteFile(
+        "MODULE.bazel", "bazel_dep(name = 'foo', version = '1.0', repo_name = 'after')");
+    getSkyframeExecutor()
+        .invalidateFilesUnderPathForTesting(
+            reporter,
+            ModifiedFileSet.builder().modify(PathFragment.create("MODULE.bazel")).build(),
+            Root.fromPath(rootDirectory));
+
+    get(key);
+    assertContainsEvent("@after//:target");
+    assertDoesNotContainEvent("@before//:target");
+    assertDoesNotContainEvent("@@foo+//:target");
+  }
+
+  @Test
+  public void labelDebugPrintPreservesMainMappingInterruption() throws Exception {
+    Environment env = mock(Environment.class);
+    InterruptedException interruption = new InterruptedException("mapping lookup interrupted");
+    when(env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN))).thenThrow(interruption);
+    try (Mutability mutability = Mutability.create("label diagnostic");
+        MainRepositoryMappingSupplier mapping = new MainRepositoryMappingSupplier(env)) {
+      StarlarkThread thread = StarlarkThread.createTransient(mutability, StarlarkSemantics.DEFAULT);
+      new StarlarkThreadContext(mapping) {}.storeInThread(thread);
+
+      Label.parseCanonical("@@foo+//:target").debugPrint(new Printer(), thread);
+
+      assertThat(Thread.currentThread().isInterrupted()).isTrue();
+      assertThat(assertThrows(InterruptedException.class, mapping::isMissing))
+          .isSameInstanceAs(interruption);
+    } finally {
+      Thread.interrupted();
+    }
   }
 
   @Test

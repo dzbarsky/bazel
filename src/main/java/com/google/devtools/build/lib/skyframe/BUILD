@@ -153,6 +153,7 @@ java_library(
         ":load_aspects_value",
         ":loading_phase_started_event",
         ":local_repository_lookup_value",
+        ":main_repository_mapping_supplier",
         ":map_as_package_roots",
         ":metadata_consumer_for_metrics",
         ":node_dropping_inconsistency_receiver",
@@ -373,6 +374,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/skyframe/toolchains:toolchain_exception",
         "//src/main/java/com/google/devtools/build/lib/skyframe/toolchains:toolchain_resolution_function",
         "//src/main/java/com/google/devtools/build/lib/skyframe/toolchains:unloaded_toolchain_context",
+        "//src/main/java/com/google/devtools/build/lib/supplier",
         "//src/main/java/com/google/devtools/build/lib/util",
         "//src/main/java/com/google/devtools/build/lib/util:TestType",
         "//src/main/java/com/google/devtools/build/lib/util:abrupt_exit_exception",
@@ -2499,6 +2501,19 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/main/java/net/starlark/java/eval",
+        "//third_party:jsr305",
+    ],
+)
+
+java_library(
+    name = "main_repository_mapping_supplier",
+    srcs = ["MainRepositoryMappingSupplier.java"],
+    deps = [
+        ":repository_mapping_value",
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
+        "//src/main/java/com/google/devtools/build/lib/supplier",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//third_party:guava",
         "//third_party:jsr305",
     ],
 )

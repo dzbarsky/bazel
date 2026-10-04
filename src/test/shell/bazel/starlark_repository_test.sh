@@ -695,6 +695,86 @@ EOF
   assert_equals 2 $(cat "${execution_file}")
 }
 
+function test_unused_main_repo_mapping_does_not_refetch_local_repo() {
+  local execution_file="${TEST_TMPDIR}/execution"
+  echo 0 > "${execution_file}"
+  mkdir dep
+  cat > dep/MODULE.bazel <<'EOF'
+module(name = "dep", version = "1.0")
+EOF
+  echo 'exports_files(["repo.bzl"])' > dep/BUILD
+  cat > dep/repo.bzl <<EOF
+def _impl(ctx):
+    count = int(ctx.execute(["cat", "${execution_file}"]).stdout.strip()) + 1
+    ctx.execute(["bash", "-c", "echo %s > ${execution_file}" % count])
+    ctx.file("BUILD", "filegroup(name = 'bar')")
+
+repo = repository_rule(implementation = _impl, local = True)
+
+def _ext_impl(module_ctx):
+    repo(name = "foo")
+    repo(name = "unused")
+
+ext = module_extension(implementation = _ext_impl)
+EOF
+  cat > $(setup_module_dot_bazel) <<'EOF'
+bazel_dep(name = "dep", version = "1.0")
+local_path_override(module_name = "dep", path = "dep")
+ext = use_extension("@dep//:repo.bzl", "ext")
+use_repo(ext, "foo")
+EOF
+  touch BUILD
+
+  bazel query @foo//:bar >& "$TEST_log" || fail "Initial query failed"
+  assert_equals 1 "$(cat "${execution_file}")"
+  bazel query @foo//:bar >& "$TEST_log" || fail "Warm query failed"
+  assert_equals 1 "$(cat "${execution_file}")"
+
+  # Both generated repositories and the defining module's mapping are unchanged.
+  # Only the main repository imports an additional apparent name.
+  echo 'use_repo(ext, unused_alias = "unused")' >> MODULE.bazel
+  bazel query @foo//:bar >& "$TEST_log" || fail "Query after mapping change failed"
+  assert_equals 1 "$(cat "${execution_file}")"
+}
+
+function test_repo_label_diagnostic_tracks_main_repo_alias() {
+  mkdir dep
+  cat > dep/MODULE.bazel <<'EOF'
+module(name = "dep", version = "1.0")
+EOF
+  echo 'exports_files(["repo.bzl"])' > dep/BUILD
+  cat > dep/repo.bzl <<'EOF'
+TAG = Label("//:tag")
+
+def _impl(ctx):
+    print(TAG)
+    ctx.file("BUILD", "filegroup(name = 'bar')")
+
+repo = repository_rule(implementation = _impl, local = True)
+EOF
+  cat > $(setup_module_dot_bazel) <<'EOF'
+bazel_dep(name = "dep", version = "1.0", repo_name = "first")
+local_path_override(module_name = "dep", path = "dep")
+repo = use_repo_rule("@@dep+//:repo.bzl", "repo")
+repo(name = "foo")
+EOF
+  touch BUILD
+  bazel query @@+repo+foo//:bar >& "$TEST_log" || fail "Initial query failed"
+  expect_log '@first//:tag'
+
+  # Keep the defining module, rule, canonical target and label unchanged; only
+  # the main repository's human-readable alias changes.
+  cat > MODULE.bazel <<'EOF'
+bazel_dep(name = "dep", version = "1.0", repo_name = "second")
+local_path_override(module_name = "dep", path = "dep")
+repo = use_repo_rule("@@dep+//:repo.bzl", "repo")
+repo(name = "foo")
+EOF
+  bazel query @@+repo+foo//:bar >& "$TEST_log" || fail "Query after alias change failed"
+  expect_log '@second//:tag'
+  expect_not_log '@first//:tag'
+}
+
 # Test invalidation based on change to the bzl files
 function bzl_invalidation_test_template() {
   local startup_flag="${1-}"
