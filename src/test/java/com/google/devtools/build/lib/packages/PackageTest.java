@@ -183,7 +183,6 @@ public class PackageTest {
         /* simplifyUnconditionalSelectsInRuleAttrs= */ StarlarkSemantics.DEFAULT.getBool(
             BuildLanguageOptions.INCOMPATIBLE_SIMPLIFY_UNCONDITIONAL_SELECTS_IN_RULE_ATTRS),
         /* repositoryMapping= */ RepositoryMapping.EMPTY,
-        /* mainRepositoryMapping= */ null,
         /* cpuBoundSemaphore= */ null,
         PackageOverheadEstimator.NOOP_ESTIMATOR,
         /* generatorMap= */ null,

@@ -45,6 +45,7 @@ java_library(
         "ExternalFilesHelper.java",
         "FileStateFunction.java",
         "HighWaterMarkLimiter.java",
+        "LazyMainRepoMapping.java",
         "LoadAspectsFunction.java",
         "LocalRepositoryLookupFunction.java",
         "MacroInstanceFunction.java",

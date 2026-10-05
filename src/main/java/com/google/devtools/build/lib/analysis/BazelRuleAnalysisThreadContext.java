@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.analysis;
 
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.StarlarkThreadContext;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import javax.annotation.Nullable;
@@ -23,19 +24,8 @@ import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkThread;
 
 /** Bazel application data for the Starlark thread that performs analysis of rules and aspects. */
-public class BazelRuleAnalysisThreadContext extends StarlarkThreadContext {
-
-  private final RuleContext ruleContext;
-
-  /**
-   * Constructs a {@link BazelRuleAnalysisThreadContext}.
-   *
-   * @param ruleContext is the {@link RuleContext} of the rule for analysis of a rule or aspect
-   */
-  public BazelRuleAnalysisThreadContext(RuleContext ruleContext) {
-    super(ruleContext.getAnalysisEnvironment()::getMainRepoMapping);
-    this.ruleContext = ruleContext;
-  }
+public record BazelRuleAnalysisThreadContext(RuleContext ruleContext)
+    implements StarlarkThreadContext {
 
   /** Returns the label of the rule. */
   @Nullable
@@ -45,6 +35,12 @@ public class BazelRuleAnalysisThreadContext extends StarlarkThreadContext {
 
   public RuleContext getRuleContext() {
     return ruleContext;
+  }
+
+  @Override
+  @Nullable
+  public RepositoryMapping getMainRepoMapping() throws InterruptedException {
+    return ruleContext.getAnalysisEnvironment().getMainRepoMapping();
   }
 
   /**
