@@ -3102,6 +3102,19 @@ java_library(
 )
 
 java_library(
+    name = "lazy_main_repo_mapping",
+    srcs = ["LazyMainRepoMapping.java"],
+    deps = [
+        ":repository_mapping_value",
+        "//src/main/java/com/google/devtools/build/lib/analysis:caching_analysis_environment",
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
+        "//src/main/java/com/google/devtools/build/lib/supplier",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//third_party/java/guava:base",
+    ],
+)
+
+java_library(
     name = "bzl_load_function",
     srcs = [
         "BzlLoadFunction.java",
@@ -3117,6 +3130,7 @@ java_library(
         ":containing_package_lookup_value",
         ":cycle_utils",
         ":detailed_exceptions",
+        ":lazy_main_repo_mapping",
         ":precomputed_value",
         ":repository_mapping_value",
         ":starlark_builtins_value",
@@ -3129,6 +3143,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/packages:bzl_visibility",
         "//src/main/java/com/google/devtools/build/lib/packages:starlark_exportable",
         "//src/main/java/com/google/devtools/build/lib/packages/semantics",
+        "//src/main/java/com/google/devtools/build/lib/supplier",
         "//src/main/java/com/google/devtools/build/lib/util",
         "//src/main/java/com/google/devtools/build/lib/util:detailed_exit_code",
         "//src/main/java/com/google/devtools/build/lib/vfs",
@@ -3184,6 +3199,7 @@ java_library(
     name = "eval_macro_function",
     srcs = ["EvalMacroFunction.java"],
     deps = [
+        ":lazy_main_repo_mapping",
         ":macro_instance_function",
         ":package_value",
         "//src/main/java/com/google/devtools/build/lib/clock",
@@ -3293,6 +3309,7 @@ java_library(
         ":globs_value",
         ":ignored_subdirectories_value",
         ":invalid_glob_pattern_exception",
+        ":lazy_main_repo_mapping",
         ":macro_instance_function",
         ":package_lookup_function",
         ":package_lookup_value",
