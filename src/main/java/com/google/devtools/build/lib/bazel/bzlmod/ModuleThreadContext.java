@@ -45,7 +45,7 @@ import net.starlark.java.spelling.SpellChecker;
 import net.starlark.java.syntax.Location;
 
 /** Context object for a Starlark thread evaluating the MODULE.bazel file and files it includes. */
-public class ModuleThreadContext extends StarlarkThreadContext {
+public class ModuleThreadContext implements StarlarkThreadContext {
   private boolean moduleCalled = false;
   private boolean hadNonModuleCall = false;
   private PathFragment currentModuleFilePath = LabelConstants.MODULE_DOT_BAZEL_FILE_NAME;
@@ -80,7 +80,6 @@ public class ModuleThreadContext extends StarlarkThreadContext {
       ModuleKey key,
       boolean ignoreDevDeps,
       @Nullable ImmutableMap<String, CompiledModuleFile> includeLabelToCompiledModuleFile) {
-    super(/* mainRepoMappingSupplier= */ null);
     module = InterimModule.builder().setKey(key);
     this.ignoreDevDeps = ignoreDevDeps;
     this.builtinModules = builtinModules;
