@@ -907,7 +907,8 @@ public class PackageFunctionTest extends BuildViewTestCase {
   }
 
   @Test
-  public void externalPackagePrintingLabelIsInvalidatedWhenMainRepoMappingChanges()
+  public void externalPackagePrintingLabelIsInvalidatedWhenMainRepoMappingChanges(
+      @TestParameter boolean inFinalizer)
       throws Exception {
     registry.addModule(createModuleKey("foo", "1.0"), "module(name='foo',version='1.0')");
     registry.addModule(createModuleKey("bar", "1.0"), "module(name='bar',version='1.0')");
@@ -921,11 +922,18 @@ public class PackageFunctionTest extends BuildViewTestCase {
         """);
     scratch.file(
         moduleRoot.getRelative("foo+1.0/pkg/defs.bzl").getPathString(),
-        """
-        def my_filegroup(name):
-            print("label:", Label("//pkg:file"))
-            native.filegroup(name = name)
-        """);
+        inFinalizer
+            ? """
+              def _impl(name, visibility):
+                  print("label:", Label("//pkg:file"))
+                  native.filegroup(name = name, visibility = visibility)
+              my_filegroup = macro(implementation = _impl, finalizer = True)
+              """
+            : """
+              def my_filegroup(name):
+                  print("label:", Label("//pkg:file"))
+                  native.filegroup(name = name)
+              """);
     scratch.file(moduleRoot.getRelative("bar+1.0/REPO.bazel").getPathString());
     scratch.file(moduleRoot.getRelative("bar+1.0/BUILD").getPathString());
     scratch.overwriteFile("MODULE.bazel", "bazel_dep(name = 'foo', version = '1.0')");
