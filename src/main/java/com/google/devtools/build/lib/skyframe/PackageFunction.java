@@ -1225,28 +1225,28 @@ public abstract class PackageFunction implements SkyFunction {
               compiled.predeclared,
               loadedModules,
               starlarkBuiltinsValue.starlarkSemantics);
+          // TODO: b/155396641 - Validate that transitive visibility groups are correctly declared
+          // and that this package is a member of all transitive visibility groups it declares,
+          // but probably not in this part of the code.
+          if (packagePieceId == null) {
+            try {
+              ((Package.Builder) pkgBuilder)
+                  .expandAllRemainingMacros(starlarkBuiltinsValue.starlarkSemantics);
+            } catch (EvalException ex) {
+              pkgBuilder
+                  .getLocalEventHandler()
+                  .handle(Package.error(null, ex.getMessageWithStack(), Code.STARLARK_EVAL_ERROR));
+              pkgBuilder.setContainsErrors();
+            }
+          }
         } catch (Starlark.UncheckedEvalException e) {
           if (!LazyMainRepoMapping.isMissingDep(e)) {
             throw e;
           }
-          // A label was printed before the main repo mapping was available. Restart and evaluate
-          // the BUILD file again once it is.
+          // A BUILD file or finalizer printed a label before the main repo mapping was available.
+          // Discard this builder and restart, including any deferred macro expansions.
           checkState(env.valuesMissing());
           return null;
-        }
-        // TODO: b/155396641 - Validate that transitive visibility groups are correctly declared and
-        // that this package is a member of all transitive visibility groups it declares, but
-        // probably not in this part of the code.
-        if (packagePieceId == null) {
-          try {
-            ((Package.Builder) pkgBuilder)
-                .expandAllRemainingMacros(starlarkBuiltinsValue.starlarkSemantics);
-          } catch (EvalException ex) {
-            pkgBuilder
-                .getLocalEventHandler()
-                .handle(Package.error(null, ex.getMessageWithStack(), Code.STARLARK_EVAL_ERROR));
-            pkgBuilder.setContainsErrors();
-          }
         }
       } else {
         // Execution not attempted due to static errors.

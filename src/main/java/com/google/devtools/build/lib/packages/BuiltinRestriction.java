@@ -150,9 +150,8 @@ public final class BuiltinRestriction {
         return repository.isMain();
       }
       if (repository.isMain()) {
-        // The root module may itself be an allowlisted ruleset. Its repo_name (which defaults to
-        // its module name) is the only non-empty apparent name that can refer to the main repo
-        // from the main repo's own mapping.
+        // The root module may itself be an allowlisted ruleset. Only its repo_name (which defaults
+        // to its module name) can authorize access; other aliases of the main repo cannot.
         return repoName.equals(moduleRepoName);
       }
       if (repository.equals(RepositoryName.BAZEL_TOOLS)) {
