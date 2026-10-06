@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      SOURCE_REF: d695da4dc57c3a0401e4fdaa3e703df99c5cd0f8
+      SOURCE_REF: a42796fbb20546e9aff33864cdf468e948dd87fa
       VALIDATION_KIND: ${{ matrix.kind }}
     defaults:
       run:
