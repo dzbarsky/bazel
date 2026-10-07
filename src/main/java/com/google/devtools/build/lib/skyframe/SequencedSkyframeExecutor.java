@@ -524,7 +524,9 @@ public class SequencedSkyframeExecutor extends SkyframeExecutor {
     Map<String, SkyKeyStats> ruleStats = new HashMap<>();
     Map<String, SkyKeyStats> aspectStats = new HashMap<>();
     Multiset<SkyFunctionName> functionCount = HashMultiset.create();
-    for (Map.Entry<SkyKey, SkyValue> skyKeyAndValue : collectDoneAnalysisValues().entrySet()) {
+    // SkyframeStats includes counts for every SkyFunctionName.
+    for (Map.Entry<SkyKey, SkyValue> skyKeyAndValue :
+        memoizingEvaluator.getDoneValues().entrySet()) {
       SkyValue value = skyKeyAndValue.getValue();
       SkyKey key = skyKeyAndValue.getKey();
       SkyFunctionName functionName = key.functionName();
