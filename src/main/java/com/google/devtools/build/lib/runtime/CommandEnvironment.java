@@ -382,20 +382,10 @@ public class CommandEnvironment {
       }
     }
 
-    String bazelWorkspace = null;
-    if (workspace.getWorkspace() != null) {
-      bazelWorkspace = workspace.getWorkspace().getPathString();
-      // On Windows, convert forward slashes to backslashes for PATH-like variables.
-      if (OS.getCurrent() == OS.WINDOWS) {
-        bazelWorkspace = bazelWorkspace.replace('/', '\\');
-      }
-    }
     for (var envVar : commandOptions.repositoryEnvironment) {
       switch (envVar) {
         case Converters.EnvVar.Set(String name, String value) -> {
-          if (bazelWorkspace != null) {
-            value = value.replace("%bazel_workspace%", bazelWorkspace);
-          }
+          value = expandWorkspaceInEnvironmentValue(value);
           repoEnvBuilder.put(name, value);
           nonstrictRepoEnvBuilder.put(name, value);
         }
@@ -705,6 +695,20 @@ public class CommandEnvironment {
   @Nullable
   public Path getWorkspace() {
     return directories.getWorkingDirectory();
+  }
+
+  /** Expands %bazel_workspace% in explicitly set environment option values. */
+  public String expandWorkspaceInEnvironmentValue(String value) {
+    Path workspace = getWorkspace();
+    if (workspace == null) {
+      return value;
+    }
+    String bazelWorkspace = workspace.getPathString();
+    // On Windows, convert forward slashes to backslashes for PATH-like variables.
+    if (OS.getCurrent() == OS.WINDOWS) {
+      bazelWorkspace = bazelWorkspace.replace('/', '\\');
+    }
+    return value.replace("%bazel_workspace%", bazelWorkspace);
   }
 
   public String getWorkspaceName() {
