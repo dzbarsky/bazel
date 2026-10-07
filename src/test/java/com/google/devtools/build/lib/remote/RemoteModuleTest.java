@@ -192,11 +192,6 @@ public final class RemoteModuleTest {
   }
 
   private static CommandEnvironment initCommand(
-      BlazeWorkspace workspace, RemoteOptions remoteOptions) throws AbruptExitException {
-    return initCommand(workspace, remoteOptions, BuildCommand.class);
-  }
-
-  private static CommandEnvironment initCommand(
       BlazeWorkspace workspace,
       RemoteOptions remoteOptions,
       Class<? extends BlazeCommand> commandClass)
@@ -220,9 +215,8 @@ public final class RemoteModuleTest {
     when(options.getOptions(ExecutionOptions.class)).thenReturn(executionOptions);
     when(options.getOptions(TestOptions.class)).thenReturn(testOptions);
 
-    Command command = commandClass.getAnnotation(Command.class);
     return workspace.initCommand(
-        command,
+        commandClass.getAnnotation(Command.class),
         options,
         InvocationPolicy.getDefaultInstance(),
         /* warnings= */ new ArrayList<>(),
@@ -764,22 +758,23 @@ public final class RemoteModuleTest {
     remoteOptions =
         parseRemoteOptions(
             "--remote_download_outputs=" + configuredMode, "--remote_download_regex=.*");
-    remoteOptions.diskCache = TestUtils.createUniqueTmpDir(null).asFragment();
-    var configuredOutputsMode = remoteOptions.remoteOutputsMode;
-    var env = createTestCommandEnvironment(remoteModule, remoteOptions, scratch -> {});
+    remoteOptions.setDiskCache(TestUtils.createUniqueTmpDir(null).asFragment());
+    var configuredOutputsMode = remoteOptions.getRemoteOutputsMode();
+    var env =
+        initCommand(
+            createTestWorkspace(remoteModule, scratch -> {}), remoteOptions, BuildCommand.class);
     env.getOptions()
         .getOptions(ExecutionOptions.class)
         .setCacheProbeOutput(PathFragment.create("probe.json"));
 
-    remoteModule.beforeCommand(env);
-    env.throwPendingException();
+    beforeCommand(env);
 
     assertThat(
             remoteModule
                 .getRemoteOutputChecker()
                 .shouldDownloadOutput(PathFragment.create("out/image.tar"), null))
         .isFalse();
-    assertThat(remoteOptions.remoteOutputsMode).isEqualTo(configuredOutputsMode);
+    assertThat(remoteOptions.getRemoteOutputsMode()).isEqualTo(configuredOutputsMode);
   }
 
   @CanIgnoreReturnValue
@@ -802,7 +797,11 @@ public final class RemoteModuleTest {
   private CommandEnvironment beforeCommand(
       BlazeWorkspace workspace, Class<? extends BlazeCommand> commandClass)
       throws AbruptExitException {
-    CommandEnvironment env = initCommand(workspace, remoteOptions, commandClass);
+    return beforeCommand(initCommand(workspace, remoteOptions, commandClass));
+  }
+
+  @CanIgnoreReturnValue
+  private CommandEnvironment beforeCommand(CommandEnvironment env) throws AbruptExitException {
     env.getRuntime().getBlazeModule(BlockWaitingModule.class).beforeCommand(env);
     remoteModule.beforeCommand(env);
     env.throwPendingException();
