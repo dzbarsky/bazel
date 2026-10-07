@@ -572,7 +572,12 @@ public final class RemoteModule extends BlazeModule {
             outputsMode,
             patternsToDownloadBuilder.build(),
             lastRemoteOutputChecker);
-    remoteOutputChecker.maybeInvalidateSkyframeValues(env.getSkyframeExecutor().getEvaluator());
+    // Only commands that execute actions complete targets and thus download outputs. Other commands
+    // neither invalidate completed targets nor become the reference that the next executing
+    // command compares its download settings against.
+    if (env.getCommand().buildPhase().executes()) {
+      remoteOutputChecker.maybeInvalidateSkyframeValues(env.getSkyframeExecutor().getEvaluator());
+    }
 
     env.getEventBus().register(this);
     String invocationId = env.getCommandId().toString();
@@ -1118,8 +1123,11 @@ public final class RemoteModule extends BlazeModule {
                   rpcLogFileRef));
     }
 
-    lastRemoteOutputChecker = remoteOutputChecker;
-    lastBuildId = Preconditions.checkNotNull(env).getCommandId().toString();
+    Preconditions.checkNotNull(env);
+    if (env.getCommand().buildPhase().executes()) {
+      lastRemoteOutputChecker = remoteOutputChecker;
+    }
+    lastBuildId = env.getCommandId().toString();
 
     buildEventArtifactUploaderFactoryDelegate.reset();
     repositoryRemoteHelpersFactoryDelegate.reset();
@@ -1439,6 +1447,12 @@ public final class RemoteModule extends BlazeModule {
   }
 
   @VisibleForTesting
+  @Nullable
+  RemoteOutputChecker getRemoteOutputChecker() {
+    return remoteOutputChecker;
+  }
+
+  @VisibleForTesting
   void setChannelFactory(ChannelFactory channelFactory) {
     this.channelFactory = channelFactory;
   }
@@ -1451,11 +1465,6 @@ public final class RemoteModule extends BlazeModule {
   @VisibleForTesting
   ThreadPoolExecutor getExecutorService() {
     return executorService;
-  }
-
-  @VisibleForTesting
-  RemoteOutputChecker getRemoteOutputChecker() {
-    return remoteOutputChecker;
   }
 
   @VisibleForTesting
