@@ -1127,6 +1127,7 @@ public final class RemoteModule extends BlazeModule {
                   rpcLogFileRef));
     }
 
+    Preconditions.checkNotNull(env);
     if (remoteOutputChecker != null) {
       remoteOutputChecker.clearPreviousCommand();
     }
@@ -1438,6 +1439,12 @@ public final class RemoteModule extends BlazeModule {
   }
 
   @VisibleForTesting
+  @Nullable
+  RemoteOutputChecker getRemoteOutputChecker() {
+    return remoteOutputChecker;
+  }
+
+  @VisibleForTesting
   void setChannelFactory(ChannelFactory channelFactory) {
     this.channelFactory = channelFactory;
   }
@@ -1448,18 +1455,8 @@ public final class RemoteModule extends BlazeModule {
   }
 
   @VisibleForTesting
-  RemoteOutputChecker getRemoteOutputChecker() {
-    return remoteOutputChecker;
-  }
-
-  @VisibleForTesting
   ThreadPoolExecutor getExecutorService() {
     return executorService;
-  }
-
-  @VisibleForTesting
-  RemoteOutputChecker getRemoteOutputChecker() {
-    return remoteOutputChecker;
   }
 
   @VisibleForTesting
