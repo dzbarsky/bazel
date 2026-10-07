@@ -524,6 +524,7 @@ public class SequencedSkyframeExecutor extends SkyframeExecutor {
     Map<String, SkyKeyStats> ruleStats = new HashMap<>();
     Map<String, SkyKeyStats> aspectStats = new HashMap<>();
     Multiset<SkyFunctionName> functionCount = HashMultiset.create();
+    // SkyframeStats in Bazel 9.3 includes counts for every SkyFunctionName.
     for (Map.Entry<SkyKey, SkyValue> skyKeyAndValue :
         memoizingEvaluator.getDoneValues().entrySet()) {
       SkyValue value = skyKeyAndValue.getValue();
@@ -562,6 +563,18 @@ public class SequencedSkyframeExecutor extends SkyframeExecutor {
         functionCount);
   }
 
+  /** Returns the done configured target and aspect values in the graph. */
+  private Map<SkyKey, SkyValue> collectDoneAnalysisValues() {
+    return memoizingEvaluator
+        .getInMemoryGraph()
+        .collectDoneValues(
+            key -> {
+              SkyFunctionName functionName = key.functionName();
+              return functionName.equals(SkyFunctions.CONFIGURED_TARGET)
+                  || functionName.equals(SkyFunctions.ASPECT);
+            });
+  }
+
   public void dumpSkyframeStateInParallel(
       ActionGraphDump actionGraphDump, AqueryConsumingOutputHandler aqueryConsumingOutputHandler)
       throws CommandLineExpansionException, IOException, TemplateExpansionException {
@@ -569,7 +582,7 @@ public class SequencedSkyframeExecutor extends SkyframeExecutor {
 
     try {
       for (Map.Entry<SkyKey, SkyValue> skyKeyAndValue :
-          memoizingEvaluator.getDoneValues().entrySet()) {
+          collectDoneAnalysisValues().entrySet()) {
         SkyKey key = skyKeyAndValue.getKey();
         SkyValue skyValue = skyKeyAndValue.getValue();
         if (skyValue == null) {
@@ -632,8 +645,7 @@ public class SequencedSkyframeExecutor extends SkyframeExecutor {
   public void dumpSkyframeState(ActionGraphDump actionGraphDump)
       throws CommandLineExpansionException, IOException, TemplateExpansionException {
 
-    for (Map.Entry<SkyKey, SkyValue> skyKeyAndValue :
-        memoizingEvaluator.getDoneValues().entrySet()) {
+    for (Map.Entry<SkyKey, SkyValue> skyKeyAndValue : collectDoneAnalysisValues().entrySet()) {
       SkyKey key = skyKeyAndValue.getKey();
       SkyValue skyValue = skyKeyAndValue.getValue();
       if (skyValue == null) {
