@@ -37,7 +37,6 @@ import com.google.devtools.build.lib.pkgcache.LoadingFailureEvent;
 import com.google.devtools.build.lib.pkgcache.TargetParsingCompleteEvent;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn;
-import com.google.devtools.build.lib.skyframe.CacheProbeCompletion.MissingOutputEvent;
 import com.google.devtools.build.lib.skyframe.CacheProbeCompletion.TestMissEvent;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.util.DetailedExitCode;
@@ -187,12 +186,6 @@ public final class CacheProbe implements AutoCloseable {
         env.getReporter().getOutErr().printOutLn("CACHE_PROBE_MISS " + suite.getCanonicalForm());
       }
     }
-  }
-
-  @Subscribe
-  @AllowConcurrentEvents
-  public void missingOutput(MissingOutputEvent event) {
-    markLabel(event.actionLookupKey().getLabel());
   }
 
   @Subscribe

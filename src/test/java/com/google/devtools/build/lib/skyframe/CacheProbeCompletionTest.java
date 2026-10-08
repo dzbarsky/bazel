@@ -45,14 +45,12 @@ import com.google.devtools.build.lib.events.ExtendedEventHandler.Postable;
 import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn;
-import com.google.devtools.build.lib.skyframe.CacheProbeCompletion.MissingOutputEvent;
 import com.google.devtools.build.lib.skyframe.CacheProbeCompletion.TestMissEvent;
 import com.google.devtools.build.lib.skyframe.CompletionFunction.Completor;
 import com.google.devtools.build.lib.skyframe.MetadataConsumerForMetrics.FilesMetricConsumer;
 import com.google.devtools.build.lib.skyframe.TargetCompletionValue.TargetCompletionKey;
 import com.google.devtools.build.lib.skyframe.rewinding.ActionRewindStrategy;
 import com.google.devtools.build.lib.testutil.FoundationTestCase;
-import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.EmittedEventState;
@@ -68,8 +66,6 @@ import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
 import org.junit.Test;
@@ -90,32 +86,25 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
   }
 
   @Test
-  public void reportsMissBeforeSiblingFinishesAndRetriesTransientMisses() throws Exception {
+  public void completionRetriesTransientMisses() throws Exception {
     Fixture fixture = createFixture(/* probe= */ true, Spawn.Code.CACHE_PROBE_MISS);
 
     assertThat(fixture.evaluate().isCacheProbeMiss()).isTrue();
-    assertThat(fixture.events.getPosts())
-        .containsExactly(new MissingOutputEvent(CONFIGURED_TARGET), new FinishedEvent())
-        .inOrder();
+    assertThat(fixture.events.getPosts()).containsExactly(new FinishedEvent());
     assertThat(fixture.executions.get()).isEqualTo(2);
 
     fixture.events.clear();
     assertThat(fixture.evaluate().isCacheProbeMiss()).isTrue();
-    assertThat(fixture.events.getPosts()).doesNotContain(new MissingOutputEvent(CONFIGURED_TARGET));
     assertThat(fixture.executions.get()).isEqualTo(2);
 
     fixture.events.clear();
     fixture.differencer.invalidateTransientErrors();
     assertThat(fixture.evaluate().isCacheProbeMiss()).isTrue();
-    assertThat(fixture.events.getPosts()).contains(new MissingOutputEvent(CONFIGURED_TARGET));
-    assertThat(
-            fixture.events.getPosts().stream().filter(MissingOutputEvent.class::isInstance).count())
-        .isEqualTo(1);
     assertThat(fixture.executions.get()).isEqualTo(4);
   }
 
   @Test
-  public void provisionalMissDoesNotHideDelayedRealError() throws Exception {
+  public void completionPrefersRealErrorToCacheMiss() throws Exception {
     Fixture fixture = createFixture(/* probe= */ true, Spawn.Code.EXEC_IO_EXCEPTION);
 
     ActionExecutionException failure = fixture.evaluate();
@@ -124,13 +113,11 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
     assertThat(failure.getDetailedExitCode().getFailureDetail().getSpawn().getCode())
         .isEqualTo(Spawn.Code.EXEC_IO_EXCEPTION);
     assertThat(failure.getRootCauses().toList()).hasSize(1);
-    assertThat(fixture.events.getPosts())
-        .containsExactly(new MissingOutputEvent(CONFIGURED_TARGET), new FinishedEvent())
-        .inOrder();
+    assertThat(fixture.events.getPosts()).containsExactly(new FinishedEvent());
   }
 
   @Test
-  public void normalCompletionDoesNotReportProvisionalMisses() throws Exception {
+  public void normalCompletionReportsRealError() throws Exception {
     Fixture fixture = createFixture(/* probe= */ false, Spawn.Code.EXEC_IO_EXCEPTION);
 
     assertThat(fixture.evaluate().isCacheProbeMiss()).isFalse();
@@ -155,9 +142,7 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
           (ActionExecutionException) result.getError(testKey).getException();
       assertThat(failure.getDetailedExitCode().getFailureDetail().getSpawn().getCode())
           .isEqualTo(code);
-      assertThat(fixture.events.getPosts())
-          .containsExactly(new MissingOutputEvent(CONFIGURED_TARGET), new FinishedEvent())
-          .inOrder();
+      assertThat(fixture.events.getPosts()).containsExactly(new FinishedEvent());
     }
   }
 
@@ -213,28 +198,24 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
     assertThat(failure.getDetailedExitCode().getFailureDetail().getSpawn().getCode())
         .isEqualTo(code);
     if (code == Spawn.Code.CACHE_PROBE_MISS) {
-      assertThat(fixture.events.getPosts())
-          .containsExactly(
-              new MissingOutputEvent(CONFIGURED_TARGET), new TestMissEvent(CONFIGURED_TARGET))
-          .inOrder();
+      assertThat(fixture.events.getPosts()).containsExactly(new TestMissEvent(CONFIGURED_TARGET));
       fixture.events.clear();
       fixture.emittedEventState.clear();
       assertThat(fixture.evaluateResult(testKey).getError(testKey)).isNotNull();
       assertThat(fixture.events.getPosts()).containsExactly(new TestMissEvent(CONFIGURED_TARGET));
     } else {
-      assertThat(fixture.events.getPosts())
-          .containsExactly(new MissingOutputEvent(CONFIGURED_TARGET));
+      assertThat(fixture.events.getPosts()).isEmpty();
     }
   }
 
-  private Fixture createFixture(boolean probe, Spawn.Code delayedCode) throws Exception {
-    return createFixture(probe, delayedCode, false, null);
+  private Fixture createFixture(boolean probe, Spawn.Code otherCode) throws Exception {
+    return createFixture(probe, otherCode, false, null);
   }
 
   @SuppressWarnings("unchecked") // Mockito cannot express the Completor type parameters.
   private Fixture createFixture(
       boolean probe,
-      Spawn.Code delayedCode,
+      Spawn.Code otherCode,
       boolean testStatusOnly,
       @Nullable Exception prerequisiteFailure)
       throws Exception {
@@ -243,12 +224,12 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
             false, false, ImmutableSortedSet.of(OutputGroupInfo.DEFAULT), false, probe);
     TargetCompletionKey key = TargetCompletionValue.key(CONFIGURED_TARGET, context, false);
     DerivedArtifact miss = output("miss", 0);
-    DerivedArtifact delayed = output("delayed", 1);
+    DerivedArtifact other = output("other", 1);
     ConfiguredTarget target = mock(ConfiguredTarget.class);
     when(target.getProvider(FileProvider.class))
-        .thenReturn(FileProvider.of(NestedSetBuilder.create(Order.STABLE_ORDER, miss, delayed)));
+        .thenReturn(FileProvider.of(NestedSetBuilder.create(Order.STABLE_ORDER, miss, other)));
     TestParams testParams = mock(TestParams.class);
-    when(testParams.getTestStatusArtifacts()).thenReturn(ImmutableList.of(miss, delayed));
+    when(testParams.getTestStatusArtifacts()).thenReturn(ImmutableList.of(miss, other));
     when(target.getProvider(TestProvider.class)).thenReturn(new TestProvider(testParams));
     ConfiguredTargetValue value = mock(ConfiguredTargetValue.class);
     when(value.getConfiguredObject()).thenReturn(target);
@@ -265,29 +246,16 @@ public final class CacheProbeCompletionTest extends FoundationTestCase {
             new FilesMetricConsumer(),
             mock(ActionRewindStrategy.class),
             mock(BugReporter.class));
-    CountDownLatch earlyMiss = new CountDownLatch(1);
-    StoredEventHandler events =
-        new StoredEventHandler() {
-          @Override
-          public synchronized void post(Postable event) {
-            super.post(event);
-            if (event instanceof MissingOutputEvent) {
-              earlyMiss.countDown();
-            }
-          }
-        };
+    StoredEventHandler events = new StoredEventHandler();
     AtomicInteger executions = new AtomicInteger();
     SkyFunction execute =
         (actionKey, env) -> {
           executions.incrementAndGet();
-          boolean isDelayed = actionKey.equals(delayed.getGeneratingActionKey());
-          if (isDelayed && probe) {
-            // Completion cannot finish until this sibling does. Only an immediate, non-replayed
-            // provisional event can release the sibling and allow evaluation to complete.
-            assertThat(earlyMiss.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
-          }
           throw new SkyFunctionException(
-              failure(isDelayed ? delayedCode : Spawn.Code.CACHE_PROBE_MISS),
+              failure(
+                  actionKey.equals(other.getGeneratingActionKey())
+                      ? otherCode
+                      : Spawn.Code.CACHE_PROBE_MISS),
               SkyFunctionException.Transience.TRANSIENT) {};
         };
     SequencedRecordingDifferencer differencer = new SequencedRecordingDifferencer();

@@ -161,14 +161,6 @@ public final class CompletionFunction<
     ValueT value = valueAndArtifactsToBuild.first;
     ArtifactsToBuild artifactsToBuild = valueAndArtifactsToBuild.second;
 
-    if (key.topLevelArtifactContext().cacheProbe()
-        && !CacheProbeCompletion.awaitOutputs(
-            env,
-            key.actionLookupKey(),
-            () -> Artifact.keys(artifactsToBuild.getAllArtifacts().toList()))) {
-      return null;
-    }
-
     ImmutableList<Artifact> allArtifacts = artifactsToBuild.getAllArtifacts().toList();
     SkyframeLookupResult inputDeps = env.getValuesAndExceptions(Artifact.keys(allArtifacts));
 
