@@ -16,28 +16,17 @@ package com.google.devtools.build.lib.skyframe;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
-import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.events.ExtendedEventHandler.Postable;
-import com.google.devtools.build.skyframe.PartialReevaluationMailbox;
-import com.google.devtools.build.skyframe.PartialReevaluationMailbox.Mail;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
-import com.google.devtools.build.skyframe.SkyFunction.Environment.ClassToInstanceMapSkyKeyComputeState;
-import com.google.devtools.build.skyframe.SkyFunction.Environment.SkyKeyComputeState;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
-/** Reports provisional misses without waiting for every selected output of a root. */
+/** Propagates prerequisite failures and completed test misses during a cache probe. */
 public final class CacheProbeCompletion {
   private CacheProbeCompletion() {}
-
-  /** Informational only: final completion and test outcomes remain authoritative. */
-  public record MissingOutputEvent(ActionLookupKey actionLookupKey) implements Postable {}
 
   /** A completed test probe established that a required cached result is missing. */
   public record TestMissEvent(ConfiguredTargetKey configuredTargetKey) implements Postable {
@@ -47,13 +36,7 @@ public final class CacheProbeCompletion {
     }
   }
 
-  private static final class State implements SkyKeyComputeState {
-    final Set<SkyKey> pending = new HashSet<>();
-    boolean initialized;
-    boolean reportedMissing;
-  }
-
-  /** Partial reevaluation requires explicit propagation of failed prerequisites. */
+  /** Propagates failed prerequisites without replacing their exceptions. */
   @Nullable
   static SkyValue getValue(Environment env, SkyKey key)
       throws DependencyException, InterruptedException {
@@ -95,81 +78,5 @@ public final class CacheProbeCompletion {
     public boolean isCatastrophic() {
       return getCause() instanceof ActionExecutionException failure && failure.isCatastrophe();
     }
-  }
-
-  /**
-   * Observes completed output dependencies; returns true only when the normal completion pass can
-   * examine all of them. No values or failures are synthesized or cached here.
-   */
-  static boolean awaitOutputs(
-      Environment env,
-      ActionLookupKey actionLookupKey,
-      Supplier<? extends Iterable<? extends SkyKey>> outputKeys)
-      throws InterruptedException {
-    ClassToInstanceMapSkyKeyComputeState computeState =
-        env.getState(ClassToInstanceMapSkyKeyComputeState::new);
-    Mail mail = PartialReevaluationMailbox.from(computeState).getMail();
-    State state = computeState.getInstance(State.class, State::new);
-    boolean initial = !state.initialized;
-    ImmutableList<? extends SkyKey> toCheck;
-    SkyframeLookupResult result;
-    if (initial) {
-      toCheck = ImmutableList.copyOf(outputKeys.get());
-      state.initialized = true;
-      result = env.getValuesAndExceptions(toCheck);
-    } else {
-      if (state.pending.isEmpty()) {
-        return true;
-      }
-      switch (mail.kind()) {
-        case FRESHLY_INITIALIZED -> throw new IllegalStateException("Missing completion state");
-        case EMPTY -> {
-          return false;
-        }
-        case CAUSES ->
-            toCheck =
-                mail.causes().other()
-                    ? ImmutableList.copyOf(state.pending)
-                    : mail.causes().signaledDeps();
-        default -> throw new IllegalStateException("Unexpected mailbox state: " + mail.kind());
-      }
-      result = env.getLookupHandleForPreviouslyRequestedDeps();
-    }
-
-    SkyframeLookupResult.QueryDepCallback observer =
-        new SkyframeLookupResult.QueryDepCallback() {
-          @Override
-          public void acceptValue(SkyKey key, SkyValue value) {
-            if (!initial) {
-              state.pending.remove(key);
-            }
-          }
-
-          @Override
-          public boolean tryHandleException(SkyKey key, Exception exception) {
-            if (!initial) {
-              state.pending.remove(key);
-            }
-            if (exception instanceof ActionExecutionException failure
-                && failure.isCacheProbeMiss()
-                && !state.reportedMissing) {
-              state.reportedMissing = true;
-              env.getListener().post(new MissingOutputEvent(actionLookupKey));
-            }
-            // This is readiness bookkeeping, not final error handling. The ordinary completion
-            // pass below re-reads every output and preserves genuine errors alongside misses.
-            return true;
-          }
-        };
-    for (SkyKey key : toCheck) {
-      if (initial) {
-        if (!result.queryDep(key, observer)) {
-          state.pending.add(key);
-        }
-      } else if (state.pending.contains(key)) {
-        result.queryDep(key, observer);
-      }
-    }
-    return state.pending.isEmpty();
   }
 }
