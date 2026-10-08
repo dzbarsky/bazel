@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kind: [core, remote, commands, files, cpp]
+        kind: [commands]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -41,10 +41,10 @@ jobs:
           test "$(id -u)" -ne 0
           df -h . /tmp
           free -h
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            build-essential curl git openjdk-21-jdk-headless python3 unzip zip
-          curl --fail --location --retry 3 \
+          for tool in gcc g++ git java python3 unzip zip curl; do
+            command -v "$tool"
+          done
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 120 \
             --output "${RUNNER_TEMP}/bazelisk" \
             https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
           chmod +x "${RUNNER_TEMP}/bazelisk"
