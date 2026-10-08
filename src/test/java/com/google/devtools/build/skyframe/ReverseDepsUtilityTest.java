@@ -16,6 +16,7 @@ package com.google.devtools.build.skyframe;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Interner;
 import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.skyframe.NodeEntry.DependencyState;
@@ -45,6 +46,31 @@ public final class ReverseDepsUtilityTest {
 
   public ReverseDepsUtilityTest(int numElements) {
     this.numElements = numElements;
+  }
+
+  @Test
+  public void bulkRemovalPreservesSnapshot() throws InterruptedException {
+    var entry = new IncrementalInMemoryNodeEntry(KEY);
+    entry.addReverseDepAndCheckIfDone(null);
+    entry.markRebuilding();
+    entry.setValue(new GraphTester.StringValue("value"), IntVersion.of(0), null);
+    List<SkyKey> original = new ArrayList<>();
+    List<SkyKey> remaining = new ArrayList<>();
+    ImmutableSet.Builder<SkyKey> deleted = ImmutableSet.builder();
+    for (int i = 0; i < numElements; i++) {
+      SkyKey key = Key.create(i);
+      original.add(key);
+      entry.addReverseDepAndCheckIfDone(key);
+      if (i % 2 == 0) {
+        deleted.add(key);
+      } else {
+        remaining.add(key);
+      }
+    }
+    var snapshot = entry.getReverseDepsForDoneEntry();
+    entry.removeReverseDepsFromDoneEntryDueToDeletion(deleted.build());
+    assertThat(entry.getReverseDepsForDoneEntry()).containsExactlyElementsIn(remaining);
+    assertThat(snapshot).containsExactlyElementsIn(original);
   }
 
   @Test

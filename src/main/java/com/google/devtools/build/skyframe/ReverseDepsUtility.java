@@ -147,6 +147,22 @@ abstract class ReverseDepsUtility {
     consolidateData(entry);
     ImmutableSet<SkyKey> currentReverseDeps =
         ImmutableSet.copyOf(consolidateAndGetReverseDeps(entry, /* checkConsistency= */ true));
+    var raw = entry.getReverseDepsRawForReverseDepsUtil();
+    if (entry.keepsEdges() && raw instanceof ArrayList<?> mutableList) {
+      if (deletedKeys.containsAll(currentReverseDeps)) {
+        entry.setReverseDepsForReverseDepsUtil(ImmutableList.of());
+        return;
+      }
+      // The entry's lock protects its owned list. Filter once instead of rescanning a SetView.
+      List<SkyKey> reverseDeps = multipleAsList(raw);
+      reverseDeps.removeIf(deletedKeys::contains);
+      if (reverseDeps.size() > 4) {
+        mutableList.trimToSize();
+      } else {
+        writeReverseDepsSet(entry, ImmutableSet.copyOf(reverseDeps));
+      }
+      return;
+    }
     writeReverseDepsSet(entry, Sets.difference(currentReverseDeps, deletedKeys));
   }
 
