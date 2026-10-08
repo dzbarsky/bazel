@@ -357,8 +357,26 @@ public class GroupedDeps implements Iterable<List<SkyKey>> {
   }
 
   public ImmutableSet<SkyKey> toSet() {
-    ImmutableSet.Builder<SkyKey> builder = ImmutableSet.builderWithExpectedSize(size);
-    for (Object obj : elements) {
+    return toSet(0);
+  }
+
+  /** Returns the dependencies in the given group and all subsequent groups. */
+  ImmutableSet<SkyKey> toSet(int fromGroup) {
+    if (fromGroup == numGroups()) {
+      return ImmutableSet.of();
+    }
+    int remaining = size;
+    if (fromGroup != 0) {
+      remaining = 0;
+      for (int group = fromGroup; group < numGroups(); group++) {
+        Object first = elements.get(groupIndices.get(group - 1));
+        remaining += first instanceof Integer groupSize ? groupSize : 1;
+      }
+    }
+    ImmutableSet.Builder<SkyKey> builder = ImmutableSet.builderWithExpectedSize(remaining);
+    int start = fromGroup == 0 ? 0 : groupIndices.get(fromGroup - 1);
+    for (int i = start; i < elements.size(); i++) {
+      Object obj = elements.get(i);
       if (obj instanceof SkyKey skyKey) {
         builder.add(skyKey);
       }

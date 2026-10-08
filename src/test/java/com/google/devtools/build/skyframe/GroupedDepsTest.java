@@ -65,6 +65,20 @@ public final class GroupedDepsTest {
   }
 
   @Test
+  public void toSetFromGroup() {
+    GroupedDeps deps = createEmpty();
+    assertThat(deps.toSet(0)).isEmpty();
+    deps.appendSingleton(key("a"));
+    deps.appendGroup(ImmutableList.of(key("b"), key("c")));
+    deps.appendSingleton(key("d"));
+
+    assertThat(deps.toSet(0)).containsExactly(key("a"), key("b"), key("c"), key("d")).inOrder();
+    assertThat(deps.toSet(1)).containsExactly(key("b"), key("c"), key("d")).inOrder();
+    assertThat(deps.toSet(2)).containsExactly(key("d"));
+    assertThat(deps.toSet(3)).isEmpty();
+  }
+
+  @Test
   public void identical_equal() {
     GroupedDeps abc1 = createEmpty();
     GroupedDeps abc2 = createEmpty();
