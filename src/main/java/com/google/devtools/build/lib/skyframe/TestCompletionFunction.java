@@ -78,11 +78,6 @@ public final class TestCompletionFunction implements SkyFunction {
         }
       }
     } else {
-      if (ctx.cacheProbe()
-          && !CacheProbeCompletion.awaitOutputs(
-              env, ctKey, () -> Artifact.keys(TestProvider.getTestStatusArtifacts(ct)))) {
-        return null;
-      }
       List<SkyKey> skyKeys = Artifact.keys(TestProvider.getTestStatusArtifacts(ct));
       SkyframeLookupResult result = env.getValuesAndExceptions(skyKeys);
       if (env.valuesMissing()) {
