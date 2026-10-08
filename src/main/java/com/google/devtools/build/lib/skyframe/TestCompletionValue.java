@@ -86,11 +86,6 @@ public final class TestCompletionValue implements SkyValue {
     }
 
     @Override
-    public final boolean supportsPartialReevaluation() {
-      return topLevelArtifactContext().cacheProbe();
-    }
-
-    @Override
     public final SkyKeyInterner<TestCompletionKey> getSkyKeyInterner() {
       return interner;
     }
