@@ -205,6 +205,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/remote/grpc",
         "//src/main/java/com/google/devtools/build/lib/remote/util:rx_futures",
         "//third_party:guava",
+        "//third_party:jsr305",
         "//third_party:netty",
         "//third_party:rxjava3",
         "//third_party/grpc-java:grpc-jar",
