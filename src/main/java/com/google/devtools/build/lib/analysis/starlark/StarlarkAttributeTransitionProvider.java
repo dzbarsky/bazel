@@ -32,7 +32,9 @@ import com.google.devtools.build.lib.packages.ConfiguredAttributeMapper;
 import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.packages.StructProvider;
 import com.google.devtools.build.lib.starlarkbuildapi.SplitTransitionProviderApi;
+import java.lang.ref.WeakReference;
 import java.util.Objects;
+import javax.annotation.Nullable;
 import net.starlark.java.eval.Printer;
 
 /**
@@ -104,6 +106,12 @@ public class StarlarkAttributeTransitionProvider
     private final StructImpl attrObject;
     private final int hashCode;
 
+    // Remember only a successful comparison of immutable attributes, never substitute the other
+    // transition or its attributes. Starlark equality need not imply interchangeable values:
+    // dictionary insertion order, for example, is observable despite being ignored by equality.
+    // Weak references avoid retaining other analysis state, and races can only lose memo hits.
+    @Nullable private transient volatile WeakReference<FunctionSplitTransition> equalAttributePeer;
+
     private FunctionSplitTransition(
         StarlarkDefinedConfigTransition starlarkDefinedConfigTransition,
         ConfiguredAttributeMapper attributeMap) {
@@ -154,7 +162,27 @@ public class StarlarkAttributeTransitionProvider
       if (!(object instanceof FunctionSplitTransition other)) {
         return false;
       }
-      return Objects.equals(attrObject, other.attrObject) && super.equals(other);
+      // Either side may still remember this pair after the other side matched a newer peer.
+      if (hasEqualAttributesPeer(other) || other.hasEqualAttributesPeer(this)) {
+        // Preserve definition comparisons on every call, including analysis-test transitions
+        // whose settings map may be owned by their caller.
+        return super.equals(other);
+      }
+      if (!Objects.equals(attrObject, other.attrObject)) {
+        return false;
+      }
+      // StarlarkValue.isImmutable promises deep immutability. Check only on a successful slow
+      // comparison, not on memo hits, which must avoid rescanning large attribute lists.
+      if (attrObject.isImmutable() && other.attrObject.isImmutable()) {
+        equalAttributePeer = new WeakReference<>(other);
+        other.equalAttributePeer = new WeakReference<>(this);
+      }
+      return super.equals(other);
+    }
+
+    private boolean hasEqualAttributesPeer(FunctionSplitTransition other) {
+      WeakReference<FunctionSplitTransition> peer = equalAttributePeer;
+      return peer != null && peer.refersTo(other);
     }
 
     @Override
