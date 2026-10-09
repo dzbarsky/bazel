@@ -90,6 +90,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Deque;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -515,7 +516,7 @@ public final class MerkleTreeComputer {
       @Nullable RemotePathResolver remotePathResolver,
       BlobPolicy blobPolicy)
       throws IOException {
-    return transform(
+    var subTreesFuture =
         precomputeSubTrees(
             sortedInputs,
             isToolInput,
@@ -523,7 +524,9 @@ public final class MerkleTreeComputer {
             artifactPathResolver,
             remoteActionExecutionContext,
             remotePathResolver,
-            blobPolicy),
+            blobPolicy);
+    return transform(
+        subTreesFuture,
         subTreeRoots -> {
           try {
             return buildWithPrecomputedSubTrees(
@@ -540,7 +543,7 @@ public final class MerkleTreeComputer {
             throw new WrappedException(e);
           }
         },
-        MERKLE_TREE_BUILD_POOL);
+        subTreesFuture.isDone() ? directExecutor() : MERKLE_TREE_BUILD_POOL);
   }
 
   private MerkleTree buildWithPrecomputedSubTrees(
@@ -777,10 +780,10 @@ public final class MerkleTreeComputer {
           RemotePathResolver remotePathResolver,
           BlobPolicy blobPolicy)
           throws IOException {
-    var subTreeFutures =
-        new ArrayList<
+    List<
             ListenableFuture<
-                Map.Entry<Map.Entry<PathFragment, ? extends ActionInput>, MerkleTree.RootOnly>>>();
+                Map.Entry<Map.Entry<PathFragment, ? extends ActionInput>, MerkleTree.RootOnly>>>
+        subTreeFutures = null;
     for (var entry : sortedInputs) {
       var future =
           maybeCacheSubtree(
@@ -793,8 +796,14 @@ public final class MerkleTreeComputer {
               remotePathResolver,
               blobPolicy);
       if (future != null) {
+        if (subTreeFutures == null) {
+          subTreeFutures = new ArrayList<>();
+        }
         subTreeFutures.add(transform(future, subTree -> entry(entry, subTree), directExecutor()));
       }
+    }
+    if (subTreeFutures == null) {
+      return immediateFuture(ImmutableMap.of());
     }
     return transform(allAsList(subTreeFutures), ImmutableMap::copyOf, directExecutor());
   }
@@ -1053,7 +1062,9 @@ public final class MerkleTreeComputer {
                         });
                 return merkleTree.root();
               },
-              MERKLE_TREE_UPLOAD_POOL);
+              uploadBlobs && merkleTreeUploader != null
+                  ? MERKLE_TREE_UPLOAD_POOL
+                  : directExecutor());
         };
     Supplier<ListenableFuture<MerkleTree.RootOnly>> buildMerkleTreeTaskSupplier =
         () -> Futures.submitAsync(buildMerkleTreeTask, MERKLE_TREE_BUILD_POOL);
