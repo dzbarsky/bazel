@@ -18,7 +18,6 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Predicates.alwaysFalse;
 import static com.google.common.base.Predicates.alwaysTrue;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.Futures.allAsList;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.Futures.transform;
@@ -88,6 +87,7 @@ import java.util.AbstractCollection;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
@@ -147,6 +147,8 @@ public final class MerkleTreeComputer {
       NodeProperties.newBuilder()
           .addProperties(NodeProperty.newBuilder().setName("bazel_tool_input"))
           .build();
+  private static final Comparator<ActionInput> EXEC_PATH_COMPARATOR =
+      comparing(ActionInput::getExecPath, HIERARCHICAL_COMPARATOR);
   private static final ImmutableList<Map.Entry<PathFragment, ActionInput>> END_OF_INPUTS_SENTINEL =
       ImmutableList.of(entry(PathFragment.EMPTY_FRAGMENT, VirtualActionInput.EMPTY_MARKER));
 
@@ -342,24 +344,32 @@ public final class MerkleTreeComputer {
         }
       }
     }
+    PathMapper pathMapper = spawn.getPathMapper();
     var spawnInputs = spawn.getInputFiles().toList();
     // Add output directories to inputs so that they are created as empty directories by the
     // executor. The spec only requires the executor to create the parent directory of an output
     // directory, which differs from the behavior of both local and sandboxed execution.
-    var outputDirectories =
-        spawn.getOutputFiles().stream()
-            .filter(output -> output instanceof Artifact artifact && artifact.isTreeArtifact())
-            .map(outputDir -> new EmptyInputDirectory((Artifact) outputDir))
-            .collect(toImmutableList());
+    List<ActionInput> outputDirectories = null;
+    for (ActionInput output : spawn.getOutputFiles()) {
+      if (output instanceof Artifact artifact && artifact.isTreeArtifact()) {
+        if (outputDirectories == null) {
+          outputDirectories = new ArrayList<>(1);
+        }
+        outputDirectories.add(new EmptyInputDirectory(artifact));
+      }
+    }
     // Reduce peak memory usage by avoiding the allocation of intermediate arrays and sorted map, as
     // well as the prolonged retention of mapped paths. All of these can be reconstructed on-the-fly
     // while iterating over the inputs, only the sorted order has to be retained.
     var allInputs =
         ImmutableList.sortedCopyOf(
-            comparing(
-                input -> getOutputPath(input, remotePathResolver, spawn.getPathMapper()),
-                HIERARCHICAL_COMPARATOR),
-            concat(spawnInputs, outputDirectories));
+            // Sibling repo paths such as ../repo must be sorted after working-directory resolution.
+            pathMapper.isNoop() && remotePathResolver.getWorkingDirectory().isEmpty()
+                ? EXEC_PATH_COMPARATOR
+                : comparing(
+                    input -> getOutputPath(input, remotePathResolver, pathMapper),
+                    HIERARCHICAL_COMPARATOR),
+            outputDirectories == null ? spawnInputs : concat(spawnInputs, outputDirectories));
     var metadata =
         TracingMetadataUtils.buildMetadata(
             buildRequestId, commandId, "subtree", spawn.getResourceOwner());
@@ -371,7 +381,9 @@ public final class MerkleTreeComputer {
             CachePolicy.REMOTE_CACHE_ONLY,
             CachePolicy.NO_CACHE);
     Predicate<PathFragment> isToolInput;
-    if (toolInputs.isEmpty() || remotePathResolver.getWorkingDirectory().isEmpty()) {
+    if (toolInputs.isEmpty()) {
+      isToolInput = alwaysFalse();
+    } else if (remotePathResolver.getWorkingDirectory().isEmpty()) {
       isToolInput = toolInputs::contains;
     } else {
       isToolInput =
@@ -382,9 +394,7 @@ public final class MerkleTreeComputer {
           build(
               Lists.transform(
                   allInputs,
-                  input ->
-                      entry(
-                          getOutputPath(input, remotePathResolver, spawn.getPathMapper()), input)),
+                  input -> entry(getOutputPath(input, remotePathResolver, pathMapper), input)),
               isToolInput,
               scrubber != null ? scrubber.forSpawn(spawn) : null,
               spawnExecutionContext.getInputMetadataProvider(),
