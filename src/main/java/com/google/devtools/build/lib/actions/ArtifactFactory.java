@@ -17,6 +17,7 @@ import static java.util.Comparator.comparing;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Interner;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
 import com.google.devtools.build.lib.actions.Artifact.SourceArtifact;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
@@ -24,6 +25,7 @@ import com.google.devtools.build.lib.actions.Artifact.SpecialArtifactType;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.StringEncoding;
@@ -50,6 +52,9 @@ public class ArtifactFactory implements ArtifactResolver {
 
   /** Cache of source artifacts. */
   private final SourceArtifactCache sourceArtifactCache = new SourceArtifactCache();
+
+  // Share immutable paths across reanalysis, but keep each artifact's mutable owner separate.
+  private final Interner<PathFragment> derivedArtifactPaths = BlazeInterners.newWeakInterner();
 
   /**
    * Map of package names to source root paths so that we can create source artifact paths given
@@ -428,7 +433,7 @@ public class ArtifactFactory implements ArtifactResolver {
     Preconditions.checkNotNull(execPath);
 
     if (!root.isSourceRoot()) {
-      return createArtifact(root, execPath, owner, type);
+      return createArtifact(root, derivedArtifactPaths.intern(execPath), owner, type);
     }
 
     // Double-checked locking to avoid locking cost when possible.
