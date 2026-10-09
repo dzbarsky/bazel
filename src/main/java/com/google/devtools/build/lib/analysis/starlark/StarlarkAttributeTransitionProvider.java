@@ -16,6 +16,8 @@ package com.google.devtools.build.lib.analysis.starlark;
 
 import static com.google.devtools.build.lib.analysis.starlark.FunctionTransitionUtil.applyAndValidate;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
@@ -32,6 +34,7 @@ import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.packages.StructProvider;
 import com.google.devtools.build.lib.starlarkbuildapi.SplitTransitionProviderApi;
 import java.util.Objects;
+import javax.annotation.Nullable;
 import net.starlark.java.eval.Printer;
 import net.starlark.java.eval.StarlarkSemantics;
 
@@ -53,6 +56,27 @@ public class StarlarkAttributeTransitionProvider
       "No attribute '%s' in attr. Make sure you declared a rule attribute with this name.";
 
   private final StarlarkDefinedConfigTransition starlarkDefinedConfigTransition;
+
+  // Identity keys distinguish configurations without traversing immutable attribute values.
+  // Cached transitions retain those values, but not the mapper, so weak keys can release it.
+  // Memoization is transient and initialized lazily because deserialization may skip constructors.
+  @Nullable
+  private transient volatile Cache<ConfiguredAttributeMapper, FunctionSplitTransition>
+      transitionInstances;
+
+  private Cache<ConfiguredAttributeMapper, FunctionSplitTransition> getTransitionInstances() {
+    Cache<ConfiguredAttributeMapper, FunctionSplitTransition> instances = transitionInstances;
+    if (instances == null) {
+      synchronized (this) {
+        instances = transitionInstances;
+        if (instances == null) {
+          instances = Caffeine.newBuilder().weakKeys().build();
+          transitionInstances = instances;
+        }
+      }
+    }
+    return instances;
+  }
 
   public StarlarkAttributeTransitionProvider(
       StarlarkDefinedConfigTransition starlarkDefinedConfigTransition) {
@@ -81,11 +105,14 @@ public class StarlarkAttributeTransitionProvider
     AttributeMap attributeMap = data.attributes();
     Preconditions.checkArgument(
         attributeMap == null || attributeMap instanceof ConfiguredAttributeMapper);
-    // TODO(bazel-team): consider caching transition instances to save CPU time, similar to what's
-    // done in StarlarkRuleTransitionProvider. This could benefit builds that apply transitions over
-    // many build graph edges.
-    return new FunctionSplitTransition(
-        starlarkDefinedConfigTransition, (ConfiguredAttributeMapper) attributeMap);
+    if (attributeMap == null) {
+      // Caffeine does not permit null keys. These transitions have an empty attribute struct.
+      return new FunctionSplitTransition(starlarkDefinedConfigTransition, null);
+    }
+    return getTransitionInstances()
+        .get(
+            (ConfiguredAttributeMapper) attributeMap,
+            mapper -> new FunctionSplitTransition(starlarkDefinedConfigTransition, mapper));
   }
 
   public boolean allowImmutableFlagChanges() {
