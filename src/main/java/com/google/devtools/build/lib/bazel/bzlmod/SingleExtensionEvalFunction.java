@@ -16,11 +16,16 @@
 package com.google.devtools.build.lib.bazel.bzlmod;
 
 import static com.google.common.collect.ImmutableBiMap.toImmutableBiMap;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
 
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.hash.HashCode;
+import com.google.common.hash.Hashing;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.bazel.bzlmod.RunnableExtension.RunModuleExtensionResult;
 import com.google.devtools.build.lib.bazel.repository.RepoMetadataRequirements;
@@ -37,10 +42,15 @@ import com.google.devtools.build.lib.runtime.ProcessWrapper;
 import com.google.devtools.build.lib.runtime.RepositoryRemoteExecutor;
 import com.google.devtools.build.lib.server.FailureDetails.ExternalDeps.Code;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
+import com.google.devtools.build.lib.vfs.FileSystemUtils;
+import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
+import com.google.gson.JsonParseException;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -57,6 +67,12 @@ import net.starlark.java.eval.StarlarkSemantics;
  * and returns the generated repos.
  */
 public class SingleExtensionEvalFunction implements SkyFunction {
+  static final String EXTENSION_CAPSULE_DIRECTORY_PROPERTY = "bazel30.extension_cache_dir";
+  private static final long MAX_CAPSULE_BYTES = 256L * 1024 * 1024;
+  // Bound the parsed capsule cache independently of workspace and hidden lockfiles.
+  private final Cache<HashCode, BazelLockFileValue> capsuleValues =
+      CacheBuilder.newBuilder().maximumSize(4).build();
+
   private final BlazeDirectories directories;
   private final Supplier<ImmutableMap<String, String>> repoEnvSupplier;
   private final Supplier<ImmutableMap<String, String>> nonstrictRepoEnvSupplier;
@@ -202,6 +218,72 @@ public class SingleExtensionEvalFunction implements SkyFunction {
           return null;
         }
       }
+      // An optional producer result is another best-effort cache layer. It never
+      // replaces local lockfiles and never bypasses Bazel's normal validity checks.
+      BazelLockFileValue capsule = readExtensionCapsule(extensionId);
+      if (capsule != null) {
+        var capsuleEntry =
+            capsule.getModuleExtensions().get(extensionId).get(extension.getEvalFactors());
+        Facts capsuleFacts = capsule.getFacts().get(extensionId);
+        if (capsuleFacts != null
+            && capsule.getFactsVersions().getOrDefault(extensionId, 0) != currentFactsVersion) {
+          capsuleEntry = null;
+        }
+        // Preserve the normal repair/error behavior for a workspace facts schema
+        // transition. Do not let the optional cache decide how to migrate facts.
+        if (workspaceLockfile.getFacts().containsKey(extensionId)
+            && workspaceLockfile.getFactsVersions().getOrDefault(extensionId, 0)
+                != currentFactsVersion) {
+          capsuleEntry = null;
+        }
+        if (capsuleEntry != null && capsuleEntry.isReproducible()) {
+          Facts factsForCapsule =
+              workspaceLockfile.getFacts().containsKey(extensionId)
+                  ? workspaceLockfileFacts
+                  : (capsuleFacts == null ? Facts.EMPTY : capsuleFacts);
+          try (SilentCloseable c =
+              Profiler.instance()
+                  .profile(
+                      ProfilerTask.BZLMOD, () -> "check extension capsule for " + extensionId)) {
+            // Reject malformed metadata without publishing an error from the
+            // optional cache. The regular path retains its existing diagnostics.
+            if (capsuleEntry.getModuleExtensionMetadata().isPresent()
+                && usagesValue.getExtensionUsages().containsKey(ModuleKey.ROOT)) {
+              try {
+                capsuleEntry
+                    .getModuleExtensionMetadata()
+                    .get()
+                    .generateFixup(
+                        usagesValue.getExtensionUsages().get(ModuleKey.ROOT),
+                        capsuleEntry.getGeneratedRepoSpecs().keySet());
+              } catch (IllegalStateException malformedMetadata) {
+                // For example, only one of direct deps/direct dev deps is present.
+                // Keep this catch scoped to optional metadata, not Skyframe logic.
+                throw new EvalException("Invalid optional extension capsule metadata");
+              }
+            }
+            SingleExtensionValue cached =
+                tryGettingValueFromLockFile(
+                    env,
+                    extensionId,
+                    extension,
+                    usagesValue,
+                    extension.getEvalFactors(),
+                    capsuleEntry,
+                    factsForCapsule,
+                    capsuleFacts);
+            if (cached != null) {
+              env.getListener()
+                  .handle(Event.info("Reused validated extension capsule: " + extensionId));
+              return cached;
+            }
+          } catch (NeedsSkyframeRestartException e) {
+            return null;
+          } catch (EvalException | SingleExtensionEvalFunctionException ignored) {
+            // A bad optional cache entry must not turn a normal evaluation into failure.
+          }
+        }
+      }
     }
 
     // Run that extension!
@@ -306,6 +388,105 @@ public class SingleExtensionEvalFunction implements SkyFunction {
         newFacts,
         currentFactsVersion,
         env);
+  }
+
+  /** Reads a small immutable capsule; malformed, missing, or incompatible data is a miss. */
+  @Nullable
+  private BazelLockFileValue readExtensionCapsule(ModuleExtensionId extensionId) {
+    String directory = System.getProperty(EXTENSION_CAPSULE_DIRECTORY_PROPERTY);
+    if (directory == null || directory.isEmpty() || !PathFragment.create(directory).isAbsolute()) {
+      return null;
+    }
+    String filename = Hashing.sha256().hashString(extensionId.toString(), UTF_8) + ".json";
+    try (SilentCloseable c =
+        Profiler.instance()
+            .profile(ProfilerTask.BZLMOD, () -> "read extension capsule for " + extensionId)) {
+      Path capsuleDirectory = directories.getOutputBase().getFileSystem().getPath(directory);
+      Path workspaceMarker = capsuleDirectory.getRelative("workspace-root.txt");
+      // Generated repository attributes may embed the producer's absolute source
+      // root without recording it as an input. Never transplant those attributes.
+      if (workspaceMarker.getFileSize() > 8192
+          || !FileSystemUtils.readContent(workspaceMarker, UTF_8)
+              .equals(directories.getWorkspace().getPathString() + "\n")) {
+        return null;
+      }
+      Path capsulePath = capsuleDirectory.getRelative(filename);
+      if (capsulePath.getFileSize() > MAX_CAPSULE_BYTES) {
+        return null;
+      }
+      byte[] bytes = FileSystemUtils.readContent(capsulePath);
+      if (bytes.length > MAX_CAPSULE_BYTES) {
+        return null;
+      }
+      HashCode digest = Hashing.sha256().hashBytes(bytes);
+      BazelLockFileValue capsule = capsuleValues.getIfPresent(digest);
+      if (capsule == null) {
+        capsule =
+            GsonTypeAdapterUtil.LOCKFILE_GSON.fromJson(
+                new String(bytes, UTF_8), BazelLockFileValue.class);
+        if (capsule == null
+            || capsule.getLockFileVersion() != BazelLockFileValue.LOCK_FILE_VERSION
+            || capsule.getModuleExtensions() == null
+            || !capsule.getModuleExtensions().keySet().equals(java.util.Set.of(extensionId))
+            || capsule.getFacts() == null
+            || capsule.getFactsVersions() == null
+            || !java.util.Set.of(extensionId).containsAll(capsule.getFacts().keySet())
+            || !java.util.Set.of(extensionId).containsAll(capsule.getFactsVersions().keySet())) {
+          return null;
+        }
+        capsule = snapshotCapsuleValue(capsule);
+        if (capsule == null) {
+          return null;
+        }
+        capsuleValues.put(digest, capsule);
+      }
+      // The same file content is never reused under another extension's filename.
+      if (!capsule.getModuleExtensions().containsKey(extensionId)) {
+        return null;
+      }
+      return snapshotCapsuleValue(capsule);
+    } catch (IOException | JsonParseException | IllegalArgumentException | NullPointerException e) {
+      return null;
+    }
+  }
+
+  /** Copies the only mutable leaves; declines values with unfrozen Starlark attributes. */
+  @Nullable
+  private static BazelLockFileValue snapshotCapsuleValue(BazelLockFileValue value) {
+    for (var facts : value.getFacts().values()) {
+      if (!facts.value().isImmutable()) {
+        return null;
+      }
+    }
+    if (value.getModuleExtensions().isEmpty()) {
+      return value;
+    }
+    var extensions =
+        ImmutableMap
+            .<ModuleExtensionId, ImmutableMap<ModuleExtensionEvalFactors, LockFileModuleExtension>>
+                builder();
+    for (var extensionEntry : value.getModuleExtensions().entrySet()) {
+      var factors = ImmutableMap.<ModuleExtensionEvalFactors, LockFileModuleExtension>builder();
+      for (var factorEntry : extensionEntry.getValue().entrySet()) {
+        LockFileModuleExtension extension = factorEntry.getValue();
+        for (var spec : extension.getGeneratedRepoSpecs().values()) {
+          if (!spec.attributes().attributes().isImmutable()) {
+            return null;
+          }
+        }
+        factors.put(
+            factorEntry.getKey(),
+            LockFileModuleExtension.builder()
+                .setBzlTransitiveDigest(extension.getBzlTransitiveDigest().clone())
+                .setUsagesDigest(extension.getUsagesDigest().clone())
+                .setRecordedInputs(extension.getRecordedInputs())
+                .setGeneratedRepoSpecs(extension.getGeneratedRepoSpecs())
+                .setModuleExtensionMetadata(extension.getModuleExtensionMetadata())
+                .build());
+      }
+      extensions.put(extensionEntry.getKey(), factors.buildOrThrow());
+    }
+    return value.toBuilder().setModuleExtensions(extensions.buildOrThrow()).build();
   }
 
   /**
