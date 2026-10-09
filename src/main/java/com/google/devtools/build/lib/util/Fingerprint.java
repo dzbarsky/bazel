@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.util;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.io.ByteStreams;
+import com.google.devtools.build.lib.unsafe.StringUnsafe;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -236,10 +237,11 @@ public final class Fingerprint {
   @CanIgnoreReturnValue
   public Fingerprint addString(String input) {
     try {
-      // For large strings, protobuf reserves three bytes per UTF-16 code unit. The JDK's
-      // compact-string encoder can allocate just one byte per character for ASCII strings.
+      // Compact ASCII strings already contain UTF-8 bytes. Reuse their backing array.
+      // For other large strings, the JDK encoder avoids protobuf's three-byte-per-char buffer.
       if (input.length() >= BUFFER_SIZE / 3) {
-        codedOut.writeByteArrayNoTag(input.getBytes(UTF_8));
+        codedOut.writeByteArrayNoTag(
+            StringUnsafe.isAscii(input) ? StringUnsafe.getByteArray(input) : input.getBytes(UTF_8));
       } else {
         codedOut.writeStringNoTag(input);
       }
