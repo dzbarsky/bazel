@@ -88,6 +88,9 @@ EOF
   add_rules_cc "MODULE.bazel"
 
   bazel build @remote//src:hello || fail "Expected build to succeed"
+  local overlay="$(bazel info output_base)/external/+http_archive+remote/src/BUILD.bazel"
+  [[ -f "$overlay" ]] || fail "Expected BUILD.bazel overlay at $overlay"
+  [[ ! -L "$overlay" ]] || fail "Expected a copied BUILD.bazel, found a symlink"
   bazel run @remote//src:hello | grep 'Hello World' \
       || fail "Expected output 'Hello World'"
 }
