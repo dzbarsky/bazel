@@ -17,6 +17,9 @@ package com.google.devtools.build.lib.bazel.bzlmod;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.google.common.collect.ImmutableMap;
+import com.google.common.hash.HashCode;
+import com.google.common.hash.Hashing;
 import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.LockfileMode;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
@@ -37,6 +40,7 @@ import com.google.devtools.build.skyframe.SkyValue;
 import com.google.gson.JsonSyntaxException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
@@ -55,6 +59,83 @@ public class BazelLockFileFunction implements SkyFunction {
 
   private static final Pattern POSSIBLE_MERGE_CONFLICT_PATTERN =
       Pattern.compile("<<<<<<<|=======|" + Pattern.quote("|||||||") + "|>>>>>>>");
+
+  // The previous invocation may have written a new hidden lockfile after its
+  // Skyframe value was evaluated. Retain the value we already constructed instead
+  // of parsing its serialization again. Always compare the digest of freshly read
+  // bytes: timestamps alone do not establish that an external writer left the
+  // file unchanged. Bound this to the workspace and hidden lockfiles of a server.
+  private static final int MAX_CACHED_LOCKFILES = 2;
+  private static final LinkedHashMap<RootedPath, CachedLockfile> cachedLockfiles =
+      new LinkedHashMap<>(MAX_CACHED_LOCKFILES, 0.75f, true);
+
+  private record CachedLockfile(HashCode digest, BazelLockFileValue value) {}
+
+  @Nullable
+  private static synchronized BazelLockFileValue recallLockfileValue(
+      RootedPath path, HashCode digest) {
+    CachedLockfile cached = cachedLockfiles.get(path);
+    // Do not expose mutable digest arrays owned by the memoized snapshot.
+    return cached != null && cached.digest().equals(digest)
+        ? snapshotLockfileValue(cached.value())
+        : null;
+  }
+
+  static synchronized void rememberLockfileValue(
+      RootedPath path, HashCode digest, BazelLockFileValue value) {
+    // Invalid or obsolete formats retain the original mode-dependent handling.
+    if (value.getLockFileVersion() != BazelLockFileValue.LOCK_FILE_VERSION
+        || !isValidLockfile(value)) {
+      return;
+    }
+    BazelLockFileValue snapshot = snapshotLockfileValue(value);
+    if (snapshot == null) {
+      return;
+    }
+    cachedLockfiles.put(path, new CachedLockfile(digest, snapshot));
+    while (cachedLockfiles.size() > MAX_CACHED_LOCKFILES) {
+      cachedLockfiles.remove(cachedLockfiles.keySet().iterator().next());
+    }
+  }
+
+  /** Copies the only mutable leaves; declines values with unfrozen Starlark attributes. */
+  @Nullable
+  static BazelLockFileValue snapshotLockfileValue(BazelLockFileValue value) {
+    for (var facts : value.getFacts().values()) {
+      if (!facts.value().isImmutable()) {
+        return null;
+      }
+    }
+    if (value.getModuleExtensions().isEmpty()) {
+      return value;
+    }
+    var extensions =
+        ImmutableMap
+            .<ModuleExtensionId, ImmutableMap<ModuleExtensionEvalFactors, LockFileModuleExtension>>
+                builder();
+    for (var extensionEntry : value.getModuleExtensions().entrySet()) {
+      var factors = ImmutableMap.<ModuleExtensionEvalFactors, LockFileModuleExtension>builder();
+      for (var factorEntry : extensionEntry.getValue().entrySet()) {
+        LockFileModuleExtension extension = factorEntry.getValue();
+        for (var spec : extension.getGeneratedRepoSpecs().values()) {
+          if (!spec.attributes().attributes().isImmutable()) {
+            return null;
+          }
+        }
+        factors.put(
+            factorEntry.getKey(),
+            LockFileModuleExtension.builder()
+                .setBzlTransitiveDigest(extension.getBzlTransitiveDigest().clone())
+                .setUsagesDigest(extension.getUsagesDigest().clone())
+                .setRecordedInputs(extension.getRecordedInputs())
+                .setGeneratedRepoSpecs(extension.getGeneratedRepoSpecs())
+                .setModuleExtensionMetadata(extension.getModuleExtensionMetadata())
+                .build());
+      }
+      extensions.put(extensionEntry.getKey(), factors.buildOrThrow());
+    }
+    return value.toBuilder().setModuleExtensions(extensions.buildOrThrow()).build();
+  }
 
   private final Path rootDirectory;
   private final Path outputBase;
@@ -120,7 +201,13 @@ public class BazelLockFileFunction implements SkyFunction {
       RootedPath lockfilePath, LockfileMode lockfileMode)
       throws IOException, BazelLockfileFunctionException {
     try {
-      String json = FileSystemUtils.readContent(lockfilePath.asPath(), UTF_8);
+      byte[] jsonBytes = FileSystemUtils.readContent(lockfilePath.asPath());
+      HashCode digest = Hashing.sha256().hashBytes(jsonBytes);
+      BazelLockFileValue cached = recallLockfileValue(lockfilePath, digest);
+      if (cached != null) {
+        return cached;
+      }
+      String json = new String(jsonBytes, UTF_8);
       Matcher matcher = LOCKFILE_VERSION_PATTERN.matcher(json);
       int version = matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
       if (version == BazelLockFileValue.LOCK_FILE_VERSION) {
@@ -138,6 +225,7 @@ public class BazelLockFileFunction implements SkyFunction {
           }
           return BazelLockFileValue.EMPTY_LOCKFILE;
         }
+        rememberLockfileValue(lockfilePath, digest, lockFileValue);
         return lockFileValue;
       } else {
         // This is an old version, its information can't be used.
