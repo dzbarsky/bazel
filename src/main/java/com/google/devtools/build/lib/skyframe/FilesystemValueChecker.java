@@ -393,6 +393,9 @@ public class FilesystemValueChecker {
         SkyKey key = keyAndValue.getKey();
         FileArtifactValue lastKnownData = actionValue.getExistingFileArtifactValue(artifact);
         try {
+          if (unresolvedSymlinkIsUnchanged(artifact, lastKnownData)) {
+            continue;
+          }
           FileArtifactValue newData =
               ActionOutputMetadataStore.fileArtifactValueFromArtifact(
                   artifact, stat, xattrProviderOverrider.getXattrProvider(syscallCache), tsgm);
@@ -517,6 +520,17 @@ public class FilesystemValueChecker {
     return !currentLocalChildren.equals(lastKnownLocalChildren);
   }
 
+  private static boolean unresolvedSymlinkIsUnchanged(
+      Artifact artifact, FileArtifactValue lastKnownData) throws IOException {
+    return artifact.isSymlink()
+        && lastKnownData.getType() == FileStateType.SYMLINK
+        && artifact
+            .getPath()
+            .readSymbolicLink()
+            .getPathString()
+            .equals(lastKnownData.getUnresolvedSymlinkTarget());
+  }
+
   private boolean artifactIsDirtyWithDirectSystemCalls(
       ImmutableSet<PathFragment> knownModifiedOutputFiles,
       OutputChecker outputChecker,
@@ -528,6 +542,9 @@ public class FilesystemValueChecker {
       return false;
     }
     try {
+      if (unresolvedSymlinkIsUnchanged(file, lastKnownData)) {
+        return false;
+      }
       FileArtifactValue fileMetadata =
           ActionOutputMetadataStore.fileArtifactValueFromArtifact(
               file, null, xattrProviderOverrider.getXattrProvider(syscallCache), tsgm);
