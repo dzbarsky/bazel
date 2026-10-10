@@ -1464,6 +1464,88 @@ public final class FilesystemValueCheckerTest {
   }
 
   @Test
+  public void remoteSymlinkToMissingTarget_isNotDirty(@TestParameter boolean missingParent)
+      throws Exception {
+    Artifact output = createDerivedArtifact("remote-alias");
+    Path target = fs.getPath("/remote/child/missing-target");
+    (missingParent ? fs.getPath("/remote") : target.getParentDirectory())
+        .createDirectoryAndParents();
+    output.getPath().createSymbolicLink(target.asFragment());
+    FileArtifactValue metadata =
+        FileArtifactValue.createFromExistingWithResolvedPath(
+            createRemoteMetadata("remote-content"), target.asFragment());
+
+    assertThat(dirtyActionsForSymlink(output, metadata, OutputChecker.TRUST_ALL)).isEmpty();
+  }
+
+  private enum RemoteSymlinkInvalidation {
+    RETARGETED_ALIAS,
+    RETARGETED_ANCESTOR,
+    PREVIOUSLY_MATERIALIZED,
+    EXPIRED_METADATA,
+    NO_RESOLVED_PATH,
+    LOCAL_METADATA,
+    READLINK_FAILURE
+  }
+
+  @Test
+  public void remoteSymlinkToMissingTarget_untrustedIsDirty(
+      @TestParameter RemoteSymlinkInvalidation invalidation) throws Exception {
+    Artifact output = createDerivedArtifact("remote-alias");
+    Path target = fs.getPath("/remote/child/missing-target");
+    target.getParentDirectory().createDirectoryAndParents();
+    output.getPath().createSymbolicLink(target.asFragment());
+    FileArtifactValue metadata;
+    if (invalidation == RemoteSymlinkInvalidation.LOCAL_METADATA) {
+      FileSystemUtils.writeContentAsLatin1(target, "local-content");
+      metadata = FileArtifactValue.createForTesting(target);
+      target.delete();
+    } else {
+      metadata =
+          createRemoteMetadata(
+              "remote-content",
+              invalidation == RemoteSymlinkInvalidation.EXPIRED_METADATA ? Instant.EPOCH : null);
+    }
+    if (invalidation != RemoteSymlinkInvalidation.NO_RESOLVED_PATH) {
+      metadata = FileArtifactValue.createFromExistingWithResolvedPath(metadata, target.asFragment());
+    }
+    switch (invalidation) {
+      case RETARGETED_ALIAS -> {
+        output.getPath().delete();
+        output.getPath().createSymbolicLink(fs.getPath("/other-missing-target").asFragment());
+      }
+      case RETARGETED_ANCESTOR -> {
+        fs.getPath("/remote").renameTo(fs.getPath("/moved"));
+        fs.getPath("/remote").createSymbolicLink(fs.getPath("/moved").asFragment());
+      }
+      case PREVIOUSLY_MATERIALIZED -> metadata.setMaterializedAsToplevelOutput(true);
+      case READLINK_FAILURE -> fs.readlinkThrowsIoException = true;
+      default -> {}
+    }
+
+    assertThat(dirtyActionsForSymlink(output, metadata, CHECK_TTL)).hasSize(1);
+  }
+
+  private Collection<SkyKey> dirtyActionsForSymlink(
+      Artifact output, FileArtifactValue metadata, OutputChecker outputChecker) throws Exception {
+    SkyKey actionKey = ActionLookupData.create(ACTION_LOOKUP_KEY, 0);
+    differencer.inject(ImmutableMap.of(actionKey, actionValueWithMetadata(output, metadata)));
+    assertThat(evaluator.evaluate(ImmutableList.of(actionKey), EVALUATION_OPTIONS).hasError())
+        .isFalse();
+    return new FilesystemValueChecker(
+            /* tsgm= */ null,
+            SyscallCache.NO_CACHE,
+            XattrProviderOverrider.NO_OVERRIDE,
+            FSVC_THREADS_FOR_TEST)
+        .getDirtyActionValues(
+            evaluator.getValues(),
+            /* batchStatter= */ null,
+            ModifiedFileSet.EVERYTHING_MODIFIED,
+            outputChecker,
+            (ignored, ignored2) -> {});
+  }
+
+  @Test
   public void testRemoteAndLocalArtifacts(@TestParameter boolean setContentsProxy)
       throws Exception {
     // Test that injected remote artifacts are trusted by the FileSystemValueChecker if it is
