@@ -583,10 +583,7 @@ public class FilesystemValueChecker {
     }
     try {
       Path path = file.getPath();
-      FileStatus stat = path.statIfFound(Symlinks.NOFOLLOW);
-      if (stat == null
-          || !stat.isSymbolicLink()
-          || !path.readSymbolicLink().equals(resolvedPath)) {
+      if (!path.getFileSystem().hasExactSymlinkTarget(path.asFragment(), resolvedPath)) {
         return false;
       }
       Path target = path.getFileSystem().getPath(resolvedPath);
