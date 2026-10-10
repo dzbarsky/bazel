@@ -1491,7 +1491,11 @@ public final class FilesystemValueCheckerTest {
       throws Exception {
     assumeTrue(OS.getCurrent() != OS.WINDOWS);
     FileSystem realFs = new UnixFileSystem(DigestHashFunction.SHA256, "");
-    Path root = realFs.getPath(TestUtils.tmpDir()).getRelative(UUID.randomUUID().toString());
+    Path root =
+        realFs
+            .getPath(TestUtils.tmpDir())
+            .resolveSymbolicLinks()
+            .getRelative(UUID.randomUUID().toString());
     Path target =
         root.getRelative(StringEncoding.unicodeToInternal(nonAscii ? "rémote/file" : "remote/file"));
     target.getParentDirectory().createDirectoryAndParents();
