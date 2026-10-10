@@ -309,13 +309,22 @@ public class UnixFileSystem extends DiskBackedFileSystem {
 
   @Override
   public PathFragment readSymbolicLink(PathFragment path) throws IOException {
+    return PathFragment.create(readSymbolicLinkRaw(path));
+  }
+
+  @Override
+  public boolean hasExactSymlinkTarget(PathFragment path, PathFragment target) throws IOException {
+    return readSymbolicLinkRaw(path).equals(target.getPathString());
+  }
+
+  private String readSymbolicLinkRaw(PathFragment path) throws IOException {
     // Note that the default implementation of readSymbolicLinkUnchecked calls this method and thus
     // is optimal since we only make one system call in here.
     String name = path.toString();
     long startTime = Profiler.nanoTimeMaybe();
     var comp = Blocker.begin();
     try {
-      return PathFragment.create(NativePosixFiles.readlink(name));
+      return NativePosixFiles.readlink(name);
     } catch (InvalidArgumentIOException e) {
       throw new NotASymlinkException(path, e);
     } finally {
