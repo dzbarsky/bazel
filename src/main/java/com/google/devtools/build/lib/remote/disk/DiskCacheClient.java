@@ -35,6 +35,7 @@ import com.google.devtools.build.lib.remote.common.RemoteCacheClient.ActionKey;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.Blob;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.Utils;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.protobuf.ByteString;
@@ -141,8 +142,30 @@ public class DiskCacheClient {
       return;
     }
 
+    publishFile(src, target, store);
+  }
+
+  private void publishFile(Path source, Path target, Store store) throws IOException {
     target.getParentDirectory().createDirectoryAndParents();
-    FileSystemUtils.renameToleratingConcurrentCreation(src, target);
+    if (OS.getCurrent() == OS.LINUX
+        && store == Store.CAS
+        && source.getFileSystem().supportsHardLinksNatively(source.asFragment())) {
+      // CAS blobs are immutable. Unlike cross-directory rename, link does not take Linux's
+      // filesystem-wide rename lock. Mutable AC entries still require atomic replacement.
+      // Keep other platforms unchanged: Windows readers can prevent unlinking the temporary file.
+      try {
+        source.createHardLink(target);
+      } catch (IOException e) {
+        if (!refresh(target)) {
+          // Keep the existing publication path when this filesystem cannot hard-link.
+          FileSystemUtils.renameToleratingConcurrentCreation(source, target);
+          return;
+        }
+      }
+      source.delete();
+      return;
+    }
+    FileSystemUtils.renameToleratingConcurrentCreation(source, target);
   }
 
   private ListenableFuture<Void> download(Digest digest, OutputStream out, Store store) {
@@ -444,13 +467,12 @@ public class DiskCacheClient {
       return;
     }
 
-    // Write a temporary file first, and then rename, to avoid data corruption in case of a crash.
+    // Write a temporary file first, then publish atomically to avoid exposing partial contents.
     Path temp = getTempPath();
 
     try {
       writer.write(temp);
-      path.getParentDirectory().createDirectoryAndParents();
-      FileSystemUtils.renameToleratingConcurrentCreation(temp, path);
+      publishFile(temp, path, store);
     } catch (IOException e) {
       try {
         temp.delete();
