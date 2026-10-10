@@ -18,6 +18,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doNothing;
@@ -66,6 +67,9 @@ import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.testutil.TestThread;
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.testutil.TimestampGranularityUtils;
+import com.google.devtools.build.lib.unix.UnixFileSystem;
+import com.google.devtools.build.lib.util.OS;
+import com.google.devtools.build.lib.util.StringEncoding;
 import com.google.devtools.build.lib.util.io.OutErr;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.BatchStat;
@@ -100,6 +104,7 @@ import com.google.devtools.build.skyframe.WalkableGraph;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1476,6 +1481,51 @@ public final class FilesystemValueCheckerTest {
             createRemoteMetadata("remote-content"), target.asFragment());
 
     assertThat(dirtyActionsForSymlink(output, metadata, OutputChecker.TRUST_ALL)).isEmpty();
+  }
+
+  @Test
+  public void remoteSymlinkToMissingTarget_rawTargetIsChecked(
+      @TestParameter boolean retargeted,
+      @TestParameter boolean redirectedTargetExists,
+      @TestParameter boolean nonAscii)
+      throws Exception {
+    assumeTrue(OS.getCurrent() != OS.WINDOWS);
+    FileSystem realFs = new UnixFileSystem(DigestHashFunction.SHA256, "");
+    Path root = realFs.getPath(TestUtils.tmpDir()).getRelative(UUID.randomUUID().toString());
+    Path target =
+        root.getRelative(StringEncoding.unicodeToInternal(nonAscii ? "rémote/file" : "remote/file"));
+    target.getParentDirectory().createDirectoryAndParents();
+    Path redirect = root.getRelative("different/dir");
+    redirect.createDirectoryAndParents();
+    target.getParentDirectory().getRelative("hop").createSymbolicLink(redirect.asFragment());
+    if (redirectedTargetExists) {
+      FileSystemUtils.writeContentAsLatin1(root.getRelative("different/file"), "different-content");
+    }
+    Path outputPath = root.getRelative("bin/alias");
+    outputPath.getParentDirectory().createDirectoryAndParents();
+    Artifact output =
+        ActionsTestUtil.createArtifact(
+            ArtifactRoot.asDerivedRoot(root, RootType.OUTPUT, "bin"), outputPath);
+    String rawTarget =
+        retargeted
+            ? target.getParentDirectory().getPathString() + "/hop/../file"
+            : target.getPathString();
+    // PathFragment would normalize away '..' before storing the link. Create it through the OS.
+    java.nio.file.Path rawOutputPath =
+        java.nio.file.Path.of(StringEncoding.internalToPlatform(outputPath.getPathString()));
+    Files.createSymbolicLink(
+        rawOutputPath, java.nio.file.Path.of(StringEncoding.internalToPlatform(rawTarget)));
+    assertThat(outputPath.readSymbolicLink()).isEqualTo(target.asFragment());
+    assertThat(Files.exists(rawOutputPath)).isEqualTo(retargeted && redirectedTargetExists);
+    if (retargeted && redirectedTargetExists) {
+      assertThat(Files.readString(rawOutputPath)).isEqualTo("different-content");
+    }
+    FileArtifactValue metadata =
+        FileArtifactValue.createFromExistingWithResolvedPath(
+            createRemoteMetadata("remote-content"), target.asFragment());
+
+    assertThat(dirtyActionsForSymlink(output, metadata, OutputChecker.TRUST_ALL))
+        .hasSize(retargeted ? 1 : 0);
   }
 
   private enum RemoteSymlinkInvalidation {
