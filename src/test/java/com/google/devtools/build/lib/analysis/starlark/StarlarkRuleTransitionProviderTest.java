@@ -17,6 +17,7 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.devtools.build.lib.bazel.bzlmod.BzlmodTestUtil.createModuleKey;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.eventbus.Subscribe;
@@ -26,6 +27,9 @@ import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.PlatformOptions;
 import com.google.devtools.build.lib.analysis.RequiredConfigFragmentsProvider;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.analysis.config.BuildOptions;
+import com.google.devtools.build.lib.analysis.config.CoreOptions;
+import com.google.devtools.build.lib.analysis.config.StarlarkTransitionCache;
 import com.google.devtools.build.lib.analysis.config.transitions.ConfigurationTransition;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestOptions;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
@@ -34,6 +38,7 @@ import com.google.devtools.build.lib.analysis.util.DummyTestFragment.DummyTestOp
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.RuleTransitionData;
+import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.rules.cpp.CppOptions;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import com.google.devtools.build.lib.testutil.TestConstants;
@@ -41,6 +46,7 @@ import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.build.lib.vfs.ModifiedFileSet;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
+import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import com.google.testing.junit.testparameterinjector.TestParameters;
 import java.util.ArrayList;
@@ -1778,6 +1784,74 @@ public final class StarlarkRuleTransitionProviderTest extends BuildViewTestCase 
     assertContainsEvent(
         "'None' value not allowed for List-type option 'copt'. Please use '[]' instead if trying"
             + " to set option to empty value.");
+  }
+
+  @Test
+  public void transitionCacheReusesOptionsAfterRemovingDefaults(
+      @TestParameter boolean alias,
+      @TestParameter boolean output,
+      @TestParameter({"before", "after"}) String nativeValue)
+      throws Exception {
+    String setting = alias ? "//test:alias" : "//test:flag";
+    scratch.file(
+        "test/defs.bzl",
+        String.format(
+            """
+            def _impl(settings, attr):
+                result = {"//command_line_option:foo": "%s"}
+                %s
+                return result
+
+            my_transition = transition(
+                implementation = _impl,
+                inputs = ["%s"],
+                outputs = ["//command_line_option:foo"] + %s,
+            )
+            my_rule = rule(implementation = lambda ctx: [], cfg = my_transition)
+            string_flag = rule(
+                implementation = lambda ctx: [],
+                build_setting = config.string(flag = True),
+            )
+            """,
+            nativeValue,
+            output ? String.format("result[\"%s\"] = settings[\"%s\"]", setting, setting) : "pass",
+            setting,
+            output ? String.format("[\"%s\"]", setting) : "[]"));
+    scratch.file(
+        "test/BUILD",
+        """
+        load(":defs.bzl", "my_rule", "string_flag")
+        string_flag(name = "flag", build_setting_default = "default")
+        alias(name = "alias", actual = ":flag")
+        my_rule(name = "test")
+        """);
+    Rule rule = (Rule) getTarget("//test:test");
+    ConfigurationTransition transition =
+        rule.getRuleClassObject()
+            .getTransitionFactory()
+            .create(RuleTransitionData.create(rule, null, ""));
+    Label flag = Label.parseCanonicalUnchecked("//test:flag");
+    var details =
+        StarlarkBuildSettingsDetailsValue.create(
+            ImmutableMap.of(flag, "default"),
+            ImmutableMap.of(flag, Type.STRING),
+            ImmutableSet.of(),
+            alias ? ImmutableMap.of(Label.parseCanonicalUnchecked(setting), flag) : ImmutableMap.of());
+    BuildOptions original =
+        BuildOptions.of(ImmutableList.of(CoreOptions.class, DummyTestOptions.class), "--foo=before");
+    var cache = new StarlarkTransitionCache();
+
+    BuildOptions result =
+        getOnlyElement(cache.computeIfAbsent(original, transition, details, reporter).values());
+
+    assertThat(result.getStarlarkOptions()).isEmpty();
+    assertThat(result.get(DummyTestOptions.class).foo).isEqualTo(nativeValue);
+    if (nativeValue.equals("before")) {
+      assertThat(result).isSameInstanceAs(original);
+    } else {
+      assertThat(result).isNotSameInstanceAs(original);
+      assertThat(original.get(DummyTestOptions.class).foo).isEqualTo("before");
+    }
   }
 
   @Test
