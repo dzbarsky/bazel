@@ -18,6 +18,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.google.devtools.build.lib.exec.ExecutionOptions;
+import com.google.devtools.build.lib.runtime.commands.BuildCommand;
+import com.google.devtools.build.lib.runtime.commands.CqueryCommand;
+import com.google.devtools.build.lib.runtime.commands.InfoCommand;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.DigestUtils;
 import com.google.devtools.build.lib.vfs.FileSystem;
@@ -27,6 +30,7 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.devtools.common.options.OptionsParser;
 import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.After;
 import org.junit.Test;
@@ -58,17 +62,15 @@ public final class CacheFileDigestsModuleTest {
     OptionsParser buildOptions =
         OptionsParser.builder().optionsClasses(ExecutionOptions.class).build();
     buildOptions.parse("--cache_computed_file_digests=100");
+    OptionsParser infoOptions =
+        OptionsParser.builder().optionsClasses(ExecutionOptions.class).build();
     CommandEnvironment env = mock(CommandEnvironment.class);
     CacheFileDigestsModule module = new CacheFileDigestsModule();
 
-    // An intervening non-build command must not discard the existing cache.
-    for (OptionsParser options :
-        new OptionsParser[] {
-          buildOptions,
-          OptionsParser.builder().optionsClasses(CommonCommandOptions.class).build(),
-          buildOptions
-        }) {
-      when(env.getOptions()).thenReturn(options);
+    // Info inherits execution options but must not resize a previous build's cache.
+    for (var command : List.of(CqueryCommand.class, InfoCommand.class, BuildCommand.class)) {
+      when(env.getCommand()).thenReturn(command.getAnnotation(Command.class));
+      when(env.getOptions()).thenReturn(command == InfoCommand.class ? infoOptions : buildOptions);
       module.beforeCommand(env);
       byte[] digest = DigestUtils.manuallyComputeDigest(file, null);
       assertThat(DigestUtils.manuallyComputeDigest(file, null)).isEqualTo(digest);
@@ -85,6 +87,7 @@ public final class CacheFileDigestsModuleTest {
     OptionsParser options = OptionsParser.builder().optionsClasses(ExecutionOptions.class).build();
     options.parse("--cache_computed_file_digests=0");
     CommandEnvironment env = mock(CommandEnvironment.class);
+    when(env.getCommand()).thenReturn(BuildCommand.class.getAnnotation(Command.class));
     when(env.getOptions()).thenReturn(options);
 
     CacheFileDigestsModule module = new CacheFileDigestsModule();
