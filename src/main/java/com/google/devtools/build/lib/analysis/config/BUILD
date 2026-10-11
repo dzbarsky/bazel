@@ -269,6 +269,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/skyframe:bzl_load_failed_exception",
         "//src/main/java/com/google/devtools/build/lib/skyframe:bzl_load_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:starlark_builtins_value",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
         "//third_party:auto_value",
         "//third_party:guava",
         "//third_party:jsr305",
