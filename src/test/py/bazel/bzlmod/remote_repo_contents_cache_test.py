@@ -164,13 +164,7 @@ class RemoteRepoContentsCacheTest(
             '  return rctx.repo_metadata(reproducible=True)',
             'source = repository_rule(_source)',
             'def _copy(rctx):',
-            '  directory = rctx.path(rctx.attr.data).dirname',
-            (
-                '  result = rctx.execute(["cp", "-Rp", str(directory) + "/.",'
-                ' "."])'
-            ),
-            '  if result.return_code:',
-            '    fail(result.stderr)',
+            '  rctx.copy(rctx.path(rctx.attr.data).dirname, ".")',
             '  return rctx.repo_metadata()',
             'copy = repository_rule(_copy, attrs={"data": attr.label()})',
         ],
