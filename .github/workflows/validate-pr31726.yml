@@ -33,7 +33,7 @@ jobs:
             kind: lockfile
             os: windows-2022
             source: 6730666efb69e4ca03a9ef370938b15f68e5d341
-    runs-on: ${ matrix.os }
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     env:
       SOURCE_REF: ${{ matrix.source }}
