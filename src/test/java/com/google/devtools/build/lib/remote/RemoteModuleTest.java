@@ -784,7 +784,7 @@ public final class RemoteModuleTest {
   }
 
   @Test
-  public void nonExecutingCommand_keepsOutputCheckerOfLastExecutingCommand() throws Exception {
+  public void nonExecutingCommand_keepsOnlyLastExecutingOutputChecker() throws Exception {
     Server cacheServer = createFakeServer(CACHE_SERVER_NAME, new CapabilitiesImpl(CACHE_ONLY_CAPS));
     cacheServer.start();
 
@@ -810,9 +810,15 @@ public final class RemoteModuleTest {
           parseRemoteOptions(
               "--remote_cache=" + CACHE_SERVER_NAME, "--remote_download_outputs=minimal");
       CommandEnvironment nextBuildEnv = beforeCommand(workspace, BuildCommand.class);
-      assertThat(remoteModule.getRemoteOutputChecker().getLastRemoteOutputChecker())
-          .isSameInstanceAs(buildChecker);
+      RemoteOutputChecker nextBuildChecker = remoteModule.getRemoteOutputChecker();
+      assertThat(nextBuildChecker.getLastRemoteOutputChecker()).isSameInstanceAs(buildChecker);
       afterCommand(nextBuildEnv);
+
+      CommandEnvironment thirdBuildEnv = beforeCommand(workspace, BuildCommand.class);
+      assertThat(remoteModule.getRemoteOutputChecker().getLastRemoteOutputChecker())
+          .isSameInstanceAs(nextBuildChecker);
+      assertThat(nextBuildChecker.getLastRemoteOutputChecker()).isNull();
+      afterCommand(thirdBuildEnv);
     } finally {
       cacheServer.shutdownNow();
       cacheServer.awaitTermination();
