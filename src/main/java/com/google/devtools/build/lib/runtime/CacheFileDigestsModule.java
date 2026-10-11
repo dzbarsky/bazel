@@ -51,7 +51,7 @@ public class CacheFileDigestsModule extends BlazeModule {
   @Override
   public void beforeCommand(CommandEnvironment env) {
     ExecutionOptions options = env.getOptions().getOptions(ExecutionOptions.class);
-    if (options == null) {
+    if (options == null || !env.getCommand().buildPhase().analyzes()) {
       return;
     }
     // Repository input checks run during loading, before the execution tool is initialized.
