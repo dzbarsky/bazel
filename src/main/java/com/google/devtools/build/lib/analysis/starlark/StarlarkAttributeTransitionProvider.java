@@ -56,7 +56,8 @@ public class StarlarkAttributeTransitionProvider
   public static final String ERROR_MESSAGE_FOR_NO_ATTR =
       "No attribute '%s' in attr. Make sure you declared a rule attribute with this name.";
 
-  private final StarlarkDefinedConfigTransition starlarkDefinedConfigTransition;
+  // AutoCodec for StarlarkExecTransitionProvider must find this field in the interface jar.
+  protected final StarlarkDefinedConfigTransition starlarkDefinedConfigTransition;
 
   // Weak identity keys release mappers when analysis no longer uses them.
   private final transient Cache<ConfiguredAttributeMapper, FunctionSplitTransition>
