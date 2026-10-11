@@ -62,7 +62,7 @@ public class RemoteOutputChecker implements OutputChecker {
 
   private final CommandMode commandMode;
   private final RemoteOutputsMode outputsMode;
-  @Nullable private final RemoteOutputChecker lastRemoteOutputChecker;
+  @Nullable private RemoteOutputChecker lastRemoteOutputChecker;
 
   @Nullable private Clock clock;
 
@@ -101,6 +101,11 @@ public class RemoteOutputChecker implements OutputChecker {
   @Nullable
   RemoteOutputChecker getLastRemoteOutputChecker() {
     return lastRemoteOutputChecker;
+  }
+
+  void clearPreviousCommand() {
+    // Retain only this command's policy for the next command.
+    lastRemoteOutputChecker = null;
   }
 
   /** Sets this checker to check the TTL of remote metadata when deciding whether to trust it. */
