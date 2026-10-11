@@ -1,0 +1,134 @@
+name: Validate PR31726 watched inputs and Windows streaming
+
+on:
+  push:
+    branches:
+      - codex/bazel-pr106-111-validation
+    paths:
+      - '.github/workflows/validate-pr31726.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: PR ${{ matrix.pr }} (${{ matrix.os }} ${{ matrix.kind }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pr: 31726
+            kind: rules
+            os: ubuntu-24.04
+            source: 6730666efb69e4ca03a9ef370938b15f68e5d341
+          - pr: 31726
+            kind: lockfile
+            os: ubuntu-24.04
+            source: 6730666efb69e4ca03a9ef370938b15f68e5d341
+          - pr: 31726
+            kind: ui
+            os: windows-2022
+            source: 6730666efb69e4ca03a9ef370938b15f68e5d341
+          - pr: 31726
+            kind: lockfile
+            os: windows-2022
+            source: 6730666efb69e4ca03a9ef370938b15f68e5d341
+    runs-on: ${ matrix.os }
+    timeout-minutes: 180
+    env:
+      SOURCE_REF: ${{ matrix.source }}
+      VALIDATION_KIND: ${{ matrix.kind }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - name: Check out the exact source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          path: source
+          persist-credentials: false
+
+      - name: Install build tools and record source
+        id: setup
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_REF}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "${SOURCE_REF}" ]]
+          test "$(id -u)" -ne 0
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            platform=windows-amd64.exe
+            printf 'BAZEL_SH=C:/Program Files/Git/bin/bash.exe\n' >> "${GITHUB_ENV}"
+            printf 'MSYS_NO_PATHCONV=1\nMSYS2_ARG_CONV_EXCL=*\n' >> "${GITHUB_ENV}"
+            dest=bazelisk.exe
+          else
+            platform=linux-amd64
+            dest=bazelisk
+            df -h . /tmp
+            free -h
+          fi
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 120 \
+            --output "${RUNNER_TEMP}/${dest}" \
+            "https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-${platform}"
+          chmod +x "${RUNNER_TEMP}/${dest}"
+          printf 'VALIDATION_BAZEL=%s/%s\n' "${RUNNER_TEMP}" "${dest}" >> "${GITHUB_ENV}"
+          mkdir -p "${RUNNER_TEMP}/validation"
+          git log -1 --format=fuller > "${RUNNER_TEMP}/validation/source.txt"
+          printf 'Source: `%s`\n\nTest selection: `%s`\n' \
+            "${SOURCE_REF}" "${VALIDATION_KIND}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Run targeted tests without cached results
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${BUILDBUDDY_API_KEY}"
+          case "${VALIDATION_KIND}" in
+            rules) targets=(//src/test/java/com/google/devtools/build/lib/rules:rules_tests) ;;
+            lockfile) targets=(//src/test/py/bazel:bazel_lockfile_test) ;;
+            ui) targets=(//src/test/shell/integration:ui_test) ;;
+            *) exit 1 ;;
+          esac
+          printf '%s\n' "${targets[@]}" > "${RUNNER_TEMP}/validation/targets.txt"
+          "${VALIDATION_BAZEL}" \
+            --batch --nohome_rc --nosystem_rc --host_jvm_args=-Xmx4g \
+            test \
+            --jobs=2 --local_test_jobs=1 \
+            --local_resources=cpu=2 --local_resources=memory=8192 \
+            --worker_max_instances=1 \
+            --remote_cache=grpcs://remote.buildbuddy.io --remote_upload_local_results --remote_download_toplevel --remote_timeout=600 \
+            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
+            --nocache_test_results --test_timeout=1800 --keep_going \
+            --test_output=errors --test_summary=detailed --verbose_failures \
+            --color=no --curses=no \
+            "${targets[@]}"
+
+      - name: Collect test logs
+        if: always() && steps.setup.outcome == 'success'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import tarfile
+          results = Path(os.environ["RUNNER_TEMP"]) / "validation"
+          logs = Path("bazel-testlogs")
+          if logs.is_dir():
+              with tarfile.open(results / "test-logs.tar.gz", "w:gz") as archive:
+                  for root, _, files in os.walk(logs, followlinks=True):
+                      for name in files:
+                          if name in ("test.log", "test.xml"):
+                              path = Path(root) / name
+                              archive.add(path, arcname=str(path.relative_to(logs)))
+          PY
+          df -h .
+
+      - name: Upload source record and test logs
+        if: always() && steps.setup.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr31726-${{ matrix.os }}-${{ matrix.kind }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/validation
+          if-no-files-found: error
+          retention-days: 14
