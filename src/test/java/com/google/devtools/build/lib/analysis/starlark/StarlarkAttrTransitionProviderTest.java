@@ -52,7 +52,6 @@ import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.packages.util.BazelMockAndroidSupport;
 import com.google.devtools.build.lib.rules.cpp.CppOptions;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
-import com.google.devtools.build.lib.skyframe.serialization.DynamicCodec;
 import com.google.devtools.build.lib.skyframe.serialization.testutils.SerializationTester;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
@@ -368,7 +367,6 @@ public final class StarlarkAttrTransitionProviderTest extends BuildViewTestCase 
     StarlarkDefinedConfigTransition definition =
         provider.getStarlarkDefinedConfigTransitionForTesting();
     new SerializationTester(provider)
-        .addCodec(new DynamicCodec(StarlarkAttributeTransitionProvider.class))
         .addDependency(StarlarkDefinedConfigTransition.class, definition)
         .makeMemoizing()
         .setVerificationFunction(
@@ -382,6 +380,32 @@ public final class StarlarkAttrTransitionProviderTest extends BuildViewTestCase 
               assertThat(createTransition(restored, mapper)).isSameInstanceAs(transition);
               assertThat(transitionedFoo(transition, target.getConfiguration().getOptions()))
                   .isEqualTo("ordinary:input");
+            })
+        .runTests();
+  }
+
+  @Test
+  public void transitionInstances_deserializedExecProviderKeepsPolicyAndCaches() throws Exception {
+    writeTransitionCacheFixture();
+    ConfiguredTargetAndData target = getConfiguredTargetAndData("//transition_cache:test");
+    ConfiguredAttributeMapper mapper = target.getAttributeMapperForTesting();
+    StarlarkAttributeTransitionProvider provider =
+        getSkyframeExecutor()
+            .getStarlarkExecTransition(target.getConfiguration().getOptions(), reporter);
+    StarlarkDefinedConfigTransition definition =
+        provider.getStarlarkDefinedConfigTransitionForTesting();
+    new SerializationTester(provider)
+        .addDependency(StarlarkDefinedConfigTransition.class, definition)
+        .makeMemoizing()
+        .setVerificationFunction(
+            (StarlarkAttributeTransitionProvider original,
+                StarlarkAttributeTransitionProvider restored) -> {
+              assertThat(restored.getClass()).isEqualTo(original.getClass());
+              assertThat(restored.allowImmutableFlagChanges()).isTrue();
+              assertThat(restored.isExecTransitionProvider()).isTrue();
+              ConfigurationTransition transition = createTransition(restored, mapper);
+              assertThat(createTransition(restored, mapper)).isSameInstanceAs(transition);
+              assertThat(((StarlarkTransition) transition).isExecTransition()).isTrue();
             })
         .runTests();
   }
