@@ -52,7 +52,8 @@ import net.starlark.java.eval.Printer;
 @AutoCodec
 public class StarlarkAttributeTransitionProvider
     implements TransitionFactory<AttributeTransitionData>, SplitTransitionProviderApi {
-  private final StarlarkDefinedConfigTransition starlarkDefinedConfigTransition;
+  // AutoCodec for StarlarkExecTransitionProvider must find this field in the interface jar.
+  protected final StarlarkDefinedConfigTransition starlarkDefinedConfigTransition;
 
   // Weak identity keys release mappers when analysis no longer uses them.
   private final transient Cache<ConfiguredAttributeMapper, FunctionSplitTransition>
