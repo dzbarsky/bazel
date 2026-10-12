@@ -61,7 +61,7 @@ public final class FactsAdapterTest {
       assertThat(nested.keySet()).containsExactly("a", "c").inOrder();
       assertThat(nested.isImmutable()).isTrue();
       var list = (StarlarkList<?>) facts.value().get("z");
-      assertThat(list)
+      assertThat((Iterable<?>) list)
           .containsExactly(
               Starlark.NONE,
               true,
