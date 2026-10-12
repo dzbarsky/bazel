@@ -137,6 +137,16 @@ public class AttributeValuesAdapter extends TypeAdapter<AttributeValues> {
           members.put(in.nextName(), deserializeObject(in));
         }
         in.endObject();
+        boolean namesUnchanged = true;
+        for (String name : members.keySet()) {
+          if (deserializeStringToObject(name) != name) {
+            namesUnchanged = false;
+            break;
+          }
+        }
+        if (namesUnchanged) {
+          yield Dict.immutableCopyOf(members);
+        }
         Map<Object, Object> dict = new LinkedHashMap<>();
         members.forEach((name, value) -> dict.put(deserializeStringToObject(name), value));
         yield Dict.immutableCopyOf(dict);
