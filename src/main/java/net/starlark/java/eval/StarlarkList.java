@@ -259,7 +259,8 @@ public abstract class StarlarkList<E> extends AbstractCollection<E>
     for (int i = 0; i < size; i++) {
       result = 31 * result + elems[i].hashCode();
     }
-    return 6047 + 4673 * result;
+    int h = 6047 + 4673 * result;
+    return h != 0 ? h : 1;
   }
 
   @Override
