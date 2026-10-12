@@ -18,7 +18,9 @@ jobs:
       matrix:
         include:
           - kind: bzlmod
-            source: 7451a32b6e553f21555b7ba9b34cc52bc1fa1c03
+            source: 79e9fcaa88b1a51dea5960236b0109d79b6faf02
+          - kind: lockfile
+            source: 79e9fcaa88b1a51dea5960236b0109d79b6faf02
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -73,7 +75,7 @@ jobs:
           "${RUNNER_TEMP}/bazelisk" \
             --batch --nohome_rc --nosystem_rc --host_jvm_args=-Xmx4g \
             test \
-            --jobs=2 --local_test_jobs=1 \
+            --jobs=2 --local_test_jobs=2 \
             --local_resources=cpu=2 --local_resources=memory=8192 \
             --worker_max_instances=1 \
             --remote_cache=grpcs://remote.buildbuddy.io --remote_upload_local_results --remote_download_toplevel --remote_timeout=600 \
