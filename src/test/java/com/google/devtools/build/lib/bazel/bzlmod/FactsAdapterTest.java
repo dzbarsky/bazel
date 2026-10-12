@@ -147,6 +147,15 @@ public final class FactsAdapterTest {
   }
 
   @Test
+  public void exhaustedReaderIsNotAnEmptyInput() throws IOException {
+    assertThrows(IOException.class, () -> read(""));
+    try (var reader = new JsonReader(new StringReader("{}"))) {
+      new FactsAdapter().read(reader);
+      assertThrows(IllegalStateException.class, () -> new FactsAdapter().read(reader));
+    }
+  }
+
+  @Test
   public void readRespectsExplicitStrictnessAndRestoresDefaultStrictness() throws Exception {
     try (var reader = new JsonReader(new StringReader("{unquoted: 'value'}"))) {
       assertThat(reader.getStrictness()).isEqualTo(Strictness.LEGACY_STRICT);

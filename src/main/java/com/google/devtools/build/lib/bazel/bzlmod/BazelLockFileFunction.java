@@ -132,8 +132,8 @@ public class BazelLockFileFunction implements SkyFunction {
         FileSystemUtils.asByteSource(lockfilePath.asPath())
             .asCharSource(UTF_8)
             .openBufferedStream()) {
-      reader.mark(CURRENT_VERSION_HEADER.length() + 1);
       char[] prefix = new char[CURRENT_VERSION_HEADER.length()];
+      reader.mark(prefix.length);
       boolean hasCurrentVersion =
           reader.read(prefix) == prefix.length && CURRENT_VERSION_HEADER.equals(new String(prefix));
       reader.reset();

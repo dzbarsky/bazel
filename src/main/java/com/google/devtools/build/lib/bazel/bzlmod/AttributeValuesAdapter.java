@@ -28,7 +28,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
-import com.google.gson.JsonSyntaxException;
 import com.google.gson.Strictness;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.TypeAdapter;
@@ -76,6 +75,11 @@ public class AttributeValuesAdapter extends TypeAdapter<AttributeValues> {
         attributes.put(in.nextName().intern(), deserializeObject(in));
       }
       in.endObject();
+      for (Object value : attributes.values()) {
+        if (value instanceof RuntimeException error) {
+          throw error;
+        }
+      }
       return AttributeValues.create(Dict.immutableCopyOf(attributes));
     } finally {
       in.setStrictness(strictness);
@@ -118,6 +122,8 @@ public class AttributeValuesAdapter extends TypeAdapter<AttributeValues> {
     }
   }
 
+  // Return conversion errors until the enclosing raw JSON object has discarded duplicate names.
+  // JsonReader errors must still throw immediately, even in a value that would be discarded.
   private Object deserializeObject(JsonReader in) throws IOException {
     return switch (in.peek()) {
       case NULL -> {
@@ -126,7 +132,14 @@ public class AttributeValuesAdapter extends TypeAdapter<AttributeValues> {
       }
       case BOOLEAN -> in.nextBoolean();
       // Like JsonPrimitive.getAsInt(), preserve the low 32 bits and truncate fractional numbers.
-      case NUMBER -> StarlarkInt.of(ToNumberPolicy.LAZILY_PARSED_NUMBER.readNumber(in).intValue());
+      case NUMBER -> {
+        Number number = ToNumberPolicy.LAZILY_PARSED_NUMBER.readNumber(in);
+        try {
+          yield StarlarkInt.of(number.intValue());
+        } catch (NumberFormatException e) {
+          yield e;
+        }
+      }
       case STRING -> deserializeStringToObject(in.nextString());
       case BEGIN_OBJECT -> {
         // Collapse duplicate JSON names before decoding names, as JsonObject did. Distinct JSON
@@ -138,11 +151,15 @@ public class AttributeValuesAdapter extends TypeAdapter<AttributeValues> {
         }
         in.endObject();
         boolean namesUnchanged = true;
-        for (String name : members.keySet()) {
-          if (deserializeStringToObject(name) != name) {
-            namesUnchanged = false;
-            break;
+        for (var entry : members.entrySet()) {
+          Object key = deserializeStringToObject(entry.getKey());
+          if (key instanceof RuntimeException) {
+            yield key;
           }
+          if (entry.getValue() instanceof RuntimeException) {
+            yield entry.getValue();
+          }
+          namesUnchanged &= key == entry.getKey();
         }
         if (namesUnchanged) {
           yield Dict.immutableCopyOf(members);
@@ -158,9 +175,14 @@ public class AttributeValuesAdapter extends TypeAdapter<AttributeValues> {
           list.add(deserializeObject(in));
         }
         in.endArray();
+        for (Object value : list) {
+          if (value instanceof RuntimeException) {
+            yield value;
+          }
+        }
         yield StarlarkList.immutableCopyOf(list);
       }
-      default -> throw new JsonSyntaxException("Unsupported JSON token at " + in.getPath());
+      default -> throw new IllegalStateException("Unexpected token: " + in.peek());
     };
   }
 
@@ -200,16 +222,20 @@ public class AttributeValuesAdapter extends TypeAdapter<AttributeValues> {
    * @return Object of type String of Label
    */
   private Object deserializeStringToObject(String unicodeValue) {
-    String value = unicodeToInternal(unicodeValue);
-    // A string represents a label if and only if it starts with "@@".
-    if (value.startsWith("@@")) {
-      return Label.parseCanonicalUnchecked(value);
+    try {
+      String value = unicodeToInternal(unicodeValue);
+      // A string represents a label if and only if it starts with "@@".
+      if (value.startsWith("@@")) {
+        return Label.parseCanonicalUnchecked(value);
+      }
+      // Strings that start and end with the escape sequence always require one layer to be stripped.
+      if (value.startsWith(STRING_ESCAPE_SEQUENCE) && value.endsWith(STRING_ESCAPE_SEQUENCE)) {
+        return value.substring(
+            STRING_ESCAPE_SEQUENCE.length(), value.length() - STRING_ESCAPE_SEQUENCE.length());
+      }
+      return value;
+    } catch (IllegalArgumentException | IndexOutOfBoundsException e) {
+      return e;
     }
-    // Strings that start and end with the escape sequence always require one layer to be stripped.
-    if (value.startsWith(STRING_ESCAPE_SEQUENCE) && value.endsWith(STRING_ESCAPE_SEQUENCE)) {
-      return value.substring(
-          STRING_ESCAPE_SEQUENCE.length(), value.length() - STRING_ESCAPE_SEQUENCE.length());
-    }
-    return value;
   }
 }

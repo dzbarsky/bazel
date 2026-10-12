@@ -16,13 +16,12 @@ package com.google.devtools.build.lib.cmdline;
 
 import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static com.google.common.base.Throwables.throwIfUnchecked;
-
-import com.google.common.base.CharMatcher;
 import static com.google.devtools.build.lib.skyframe.serialization.strings.UnsafeStringCodec.stringCodec;
 
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.CharMatcher;
 import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.skyframe.serialization.LeafDeserializationContext;
 import com.google.devtools.build.lib.skyframe.serialization.LeafObjectCodec;

@@ -145,8 +145,7 @@ public class FactsAdapter extends TypeAdapter<Facts> {
         }
         yield dict;
       }
-      case END_DOCUMENT -> Starlark.NONE;
-      default -> throw new JsonSyntaxException("Expected a facts JSON value at " + in.getPath());
+      default -> throw new IllegalStateException("Unexpected token: " + in.peek());
     };
   }
 

@@ -50,8 +50,10 @@ public final class BazelLockFileFunctionTest extends FoundationTestCase {
   @Test
   public void readsBazelWrittenLockfile() throws Exception {
     BazelLockFileValue expected =
-        valueWithRegistryFile("https://registry.example/modules/a/1.0/MODULE.bazel");
-    scratch.dir(".");
+        valueWithRegistryFile(
+            "https://registry.example/modules/"
+                + "x".repeat(8192)
+                + "/café/日本語/😀/MODULE.bazel");
     BazelLockFileModule.updateLockfile(rootDirectory, expected);
     RootedPath path = RootedPath.toRootedPath(root, LabelConstants.MODULE_LOCKFILE_NAME);
 
@@ -108,7 +110,7 @@ public final class BazelLockFileFunctionTest extends FoundationTestCase {
   }
 
   @Test
-  public void unsupportedVersionSkipsMalformedBodyInUpdateMode() throws Exception {
+  public void unsupportedVersionSkipsMalformedBodyOrReportsVersionInErrorMode() throws Exception {
     RootedPath path =
         writeLockfile(
             "{\"lockFileVersion\": "
@@ -117,16 +119,6 @@ public final class BazelLockFileFunctionTest extends FoundationTestCase {
 
     assertThat(BazelLockFileFunction.getLockfileValue(path, LockfileMode.UPDATE))
         .isSameInstanceAs(BazelLockFileValue.EMPTY_LOCKFILE);
-  }
-
-  @Test
-  public void unsupportedVersionReportsVersionInErrorModeEvenWithMalformedBody() throws Exception {
-    RootedPath path =
-        writeLockfile(
-            "{\"lockFileVersion\": "
-                + (BazelLockFileValue.LOCK_FILE_VERSION - 1)
-                + ", broken_json");
-
     BazelLockfileFunctionException exception =
         assertThrows(
             BazelLockfileFunctionException.class,
@@ -146,19 +138,6 @@ public final class BazelLockFileFunctionTest extends FoundationTestCase {
     assertThrows(
         JsonSyntaxException.class,
         () -> BazelLockFileFunction.getLockfileValue(path, LockfileMode.UPDATE));
-  }
-
-  @Test
-  public void decodesUtf8RegistryNameAcrossReaderBuffers() throws Exception {
-    String url =
-        "https://registry.example/modules/"
-            + "x".repeat(8192)
-            + "/café/日本語/😀/MODULE.bazel";
-    BazelLockFileValue expected = valueWithRegistryFile(url);
-    RootedPath path = writeLockfile(GsonTypeAdapterUtil.LOCKFILE_GSON.toJson(expected));
-
-    assertThat(BazelLockFileFunction.getLockfileValue(path, LockfileMode.UPDATE))
-        .isEqualTo(expected);
   }
 
   @Test

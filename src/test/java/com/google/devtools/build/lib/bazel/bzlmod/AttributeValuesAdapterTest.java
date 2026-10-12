@@ -18,9 +18,11 @@ package com.google.devtools.build.lib.bazel.bzlmod;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.devtools.build.lib.bazel.bzlmod.AttributeValuesAdapter.STRING_ESCAPE_SEQUENCE;
 import static com.google.devtools.build.lib.util.StringEncoding.unicodeToInternal;
+import static org.junit.Assert.assertThrows;
 
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.testutil.FoundationTestCase;
+import com.google.gson.JsonSyntaxException;
 import com.google.gson.Strictness;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonWriter;
@@ -170,6 +172,54 @@ public class AttributeValuesAdapterTest extends FoundationTestCase {
                 StarlarkList.immutableOf(Starlark.NONE, true),
             "@@//foo:bar", unicodeToInternal("café/🙂"))
         .inOrder();
+  }
+
+  @Test
+  public void testReadDiscardsConversionErrorsInOverwrittenJsonValues() throws IOException {
+    AttributeValues value =
+        new AttributeValuesAdapter()
+            .fromJson(
+                """
+                {
+                  "label": "@@//foo:..", "label": 1,
+                  "number": 1e9999999999, "number": 2,
+                  "list": ["@@//foo:.."], "list": 3,
+                  "dict": {"'": 0}, "dict": 4,
+                  "nested": {"bad": "@@//foo:..", "bad": 5}
+                }
+                """);
+
+    assertThat((Map<?, ?>) value.attributes())
+        .containsExactly(
+            "label", StarlarkInt.of(1),
+            "number", StarlarkInt.of(2),
+            "list", StarlarkInt.of(3),
+            "dict", StarlarkInt.of(4),
+            "nested", Dict.immutableCopyOf(Map.of("bad", StarlarkInt.of(5))))
+        .inOrder();
+  }
+
+  @Test
+  public void testReadDoesNotDiscardErrorsWhenOnlyDecodedKeysCollide() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new AttributeValuesAdapter().fromJson(
+            "{\"a\":{\"foo\":\"@@//foo:..\",\"'foo'\":1}}"));
+    assertThrows(
+        IndexOutOfBoundsException.class,
+        () -> new AttributeValuesAdapter().fromJson("{\"a\":{\"'\":0}}"));
+    assertThrows(
+        NumberFormatException.class,
+        () -> new AttributeValuesAdapter().fromJson("{\"a\":1e9999999999}"));
+  }
+
+  @Test
+  public void testReadReportsInvalidJsonBeforeConversionErrors() {
+    assertThrows(
+        JsonSyntaxException.class,
+        () ->
+            GsonTypeAdapterUtil.LOCKFILE_GSON.fromJson(
+                "{\"a\":\"@@//foo:..\", ]", AttributeValues.class));
   }
 
   @Test
