@@ -42,7 +42,6 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.StringReader;
-import java.nio.CharBuffer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
@@ -59,7 +58,9 @@ public class BazelLockFileFunction implements SkyFunction {
   private static final Pattern LOCKFILE_VERSION_PATTERN =
       Pattern.compile("\"lockFileVersion\":\\s*(\\d+)");
 
-  static final int VERSION_HEADER_LIMIT = 8192;
+  // BazelLockFileValue_GsonTypeAdapter writes this first for both workspace and hidden lockfiles.
+  static final String CURRENT_VERSION_HEADER =
+      "{\n  \"lockFileVersion\": " + BazelLockFileValue.LOCK_FILE_VERSION + ",";
 
   private static final Pattern POSSIBLE_MERGE_CONFLICT_PATTERN =
       Pattern.compile("<<<<<<<|=======|" + Pattern.quote("|||||||") + "|>>>>>>>");
@@ -131,53 +132,39 @@ public class BazelLockFileFunction implements SkyFunction {
         FileSystemUtils.asByteSource(lockfilePath.asPath())
             .asCharSource(UTF_8)
             .openBufferedStream()) {
-      // Bazel writes lockFileVersion near the start. Preserve the existing regex's behavior for
-      // reordered and obsolete files, which may not even be parseable with the current schema.
-      reader.mark(VERSION_HEADER_LIMIT + 1);
-      char[] prefix = new char[VERSION_HEADER_LIMIT];
-      int n = Math.max(0, reader.read(prefix));
+      reader.mark(CURRENT_VERSION_HEADER.length() + 1);
+      char[] prefix = new char[CURRENT_VERSION_HEADER.length()];
+      boolean hasCurrentVersion =
+          reader.read(prefix) == prefix.length && CURRENT_VERSION_HEADER.equals(new String(prefix));
       reader.reset();
       Reader jsonReader = reader;
-      Matcher matcher = LOCKFILE_VERSION_PATTERN.matcher(CharBuffer.wrap(prefix, 0, n));
-      boolean found = matcher.find();
-      if (!found || matcher.end() == n) {
-        // A version ending at the boundary may have additional digits. Scan all of the file when
-        // the prefix does not determine the same first match as the full-file regex.
+      if (!hasCurrentVersion) {
+        // Preserve behavior for edited or obsolete files. They may be reordered or may not even be
+        // parseable with the current schema.
         String json = CharStreams.toString(reader);
-        matcher = LOCKFILE_VERSION_PATTERN.matcher(json);
-        found = matcher.find();
+        Matcher matcher = LOCKFILE_VERSION_PATTERN.matcher(json);
+        hasCurrentVersion =
+            matcher.find()
+                && Integer.parseInt(matcher.group(1)) == BazelLockFileValue.LOCK_FILE_VERSION;
         jsonReader = new StringReader(json);
       }
-      int version = found ? Integer.parseInt(matcher.group(1)) : -1;
-      if (version == BazelLockFileValue.LOCK_FILE_VERSION) {
+      if (hasCurrentVersion) {
         BazelLockFileValue lockFileValue =
             GsonTypeAdapterUtil.LOCKFILE_GSON.fromJson(jsonReader, BazelLockFileValue.class);
-        if (!isValidLockfile(lockFileValue)) {
-          if (lockfileMode == LockfileMode.ERROR) {
-            throw new BazelLockfileFunctionException(
-                ExternalDepsException.withMessage(
-                    Code.BAD_LOCKFILE,
-                    "The version of MODULE.bazel.lock is not supported by this version of Bazel."
-                        + " Please run `bazel mod deps --lockfile_mode=update` to update your"
-                        + " lockfile."),
-                Transience.PERSISTENT);
-          }
-          return BazelLockFileValue.EMPTY_LOCKFILE;
+        if (isValidLockfile(lockFileValue)) {
+          return lockFileValue;
         }
-        return lockFileValue;
-      } else {
-        // This is an old version, its information can't be used.
-        if (lockfileMode == LockfileMode.ERROR) {
-          throw new BazelLockfileFunctionException(
-              ExternalDepsException.withMessage(
-                  Code.BAD_LOCKFILE,
-                  "The version of MODULE.bazel.lock is not supported by this version of Bazel."
-                      + " Please run `bazel mod deps --lockfile_mode=update` to update your"
-                      + " lockfile."),
-              Transience.PERSISTENT);
-        }
-        return BazelLockFileValue.EMPTY_LOCKFILE;
       }
+      if (lockfileMode == LockfileMode.ERROR) {
+        throw new BazelLockfileFunctionException(
+            ExternalDepsException.withMessage(
+                Code.BAD_LOCKFILE,
+                "The version of MODULE.bazel.lock is not supported by this version of Bazel."
+                    + " Please run `bazel mod deps --lockfile_mode=update` to update your"
+                    + " lockfile."),
+            Transience.PERSISTENT);
+      }
+      return BazelLockFileValue.EMPTY_LOCKFILE;
     } catch (FileNotFoundException e) {
       return BazelLockFileValue.EMPTY_LOCKFILE;
     } catch (JsonIOException e) {

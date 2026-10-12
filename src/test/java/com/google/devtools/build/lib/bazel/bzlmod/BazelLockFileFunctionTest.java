@@ -24,6 +24,7 @@ import com.google.devtools.build.lib.bazel.bzlmod.BazelLockFileFunction.BazelLoc
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.LockfileMode;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.testutil.FoundationTestCase;
+import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.gson.JsonSyntaxException;
 import java.io.IOException;
@@ -50,8 +51,12 @@ public final class BazelLockFileFunctionTest extends FoundationTestCase {
   public void readsBazelWrittenLockfile() throws Exception {
     BazelLockFileValue expected =
         valueWithRegistryFile("https://registry.example/modules/a/1.0/MODULE.bazel");
-    RootedPath path = writeLockfile(GsonTypeAdapterUtil.LOCKFILE_GSON.toJson(expected));
+    scratch.dir(".");
+    BazelLockFileModule.updateLockfile(rootDirectory, expected);
+    RootedPath path = RootedPath.toRootedPath(root, LabelConstants.MODULE_LOCKFILE_NAME);
 
+    assertThat(FileSystemUtils.readContent(path.asPath(), UTF_8))
+        .startsWith(BazelLockFileFunction.CURRENT_VERSION_HEADER);
     assertThat(BazelLockFileFunction.getLockfileValue(path, LockfileMode.UPDATE))
         .isEqualTo(expected);
     assertThat(BazelLockFileFunction.getLockfileValue(path, LockfileMode.ERROR)).isEqualTo(expected);
@@ -65,7 +70,7 @@ public final class BazelLockFileFunctionTest extends FoundationTestCase {
     RootedPath path =
         writeLockfile(
             "{\"unknown\": \""
-                + "x".repeat(BazelLockFileFunction.VERSION_HEADER_LIMIT + 1)
+                + "x".repeat(8193)
                 + "\","
                 + canonicalJson.substring(1));
 
@@ -74,19 +79,11 @@ public final class BazelLockFileFunctionTest extends FoundationTestCase {
   }
 
   @Test
-  public void versionDigitsAfterHeaderLimitAreNotIgnored() throws Exception {
-    String field = "\"lockFileVersion\":";
-    String currentVersion = Integer.toString(BazelLockFileValue.LOCK_FILE_VERSION);
-    // End the header with the current version, followed by another digit just outside the header.
-    String padding =
-        " ".repeat(
-            BazelLockFileFunction.VERSION_HEADER_LIMIT
-                - 1
-                - field.length()
-                - currentVersion.length());
+  public void versionExtendingCurrentNumberIsNotCurrentVersion() throws Exception {
+    String header = BazelLockFileFunction.CURRENT_VERSION_HEADER;
     RootedPath path =
         writeLockfile(
-            "{" + padding + field + currentVersion + "1,\"moduleExtensions\":{}}");
+            header.substring(0, header.length() - 1) + "1,\"moduleExtensions\":{}}");
 
     assertThat(BazelLockFileFunction.getLockfileValue(path, LockfileMode.UPDATE))
         .isSameInstanceAs(BazelLockFileValue.EMPTY_LOCKFILE);
@@ -98,6 +95,16 @@ public final class BazelLockFileFunctionTest extends FoundationTestCase {
         .hasCauseThat()
         .hasMessageThat()
         .contains("The version of MODULE.bazel.lock is not supported");
+  }
+
+  @Test
+  public void compactCurrentLockfileIsAccepted() throws Exception {
+    BazelLockFileValue expected =
+        valueWithRegistryFile("https://registry.example/modules/d/4.0/MODULE.bazel");
+    String canonicalJson = GsonTypeAdapterUtil.LOCKFILE_GSON.toJson(expected);
+    RootedPath path = writeLockfile(canonicalJson.replace("\n", "").replace("  ", ""));
+
+    assertThat(BazelLockFileFunction.getLockfileValue(path, LockfileMode.ERROR)).isEqualTo(expected);
   }
 
   @Test
@@ -145,7 +152,7 @@ public final class BazelLockFileFunctionTest extends FoundationTestCase {
   public void decodesUtf8RegistryNameAcrossReaderBuffers() throws Exception {
     String url =
         "https://registry.example/modules/"
-            + "x".repeat(BazelLockFileFunction.VERSION_HEADER_LIMIT)
+            + "x".repeat(8192)
             + "/café/日本語/😀/MODULE.bazel";
     BazelLockFileValue expected = valueWithRegistryFile(url);
     RootedPath path = writeLockfile(GsonTypeAdapterUtil.LOCKFILE_GSON.toJson(expected));
