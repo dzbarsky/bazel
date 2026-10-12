@@ -706,27 +706,27 @@ public final class Profiler {
    * @param description task description. May be stored until end of build.
    */
   private void logTask(long startTimeNanos, long duration, ProfilerTask type, String description) {
-    var lane = borrowLane();
-    try {
-      checkNotNull(description);
-      checkState(!description.isEmpty(), "No description -> not helpful");
-      if (duration < 0) {
-        // See note in Clock#nanoTime, which is used by Profiler#nanoTimeMaybe.
-        duration = 0;
-      }
+    checkNotNull(description);
+    checkState(!description.isEmpty(), "No description -> not helpful");
+    if (duration < 0) {
+      // See note in Clock#nanoTime, which is used by Profiler#nanoTimeMaybe.
+      duration = 0;
+    }
 
-      StatRecorder statRecorder = tasksHistograms[type.ordinal()];
-      if (collectTaskHistograms && statRecorder != null) {
-        statRecorder.addStat((int) (duration / 1_000_000L), description);
-      }
+    StatRecorder statRecorder = tasksHistograms[type.ordinal()];
+    if (collectTaskHistograms && statRecorder != null) {
+      statRecorder.addStat((int) (duration / 1_000_000L), description);
+    }
 
-      if (isActive() && startTimeNanos >= 0 && isProfiling(type)) {
-        // Store instance fields as local variables so they are not nulled out from under us by
-        // #clear.
-        JsonTraceFileWriter currentWriter = writerRef.get();
-        if (wasTaskSlowEnoughToRecord(type, duration)) {
-          TaskData data = new TaskData(getLaneId(lane), startTimeNanos, type, description);
-          data.durationNanos = duration;
+    if (isActive() && startTimeNanos >= 0 && isProfiling(type)) {
+      // Store instance fields as local variables so they are not nulled out from under us by
+      // #clear.
+      JsonTraceFileWriter currentWriter = writerRef.get();
+      if (wasTaskSlowEnoughToRecord(type, duration)) {
+        var lane = borrowLane();
+        try {
+          TaskData data =
+              new TaskData(getLaneId(lane), startTimeNanos, duration, type, description);
           if (currentWriter != null) {
             currentWriter.enqueue(data);
           }
@@ -736,10 +736,10 @@ public final class Profiler {
           if (aggregator != null) {
             aggregator.add(data);
           }
+        } finally {
+          releaseLane(lane);
         }
       }
-    } finally {
-      releaseLane(lane);
     }
   }
 
@@ -910,12 +910,7 @@ public final class Profiler {
   }
 
   public void completeTask(long startTimeNanos, ProfilerTask type, String description) {
-    var lane = borrowLane();
-    try {
-      completeTask(getLaneId(lane), startTimeNanos, type, description);
-    } finally {
-      releaseLane(lane);
-    }
+    completeTask(/* laneId= */ -1L, startTimeNanos, type, description);
   }
 
   /** Records the end of the task. */
@@ -925,7 +920,16 @@ public final class Profiler {
       long endTimeNanos = clock.nanoTime();
       long duration = endTimeNanos - startTimeNanos;
       if (wasTaskSlowEnoughToRecord(type, duration)) {
-        recordTask(new TaskData(laneId, startTimeNanos, duration, type, description));
+        if (laneId >= 0) {
+          recordTask(new TaskData(laneId, startTimeNanos, duration, type, description));
+        } else {
+          var lane = borrowLane();
+          try {
+            recordTask(new TaskData(getLaneId(lane), startTimeNanos, duration, type, description));
+          } finally {
+            releaseLane(lane);
+          }
+        }
       }
 
       if (type == ProfilerTask.RPC) {
