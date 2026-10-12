@@ -18,11 +18,7 @@ jobs:
       matrix:
         include:
           - kind: bzlmod
-            source: 6846ce476515acc28380550fa8f9d378d5386364
-          - kind: repos
-            source: 6846ce476515acc28380550fa8f9d378d5386364
-          - kind: lockfile
-            source: 6846ce476515acc28380550fa8f9d378d5386364
+            source: 7451a32b6e553f21555b7ba9b34cc52bc1fa1c03
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
