@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.bazel.bzlmod;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.google.common.io.CharStreams;
 import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.LockfileMode;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
@@ -34,9 +35,14 @@ import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
+import com.google.gson.JsonIOException;
 import com.google.gson.JsonSyntaxException;
+import java.io.BufferedReader;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.Reader;
+import java.io.StringReader;
+import java.nio.CharBuffer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
@@ -52,6 +58,8 @@ public class BazelLockFileFunction implements SkyFunction {
 
   private static final Pattern LOCKFILE_VERSION_PATTERN =
       Pattern.compile("\"lockFileVersion\":\\s*(\\d+)");
+
+  static final int VERSION_HEADER_LIMIT = 8192;
 
   private static final Pattern POSSIBLE_MERGE_CONFLICT_PATTERN =
       Pattern.compile("<<<<<<<|=======|" + Pattern.quote("|||||||") + "|>>>>>>>");
@@ -119,13 +127,31 @@ public class BazelLockFileFunction implements SkyFunction {
   public static BazelLockFileValue getLockfileValue(
       RootedPath lockfilePath, LockfileMode lockfileMode)
       throws IOException, BazelLockfileFunctionException {
-    try {
-      String json = FileSystemUtils.readContent(lockfilePath.asPath(), UTF_8);
-      Matcher matcher = LOCKFILE_VERSION_PATTERN.matcher(json);
-      int version = matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
+    try (BufferedReader reader =
+        FileSystemUtils.asByteSource(lockfilePath.asPath())
+            .asCharSource(UTF_8)
+            .openBufferedStream()) {
+      // Bazel writes lockFileVersion near the start. Preserve the existing regex's behavior for
+      // reordered and obsolete files, which may not even be parseable with the current schema.
+      reader.mark(VERSION_HEADER_LIMIT + 1);
+      char[] prefix = new char[VERSION_HEADER_LIMIT];
+      int n = Math.max(0, reader.read(prefix));
+      reader.reset();
+      Reader jsonReader = reader;
+      Matcher matcher = LOCKFILE_VERSION_PATTERN.matcher(CharBuffer.wrap(prefix, 0, n));
+      boolean found = matcher.find();
+      if (!found || matcher.end() == n) {
+        // A version ending at the boundary may have additional digits. Scan all of the file when
+        // the prefix does not determine the same first match as the full-file regex.
+        String json = CharStreams.toString(reader);
+        matcher = LOCKFILE_VERSION_PATTERN.matcher(json);
+        found = matcher.find();
+        jsonReader = new StringReader(json);
+      }
+      int version = found ? Integer.parseInt(matcher.group(1)) : -1;
       if (version == BazelLockFileValue.LOCK_FILE_VERSION) {
         BazelLockFileValue lockFileValue =
-            GsonTypeAdapterUtil.LOCKFILE_GSON.fromJson(json, BazelLockFileValue.class);
+            GsonTypeAdapterUtil.LOCKFILE_GSON.fromJson(jsonReader, BazelLockFileValue.class);
         if (!isValidLockfile(lockFileValue)) {
           if (lockfileMode == LockfileMode.ERROR) {
             throw new BazelLockfileFunctionException(
@@ -154,6 +180,12 @@ public class BazelLockFileFunction implements SkyFunction {
       }
     } catch (FileNotFoundException e) {
       return BazelLockFileValue.EMPTY_LOCKFILE;
+    } catch (JsonIOException e) {
+      // Gson can encounter file I/O during parsing or its full-document check.
+      if (e.getCause() instanceof IOException ioException) {
+        throw ioException;
+      }
+      throw e;
     }
   }
 
