@@ -17,10 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - kind: bzlmod
-            source: 79e9fcaa88b1a51dea5960236b0109d79b6faf02
-          - kind: lockfile
-            source: 79e9fcaa88b1a51dea5960236b0109d79b6faf02
+          - kind: cmdline
+            source: 2af0a17acb5157250b75c6a990532563c61b71b7
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -66,6 +64,7 @@ jobs:
           set -euo pipefail
           test -n "${BUILDBUDDY_API_KEY}"
           case "${VALIDATION_KIND}" in
+            cmdline) targets=(//src/test/java/com/google/devtools/build/lib/cmdline:CmdLineTests) ;;
             bzlmod) targets=(//src/test/java/com/google/devtools/build/lib/bazel/bzlmod:BzlmodTests) ;;
             repos) targets=(//src/test/java/com/google/devtools/build/lib/bazel/repository:RepositoryTests) ;;
             lockfile) targets=(//src/test/py/bazel:bazel_lockfile_test) ;;
