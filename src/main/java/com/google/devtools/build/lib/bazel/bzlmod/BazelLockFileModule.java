@@ -23,6 +23,8 @@ import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.flogger.GoogleLogger;
+import com.google.common.hash.Hashing;
+import com.google.common.hash.HashingOutputStream;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.LockfileMode;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
@@ -69,8 +71,7 @@ public class BazelLockFileModule extends BlazeModule {
       // in the meantime.
       return;
     }
-    LockfileMode lockfileMode =
-        env.getOptions().getOptions(RepositoryOptions.class).lockfileMode;
+    LockfileMode lockfileMode = env.getOptions().getOptions(RepositoryOptions.class).lockfileMode;
     if (!ENABLED_IN_MODES.contains(lockfileMode)) {
       return;
     }
@@ -340,19 +341,33 @@ public class BazelLockFileModule extends BlazeModule {
   static void updateLockfile(Path lockfileRoot, BazelLockFileValue updatedLockfile) {
     RootedPath lockfilePath =
         RootedPath.toRootedPath(Root.fromPath(lockfileRoot), LabelConstants.MODULE_LOCKFILE_NAME);
-    try (var outputStream = lockfilePath.asPath().getOutputStream();
-        var outputStreamWriter = new OutputStreamWriter(outputStream, UTF_8);
-        var writer = new BufferedWriter(outputStreamWriter)) {
-      try {
-        GsonTypeAdapterUtil.LOCKFILE_GSON.toJson(updatedLockfile, writer);
-      } catch (JsonIOException e) {
-        // Gson.toJson(Object, Appendable) documents JsonIOException for writer failures.
-        if (e.getCause() instanceof IOException ioException) {
-          throw ioException;
+    // Snapshot mutable digest arrays before writing, so the memoized value and
+    // hashed serialization describe exactly the same state. Unfrozen attribute
+    // values follow the uncached path.
+    BazelLockFileValue snapshot = BazelLockFileFunction.snapshotLockfileValue(updatedLockfile);
+    BazelLockFileValue valueToWrite = snapshot != null ? snapshot : updatedLockfile;
+    try {
+      var hashedOutput =
+          new HashingOutputStream(Hashing.sha256(), lockfilePath.asPath().getOutputStream());
+      try (hashedOutput;
+          var outputStreamWriter = new OutputStreamWriter(hashedOutput, UTF_8);
+          var writer = new BufferedWriter(outputStreamWriter)) {
+        try {
+          GsonTypeAdapterUtil.LOCKFILE_GSON.toJson(valueToWrite, writer);
+        } catch (JsonIOException e) {
+          // Gson.toJson(Object, Appendable) documents JsonIOException for writer failures.
+          if (e.getCause() instanceof IOException ioException) {
+            throw ioException;
+          }
+          throw new IOException(e);
         }
-        throw new IOException(e);
+        writer.append('\n');
       }
-      writer.append('\n');
+      // Seed only after serialization and close succeed. The next read verifies
+      // all file bytes before reusing this value, including after external edits.
+      if (snapshot != null) {
+        BazelLockFileFunction.rememberLockfileValue(lockfilePath, hashedOutput.hash(), snapshot);
+      }
     } catch (IOException e) {
       logger.atSevere().withCause(e).log(
           "Error while updating MODULE.bazel.lock file: %s", e.getMessage());
