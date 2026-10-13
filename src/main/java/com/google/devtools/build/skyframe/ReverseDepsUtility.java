@@ -145,6 +145,13 @@ abstract class ReverseDepsUtility {
   static void removeReverseDepsMatching(
       IncrementalInMemoryNodeEntry entry, Set<SkyKey> deletedKeys) {
     consolidateData(entry);
+    var raw = entry.getReverseDepsRawForReverseDepsUtil();
+    if (isSingleReverseDep(raw)) {
+      if (deletedKeys.contains(raw)) {
+        entry.setReverseDepsForReverseDepsUtil(ImmutableList.of());
+      }
+      return;
+    }
     ImmutableCollection<SkyKey> currentReverseDeps =
         consolidateAndGetReverseDeps(entry, /* checkConsistency= */ true);
     var remainingReverseDeps = new ArrayList<SkyKey>(currentReverseDeps.size());
