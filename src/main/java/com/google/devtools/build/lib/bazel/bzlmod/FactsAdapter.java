@@ -21,15 +21,24 @@ import static com.google.devtools.build.lib.util.StringEncoding.unicodeToInterna
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonIOException;
 import com.google.gson.JsonParseException;
-import com.google.gson.JsonParser;
+import com.google.gson.JsonSyntaxException;
+import com.google.gson.Strictness;
 import com.google.gson.TypeAdapter;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonWriter;
+import com.google.gson.stream.MalformedJsonException;
+import java.io.EOFException;
 import java.io.IOException;
+import java.util.LinkedHashMap;
+import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Mutability;
 import net.starlark.java.eval.Starlark;
+import net.starlark.java.eval.StarlarkFloat;
+import net.starlark.java.eval.StarlarkInt;
+import net.starlark.java.eval.StarlarkList;
 import net.starlark.java.eval.StarlarkSemantics;
 import net.starlark.java.eval.StarlarkThread;
 import net.starlark.java.lib.json.Json;
@@ -62,13 +71,87 @@ public class FactsAdapter extends TypeAdapter<Facts> {
 
   @Override
   public Facts read(JsonReader in) throws IOException {
-    var jsonString = unicodeToInternal(gson.toJson(JsonParser.parseReader(in)));
+    // Match JsonParser.parseReader's behavior when called with a standalone JsonReader.
+    Strictness strictness = in.getStrictness();
+    if (strictness == Strictness.LEGACY_STRICT) {
+      in.setStrictness(Strictness.LENIENT);
+    }
     try (var mu = Mutability.create("FactsAdapter")) {
-      var starlarkThread = StarlarkThread.createTransient(mu, semantics);
-      return Facts.validateAndCreate(
-          Json.INSTANCE.decode(jsonString, Starlark.UNBOUND, starlarkThread));
+      Object value;
+      boolean isEmpty = true;
+      try {
+        in.peek();
+        isEmpty = false;
+        value = readValue(in, mu);
+      } catch (EOFException e) {
+        // JsonParser treated an empty document as JSON null.
+        if (!isEmpty) {
+          throw new JsonSyntaxException(e);
+        }
+        value = Starlark.NONE;
+      } catch (MalformedJsonException e) {
+        throw new JsonSyntaxException(e);
+      } catch (IOException e) {
+        throw new JsonIOException(e);
+      }
+      return Facts.validateAndCreate(value);
     } catch (EvalException e) {
       throw new JsonParseException("Failed to decode facts JSON: " + e.getMessage(), e);
+    } catch (StackOverflowError e) {
+      throw new JsonParseException("Failed to decode facts JSON: nesting depth limit exceeded", e);
+    } finally {
+      in.setStrictness(strictness);
     }
+  }
+
+  private static Object readValue(JsonReader in, Mutability mu) throws IOException, EvalException {
+    return switch (in.peek()) {
+      case NULL -> {
+        in.nextNull();
+        yield Starlark.NONE;
+      }
+      case BOOLEAN -> in.nextBoolean();
+      case STRING -> readString(in.nextString());
+      case NUMBER -> {
+        String number = in.nextString();
+        try {
+          yield number.indexOf('.') >= 0 || number.indexOf('e') >= 0 || number.indexOf('E') >= 0
+              ? StarlarkFloat.of(Double.parseDouble(number))
+              : StarlarkInt.parse(number, 10);
+        } catch (NumberFormatException e) {
+          throw Starlark.errorf("invalid number: %s", number);
+        }
+      }
+      case BEGIN_ARRAY -> {
+        in.beginArray();
+        var list = StarlarkList.newList(mu);
+        while (in.hasNext()) {
+          list.addElement(readValue(in, mu));
+        }
+        in.endArray();
+        yield list;
+      }
+      case BEGIN_OBJECT -> {
+        in.beginObject();
+        var entries = new LinkedHashMap<String, Object>();
+        while (in.hasNext()) {
+          entries.put(in.nextName(), readValue(in, mu));
+        }
+        in.endObject();
+        // Gson kept the last value for each JSON name and omitted null object members.
+        Dict<String, Object> dict = Dict.of(mu);
+        for (var entry : entries.entrySet()) {
+          if (entry.getValue() != Starlark.NONE) {
+            dict.putEntry(readString(entry.getKey()), entry.getValue());
+          }
+        }
+        yield dict;
+      }
+      default -> throw new IllegalStateException("Unexpected token: " + in.peek());
+    };
+  }
+
+  private static String readString(String value) {
+    return unicodeToInternal(value);
   }
 }
