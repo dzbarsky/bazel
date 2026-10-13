@@ -21,6 +21,7 @@ import static com.google.devtools.build.lib.skyframe.serialization.strings.Unsaf
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.CharMatcher;
 import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.skyframe.serialization.LeafDeserializationContext;
 import com.google.devtools.build.lib.skyframe.serialization.LeafObjectCodec;
@@ -52,7 +53,12 @@ public class RepositoryName {
   @SerializationConstant
   public static final RepositoryName BUILTINS = new RepositoryName("_builtins");
 
-  private static final Pattern VALID_REPO_NAME = Pattern.compile("[\\w\\-.+]*");
+  private static final CharMatcher VALID_REPO_NAME =
+      CharMatcher.inRange('a', 'z')
+          .or(CharMatcher.inRange('A', 'Z'))
+          .or(CharMatcher.inRange('0', '9'))
+          .or(CharMatcher.anyOf("_-.+"))
+          .precomputed();
 
   // Must start with a letter. Can contain ASCII letters and digits, underscore, dash, and dot.
   private static final Pattern VALID_USER_PROVIDED_NAME = Pattern.compile("[a-zA-Z0-9][-.\\w]*$");
@@ -186,7 +192,7 @@ public class RepositoryName {
           "invalid repository name '%s': repo names are not allowed to be '%s'", name, name);
     }
 
-    if (!VALID_REPO_NAME.matcher(name).matches()) {
+    if (!VALID_REPO_NAME.matchesAllOf(name)) {
       throw LabelParser.syntaxErrorf(
           "invalid repository name '%s': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.'"
               + " and '+'",
