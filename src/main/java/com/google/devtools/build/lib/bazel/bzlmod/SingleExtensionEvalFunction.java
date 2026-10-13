@@ -140,14 +140,13 @@ public class SingleExtensionEvalFunction implements SkyFunction {
     Facts lockfileFacts = Facts.EMPTY;
     // Store workspace lockfile facts separately for validation in ERROR mode
     Facts workspaceLockfileFacts = Facts.EMPTY;
-    if (!lockfileMode.equals(LockfileMode.OFF)) {
+    if (!lockfileMode.equals(LockfileMode.OFF) && !extensionId.isInnate()) {
+      var hiddenKey = BazelLockFileValue.hiddenKey(extensionId);
       var lockfiles =
-          env.getValuesAndExceptions(
-              ImmutableList.of(BazelLockFileValue.KEY, BazelLockFileValue.HIDDEN_KEY));
+          env.getValuesAndExceptions(ImmutableList.of(BazelLockFileValue.KEY, hiddenKey));
       BazelLockFileValue workspaceLockfile =
           (BazelLockFileValue) lockfiles.get(BazelLockFileValue.KEY);
-      BazelLockFileValue hiddenLockfile =
-          (BazelLockFileValue) lockfiles.get(BazelLockFileValue.HIDDEN_KEY);
+      BazelLockFileValue hiddenLockfile = (BazelLockFileValue) lockfiles.get(hiddenKey);
       if (workspaceLockfile == null || hiddenLockfile == null) {
         return null;
       }
