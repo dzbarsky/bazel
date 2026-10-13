@@ -17,6 +17,7 @@
 import json
 import os
 import pathlib
+import shutil
 import tempfile
 
 from absl.testing import absltest
@@ -63,13 +64,71 @@ class BazelLockfileTest(test_base.TestBase):
     _, stdout, _ = self.RunBazel(['info', 'output_base'])
     output_base = pathlib.Path(stdout[0].strip())
     try:
-      os.remove(output_base.joinpath('MODULE.bazel.lock'))
+      shutil.rmtree(output_base.joinpath('module_extension_cache'))
     except FileNotFoundError:
       pass
 
   def tearDown(self):
     self.main_registry.stop()
     test_base.TestBase.tearDown(self)
+
+  def testReproducibleExtensionCacheUpdatesAreIndependent(self):
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'alpha = use_extension(":extension.bzl", "alpha")',
+            'use_repo(alpha, "alpha")',
+            'beta = use_extension(":extension.bzl", "beta")',
+            'use_repo(beta, "beta")',
+        ],
+    )
+    self.ScratchFile(
+        'extension.bzl',
+        [
+            'def _repo_impl(ctx):',
+            "    ctx.file('BUILD.bazel', 'exports_files([\"value\"])')",
+            '    ctx.file("value", ctx.attr.value)',
+            '_repo = repository_rule(',
+            '    implementation = _repo_impl,',
+            '    attrs = {"value": attr.string()},',
+            ')',
+            'def _alpha_impl(ctx):',
+            '    _repo(name = "alpha", value = "alpha")',
+            '    return ctx.extension_metadata(reproducible = True)',
+            'def _beta_impl(ctx):',
+            '    _repo(name = "beta", value = ctx.read(Label("//:value.txt")))',
+            '    return ctx.extension_metadata(reproducible = True)',
+            'alpha = module_extension(implementation = _alpha_impl)',
+            'beta = module_extension(implementation = _beta_impl)',
+        ],
+    )
+    self.ScratchFile(
+        'BUILD',
+        ['filegroup(name = "both", srcs = ["@alpha//:value", "@beta//:value"])'],
+    )
+    self.ScratchFile('value.txt', ['before'])
+    self.RunBazel(['build', '--nobuild', '//:both'])
+    self.RunBazel(['build', '--nobuild', '//:both'])
+
+    self.ScratchFile('value.txt', ['after'])
+    self.RunBazel(['build', '--nobuild', '@beta//:value'])
+    # Reading beta's updated cache must not dirty alpha or any other extension.
+    self.RunBazel([
+        'build',
+        '--nobuild',
+        '--build_event_json_file=events.json',
+        '//:both',
+    ])
+    with open(self.Path('events.json')) as stream:
+      events = (json.loads(line) for line in stream)
+      metrics = next(
+          event['buildMetrics'] for event in events if 'buildMetrics' in event
+      )
+    dirtied = {
+        entry['skyfunctionName']: int(entry.get('count', 0))
+        for entry in metrics['buildGraphMetrics']['dirtiedValues']
+    }
+    self.assertEqual(dirtied.get('SINGLE_EXTENSION_EVAL', 0), 1)
 
   def testInvalidLockfile(self):
     self.ScratchFile('BUILD', ['filegroup(name = "hello")'])

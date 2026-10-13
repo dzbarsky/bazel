@@ -19,7 +19,10 @@ import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.bazel.repository.downloader.Checksum;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
+import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
+import com.google.devtools.build.skyframe.AbstractSkyKey;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
@@ -30,14 +33,14 @@ import java.util.Optional;
  * The result of reading a lockfile. Contains the lockfile version as well as registry and module
  * extensions data (ID, usages hash, generated repos, ...).
  *
- * <p>Bazel maintains two separate lockfiles:
+ * <p>Bazel maintains two kinds of lockfiles:
  *
  * <ul>
  *   <li>the (regular) lockfile stored as MODULE.bazel.lock under the workspace directory;
- *   <li>the hidden lockfile stored as MODULE.bazel.lock under the output base.
+ *   <li>per-extension hidden lockfiles stored under the output base.
  * </ul>
  *
- * See the javadoc of the two {@link SkyKey}s for more information.
+ * See {@link #KEY} and {@link #hiddenKey} for more information.
  */
 @AutoValue
 @GenerateTypeAdapter
@@ -77,9 +80,9 @@ public abstract class BazelLockFileValue implements SkyValue {
       };
 
   /**
-   * The hidden lockfile, stored as MODULE.bazel.lock under the output base. This file is not
-   * visible to the user and is only removed on a {@code bazel clean --expunge}, similar to the
-   * persistent action cache. Thus, it
+   * A hidden lockfile for one extension, stored under the output base. Partitioning the cache
+   * prevents an update from invalidating unrelated extension evaluations. Like the persistent
+   * action cache, this machine-local cache is cleared by {@code bazel clean --expunge}. Thus, it
    *
    * <ul>
    *   <li>should only contain information known to be correct indefinitely and never needs to be
@@ -92,19 +95,34 @@ public abstract class BazelLockFileValue implements SkyValue {
    *       retroactively and thus causes a mismatch with the hash in the persistent lockfile.
    * </ul>
    */
-  @SerializationConstant
-  public static final SkyKey HIDDEN_KEY =
-      new SkyKey() {
-        @Override
-        public SkyFunctionName functionName() {
-          return SkyFunctions.BAZEL_LOCK_FILE;
-        }
+  public static HiddenKey hiddenKey(ModuleExtensionId extensionId) {
+    return HiddenKey.interner.intern(new HiddenKey(extensionId));
+  }
 
-        @Override
-        public String toString() {
-          return "BazelLockFileValue.HIDDEN_KEY";
-        }
-      };
+  @AutoCodec
+  public static final class HiddenKey extends AbstractSkyKey<ModuleExtensionId> {
+    private static final SkyKeyInterner<HiddenKey> interner = SkyKey.newInterner();
+
+    private HiddenKey(ModuleExtensionId extensionId) {
+      super(extensionId);
+    }
+
+    @VisibleForSerialization
+    @AutoCodec.Interner
+    static HiddenKey intern(HiddenKey key) {
+      return interner.intern(key);
+    }
+
+    @Override
+    public SkyFunctionName functionName() {
+      return SkyFunctions.BAZEL_LOCK_FILE;
+    }
+
+    @Override
+    public SkyKeyInterner<HiddenKey> getSkyKeyInterner() {
+      return interner;
+    }
+  }
 
   static Builder builder() {
     return new AutoValue_BazelLockFileValue.Builder()
