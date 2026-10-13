@@ -19,6 +19,7 @@ import static com.google.devtools.build.lib.util.StringEncoding.unicodeToInterna
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.hash.Hashing;
 import com.google.common.io.CharStreams;
 import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.LockfileMode;
@@ -58,6 +59,8 @@ public class BazelLockFileFunction implements SkyFunction {
 
   public static final Precomputed<LockfileMode> LOCKFILE_MODE = new Precomputed<>("lockfile_mode");
 
+  static final String HIDDEN_LOCKFILE_DIRECTORY = "module_extension_cache";
+
   private static final Pattern LOCKFILE_VERSION_PATTERN =
       Pattern.compile("\"lockFileVersion\":\\s*(\\d+)");
 
@@ -76,6 +79,11 @@ public class BazelLockFileFunction implements SkyFunction {
     this.outputBase = outputBase;
   }
 
+  static Path hiddenLockfilePath(Path outputBase, ModuleExtensionId extensionId) {
+    String name = Hashing.sha256().hashString(extensionId.toString(), UTF_8).toString();
+    return outputBase.getRelative(HIDDEN_LOCKFILE_DIRECTORY).getRelative(name + ".json");
+  }
+
   @Override
   @Nullable
   public SkyValue compute(SkyKey skyKey, Environment env)
@@ -84,11 +92,14 @@ public class BazelLockFileFunction implements SkyFunction {
       return BazelLockFileValue.EMPTY_LOCKFILE;
     }
 
-    boolean forHiddenLockfile = skyKey == BazelLockFileValue.HIDDEN_KEY;
+    boolean forHiddenLockfile = skyKey instanceof BazelLockFileValue.HiddenKey;
     RootedPath lockfilePath =
         RootedPath.toRootedPath(
             Root.fromPath(forHiddenLockfile ? outputBase : rootDirectory),
-            LabelConstants.MODULE_LOCKFILE_NAME);
+            forHiddenLockfile
+                ? hiddenLockfilePath(
+                    outputBase, ((BazelLockFileValue.HiddenKey) skyKey).argument())
+                : rootDirectory.getRelative(LabelConstants.MODULE_LOCKFILE_NAME));
 
     // Add dependency on the lockfile to recognize changes to it
     if (env.getValue(FileValue.key(lockfilePath)) == null) {
