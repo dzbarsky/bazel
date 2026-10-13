@@ -120,7 +120,8 @@ public class BazelLockFileModuleTest {
   public void updateLockfileWritesJsonWithTrailingNewline() throws Exception {
     Path workspaceRoot = new Scratch().dir("/workspace");
 
-    BazelLockFileModule.updateLockfile(workspaceRoot, BazelLockFileValue.EMPTY_LOCKFILE);
+    BazelLockFileModule.updateLockfile(
+        workspaceRoot.getRelative("MODULE.bazel.lock"), BazelLockFileValue.EMPTY_LOCKFILE);
 
     assertThat(FileSystemUtils.readContent(workspaceRoot.getRelative("MODULE.bazel.lock"), UTF_8))
         .isEqualTo(
@@ -144,7 +145,7 @@ public class BazelLockFileModuleTest {
                 ImmutableMap.of(extensionId, ImmutableMap.of(evalFactors, extensionWithNullRuleId)))
             .build();
 
-    BazelLockFileModule.updateLockfile(workspaceRoot, lockfile);
+    BazelLockFileModule.updateLockfile(workspaceRoot.getRelative("MODULE.bazel.lock"), lockfile);
 
     assertThat(workspaceRoot.getRelative("MODULE.bazel.lock").exists()).isTrue();
   }
