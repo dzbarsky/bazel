@@ -120,6 +120,16 @@ public class CommonCommandOptions extends OptionsBase {
   public Duration installBaseGcMaxAge;
 
   @Option(
+      name = "experimental_skyframe_cleanup_on_idle",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
+      help =
+          "Delete queued Skyframe nodes before idle garbage collection. An arriving command may"
+              + " wait for uninterruptible parts of deletion to finish.")
+  public boolean skyframeCleanupOnIdle;
+
+  @Option(
       name = "experimental_action_cache_gc_idle_delay",
       defaultValue = "5m",
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,

@@ -653,7 +653,27 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
 
     boolean stateKeptAfterBuild =
         !env.getCommandName().equals("clean") && options.keepStateAfterBuild;
-    env.addIdleTask(new GcAndInternerShrinkingIdleTask(stateKeptAfterBuild));
+    var gcIdleTask = new GcAndInternerShrinkingIdleTask(stateKeptAfterBuild);
+    if (options.skyframeCleanupOnIdle) {
+      env.addIdleTask(
+          new IdleTask() {
+            @Override
+            public String displayName() {
+              return "Skyframe node deletion";
+            }
+
+            @Override
+            public Duration delay() {
+              return gcIdleTask.delay();
+            }
+
+            @Override
+            public void run() throws InterruptedException {
+              workspace.getSkyframeExecutor().getEvaluator().deletePendingNodes();
+            }
+          });
+    }
+    env.addIdleTask(gcIdleTask);
 
     if (options.installBaseGcMaxAge != null && !options.installBaseGcMaxAge.isZero()) {
       env.addIdleTask(

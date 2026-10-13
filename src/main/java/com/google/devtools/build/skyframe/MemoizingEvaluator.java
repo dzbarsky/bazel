@@ -84,6 +84,12 @@ public interface MemoizingEvaluator {
   void deleteDirty(long versionAgeLimit);
 
   /**
+   * Deletes already queued nodes without evaluating roots, advancing the graph version, or applying
+   * pending invalidations and injections. Must not run concurrently with evaluation.
+   */
+  void deletePendingNodes() throws InterruptedException;
+
+  /**
    * Returns the values in the graph.
    *
    * <p>The returned map may be a live view of the graph.
