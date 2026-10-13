@@ -54,8 +54,8 @@ public final class BazelLockFileFunctionTest extends FoundationTestCase {
             "https://registry.example/modules/"
                 + "x".repeat(8192)
                 + "/café/日本語/😀/MODULE.bazel");
-    BazelLockFileModule.updateLockfile(rootDirectory, expected);
     RootedPath path = RootedPath.toRootedPath(root, LabelConstants.MODULE_LOCKFILE_NAME);
+    BazelLockFileModule.updateLockfile(path.asPath(), expected);
 
     assertThat(FileSystemUtils.readContent(path.asPath(), UTF_8))
         .startsWith(BazelLockFileFunction.CURRENT_VERSION_HEADER);
