@@ -145,6 +145,15 @@ public final class Reporter implements ExtendedEventHandler {
     }
   }
 
+  /** Detaches command-scoped event sinks after all command work has completed. */
+  public synchronized void clear() {
+    eventBus = null;
+    eventHandlers.clear();
+    ansiAllowingHandler = null;
+    ansiStrippingHandler = null;
+    ansiAllowingHandlerRegistered = false;
+  }
+
   /**
    * Reports the start of a particular task. Is a wrapper around report() with event kind START.
    * Should always be matched by a corresponding call to finishTask() with the same message, except
