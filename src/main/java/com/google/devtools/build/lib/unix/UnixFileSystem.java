@@ -31,7 +31,6 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.SymlinkTargetType;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.util.ArrayDeque;
@@ -368,19 +367,7 @@ public class UnixFileSystem extends DiskBackedFileSystem {
   }
 
   @Override
-  public void setLastModifiedTimeNanos(PathFragment path, long newTime) throws IOException {
-    if (!setLastModifiedTimeNanosIfExists(path, newTime)) {
-      throw new FileNotFoundException(path + ERR_NO_SUCH_FILE_OR_DIR);
-    }
-  }
-
-  @Override
-  public boolean setLastModifiedTimeIfExists(PathFragment path, long newTime) throws IOException {
-    return setLastModifiedTimeNanosIfExists(
-        path, newTime == Path.NOW_SENTINEL_TIME ? Path.NOW_SENTINEL_TIME : newTime * 1_000_000);
-  }
-
-  private boolean setLastModifiedTimeNanosIfExists(PathFragment path, long newTime)
+  public boolean setLastModifiedTimeNanosIfExists(PathFragment path, long newTime)
       throws IOException {
     var comp = Blocker.begin();
     try {
