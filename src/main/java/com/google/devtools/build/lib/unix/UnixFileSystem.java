@@ -30,6 +30,7 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.SymlinkTargetType;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Collection;
@@ -368,9 +369,16 @@ public class UnixFileSystem extends DiskBackedFileSystem {
 
   @Override
   public void setLastModifiedTime(PathFragment path, long newTime) throws IOException {
+    if (!setLastModifiedTimeIfExists(path, newTime)) {
+      throw new FileNotFoundException(path + ERR_NO_SUCH_FILE_OR_DIR);
+    }
+  }
+
+  @Override
+  public boolean setLastModifiedTimeIfExists(PathFragment path, long newTime) throws IOException {
     var comp = Blocker.begin();
     try {
-      NativePosixFiles.utimensat(path.toString(), newTime == Path.NOW_SENTINEL_TIME, newTime);
+      return NativePosixFiles.utimensat(path.toString(), newTime == Path.NOW_SENTINEL_TIME, newTime);
     } finally {
       Blocker.end(comp);
     }

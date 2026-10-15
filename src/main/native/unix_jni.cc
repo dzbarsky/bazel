@@ -418,15 +418,15 @@ Java_com_google_devtools_build_lib_unix_NativePosixFiles_lstat(
 /*
  * Class:     com.google.devtools.build.lib.unix.NativePosixFiles
  * Method:    utimensat
- * Signature: (Ljava/lang/String;ZJ)V
+ * Signature: (Ljava/lang/String;ZJ)Z
  * Throws:    java.io.IOException
  */
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_google_devtools_build_lib_unix_NativePosixFiles_utimensat(
     JNIEnv *env, jclass clazz, jstring path, jboolean now, jlong millis) {
   JStringLatin1Holder path_chars(env, path);
   if (env->ExceptionOccurred()) {
-    return;
+    return false;
   }
   // If `now` is true use the current time, otherwise use `millis`.
   // On Linux, if the current user has write permission but isn't the owner of
@@ -441,8 +441,12 @@ Java_com_google_devtools_build_lib_unix_NativePosixFiles_utimensat(
   int err;
   RESTARTABLE(utimensat(AT_FDCWD, path_chars, times, 0), err);
   if (err == -1) {
-    POST_EXCEPTION_FROM_ERRNO(env, errno, path_chars);
+    if (errno != ENOENT) {
+      POST_EXCEPTION_FROM_ERRNO(env, errno, path_chars);
+    }
+    return false;
   }
+  return true;
 }
 
 /*

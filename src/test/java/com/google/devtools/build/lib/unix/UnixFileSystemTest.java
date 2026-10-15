@@ -79,6 +79,17 @@ public class UnixFileSystemTest extends SymlinkAwareFileSystemTest {
     linkB.createSymbolicLink(linkA);
     assertThat(linkA.exists(Symlinks.FOLLOW)).isFalse();
     assertThrows(IOException.class, () -> linkA.statIfFound(Symlinks.FOLLOW));
+    assertThrows(
+        IOException.class, () -> linkA.setLastModifiedTimeIfExists(Path.NOW_SENTINEL_TIME));
+  }
+
+  @Test
+  public void testSetLastModifiedTimeIfExists_notDirectory() throws Exception {
+    Path file = absolutize("file");
+    FileSystemUtils.createEmptyFile(file);
+    assertThrows(
+        IOException.class,
+        () -> file.getChild("child").setLastModifiedTimeIfExists(Path.NOW_SENTINEL_TIME));
   }
 
   @Test
