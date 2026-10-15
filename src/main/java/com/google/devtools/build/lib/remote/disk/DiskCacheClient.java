@@ -117,14 +117,9 @@ public class DiskCacheClient {
    * @throws IOException if an I/O error other than a missing file occurs.
    */
   public boolean refresh(Path path) throws IOException {
-    try {
-      // Use NOW_SENTINEL_TIME instead of obtaining the current time so that the operation succeeds
-      // even when the file has a different owner, as might be the case for a shared cache.
-      path.setLastModifiedTime(Path.NOW_SENTINEL_TIME);
-    } catch (FileNotFoundException e) {
-      return false;
-    }
-    return true;
+    // Use NOW_SENTINEL_TIME instead of obtaining the current time so that the operation succeeds
+    // even when the file has a different owner, as might be the case for a shared cache.
+    return path.setLastModifiedTimeIfExists(Path.NOW_SENTINEL_TIME);
   }
 
   /**

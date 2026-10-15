@@ -735,6 +735,11 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
   }
 
   @Override
+  public boolean setLastModifiedTimeIfExists(PathFragment path, long newTime) throws IOException {
+    return fsForPath(path).setLastModifiedTimeIfExists(path, newTime);
+  }
+
+  @Override
   public FileStatus stat(PathFragment path, boolean followSymlinks) throws IOException {
     return fsForPath(path).stat(path, followSymlinks);
   }
