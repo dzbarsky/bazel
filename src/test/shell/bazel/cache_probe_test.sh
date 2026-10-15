@@ -719,6 +719,29 @@ function test_failed_target_pattern_is_not_hidden_by_cache_miss() {
   assert_not_exists "$marker"
 }
 
+function test_package_error_survives_dependency_loading_restarts() {
+  write_build_fixture
+  run_probe build //pkg:empty
+  mkdir -p pkg/bad mid leaf
+  echo 'fail("PACKAGE_LOADING_ERROR")' > pkg/bad/BUILD
+  echo 'filegroup(name = "target", srcs = ["//leaf:target"], visibility = ["//visibility:public"])' > mid/BUILD
+  echo 'filegroup(name = "target", visibility = ["//visibility:public"])' > leaf/BUILD
+  echo 'filegroup(name = "with_mid", srcs = ["//mid:target"])' >> pkg/BUILD
+
+  local merged
+  for merged in true false; do
+    bazel build --keep_going --test_keep_going \
+      --experimental_merged_skyframe_analysis_execution="$merged" \
+      --experimental_cache_probe_output="$manifest" \
+      --experimental_cache_probe_exclude_deps=//ignored \
+      //pkg/... >& "$TEST_log" \
+      && fail "Probe with a package error unexpectedly succeeded"
+    expect_log "PACKAGE_LOADING_ERROR"
+    assert_not_exists "$manifest"
+    assert_not_exists "$marker"
+  done
+}
+
 function test_warm_alias_and_nested_suites_account_for_all_roots() {
   write_test_fixture
   cat >> pkg/BUILD <<'EOF'
