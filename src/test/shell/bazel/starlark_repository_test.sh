@@ -2256,6 +2256,82 @@ EOF
   assert_contains 'REPO.bazel' output
 }
 
+function test_unused_main_repo_import_preserves_loaded_package() {
+  create_new_workspace
+  cat > $(setup_module_dot_bazel) <<EOF
+bazel_dep(name="extension", version="1.0")
+local_path_override(module_name="extension", path="extension")
+ext = use_extension("@extension//:extension.bzl", "repos")
+use_repo(ext, "one")
+EOF
+  touch BUILD
+  mkdir extension
+  echo 'module(name="extension", version="1.0")' > extension/MODULE.bazel
+  echo 'exports_files(["extension.bzl"])' > extension/BUILD
+  cat > extension/extension.bzl <<EOF
+def _repo_impl(ctx):
+    ctx.file("BUILD", "exports_files(['payload'])")
+    ctx.file("payload", "unchanged")
+
+repo = repository_rule(implementation = _repo_impl)
+
+def _extension_impl(ctx):
+    repo(name = "one")
+    repo(name = "two")
+
+repos = module_extension(implementation = _extension_impl)
+EOF
+
+  bazel build @one//:payload >& $TEST_log || fail "initial build failed"
+  echo 'use_repo(ext, "two")' >> MODULE.bazel
+  bazel build @one//:payload >& $TEST_log || fail "build after unused import failed"
+  expect_log "INFO: Analyzed target .*0 packages loaded, 0 targets configured"
+}
+
+function test_repo_dictionary_attribute_order_change() {
+  create_new_workspace
+  cat > $(setup_module_dot_bazel) <<EOF
+bazel_dep(name="extension", version="1.0")
+local_path_override(module_name="extension", path="extension")
+ext = use_extension("@extension//:extension.bzl", "repos")
+ext.settings(values={"a": "1", "b": "2"}, other="before")
+use_repo(ext, "one")
+EOF
+  touch BUILD
+  mkdir extension
+  echo 'module(name="extension", version="1.0")' > extension/MODULE.bazel
+  touch extension/BUILD
+  cat > extension/extension.bzl <<EOF
+def _repo_impl(ctx):
+    ctx.file("BUILD", "exports_files(['payload'])")
+    ctx.file("payload", ",".join(ctx.attr.values))
+
+repo = repository_rule(_repo_impl, attrs = {"values": attr.string_dict()})
+
+def _extension_impl(ctx):
+    for module in ctx.modules:
+        for settings in module.tags.settings:
+            repo(name = "one", values = settings.values)
+            # Keep the extension result unequal even though dict equality ignores order.
+            repo(name = "two", values = {"unused": settings.other})
+
+repos = module_extension(
+    implementation = _extension_impl,
+    tag_classes = {"settings": tag_class(attrs = {
+        "values": attr.string_dict(),
+        "other": attr.string(),
+    })},
+)
+EOF
+
+  bazel build @one//:payload >& $TEST_log || fail "initial build failed"
+  local payload="$(bazel info output_base)/external/extension++repos+one/payload"
+  assert_equals "a,b" "$(cat "$payload")"
+  sed -i.bak 's/{"a": "1", "b": "2"}/{"b": "2", "a": "1"}/; s/other="before"/other="after"/' MODULE.bazel
+  bazel build @one//:payload >& $TEST_log || fail "build after dictionary reorder failed"
+  assert_equals "b,a" "$(cat "$payload")"
+}
+
 function test_repo_mapping_change_in_rule_impl() {
   # regression test for #20722
   create_new_workspace
