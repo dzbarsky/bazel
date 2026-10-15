@@ -1116,6 +1116,17 @@ public abstract class FileSystemTest {
   // Test the date functions
 
   @Test
+  public void testSetLastModifiedTimeIfExists() throws Exception {
+    Path file = absolutize("file");
+    assertThat(file.setLastModifiedTimeIfExists(Path.NOW_SENTINEL_TIME)).isFalse();
+    assertThat(file.exists()).isFalse();
+
+    FileSystemUtils.createEmptyFile(file);
+    assertThat(file.setLastModifiedTimeIfExists(1L << 34)).isTrue();
+    assertThat(file.getLastModifiedTime()).isEqualTo(1L << 34);
+  }
+
+  @Test
   public void testSetLastModifiedTime_32bit() throws Exception {
     Path file = absolutize("file");
     FileSystemUtils.createEmptyFile(file);
