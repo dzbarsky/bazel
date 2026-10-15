@@ -117,13 +117,8 @@ public abstract class PathTransformingDelegateFileSystem extends FileSystem {
   }
 
   @Override
-  public void setLastModifiedTimeNanos(PathFragment path, long newTime) throws IOException {
-    delegateFs.setLastModifiedTimeNanos(toDelegatePath(path), newTime);
-  }
-
-  @Override
-  public boolean setLastModifiedTimeIfExists(PathFragment path, long newTime) throws IOException {
-    return delegateFs.setLastModifiedTimeIfExists(toDelegatePath(path), newTime);
+  public boolean setLastModifiedTimeNanosIfExists(PathFragment path, long newTime) throws IOException {
+    return delegateFs.setLastModifiedTimeNanosIfExists(toDelegatePath(path), newTime);
   }
 
   @Override

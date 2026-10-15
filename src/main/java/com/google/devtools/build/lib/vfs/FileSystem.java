@@ -359,21 +359,28 @@ public abstract class FileSystem {
   }
 
   /**
-   * Sets the last modification time of the file, in nanoseconds since the UNIX epoch, of the file
-   * denoted by {@code path}. See {@link Path#setLastModifiedTimeNanos} for specification.
+   * Sets the file modification time in nanoseconds since the UNIX epoch.
+   * See {@link Path#setLastModifiedTimeNanos} for specification.
    */
   @SuppressWarnings("GoodTime") // performance-sensitive
-  public abstract void setLastModifiedTimeNanos(PathFragment path, long newTime) throws IOException;
-
-  /** Like {@link #setLastModifiedTime}, but returns false if the file does not exist. */
-  public boolean setLastModifiedTimeIfExists(PathFragment path, long newTime) throws IOException {
-    try {
-      setLastModifiedTime(path, newTime);
-      return true;
-    } catch (FileNotFoundException e) {
-      return false;
+  public void setLastModifiedTimeNanos(PathFragment path, long newTime) throws IOException {
+    if (!setLastModifiedTimeNanosIfExists(path, newTime)) {
+      throw new FileNotFoundException(path + ERR_NO_SUCH_FILE_OR_DIR);
     }
   }
+
+  /** Like {@link #setLastModifiedTime}, but returns false if the file does not exist. */
+  @SuppressWarnings("GoodTime") // performance-sensitive
+  public final boolean setLastModifiedTimeIfExists(PathFragment path, long newTime)
+      throws IOException {
+    return setLastModifiedTimeNanosIfExists(
+        path, newTime == Path.NOW_SENTINEL_TIME ? Path.NOW_SENTINEL_TIME : newTime * 1_000_000);
+  }
+
+  /** Like {@link #setLastModifiedTimeNanos}, but returns false if the file does not exist. */
+  @SuppressWarnings("GoodTime") // performance-sensitive
+  public abstract boolean setLastModifiedTimeNanosIfExists(PathFragment path, long newTime)
+      throws IOException;
 
   /**
    * Returns value of the given extended attribute name or null if attribute does not exist or file
