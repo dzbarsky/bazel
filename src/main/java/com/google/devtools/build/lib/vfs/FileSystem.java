@@ -365,6 +365,16 @@ public abstract class FileSystem {
   @SuppressWarnings("GoodTime") // performance-sensitive
   public abstract void setLastModifiedTimeNanos(PathFragment path, long newTime) throws IOException;
 
+  /** Like {@link #setLastModifiedTime}, but returns false if the file does not exist. */
+  public boolean setLastModifiedTimeIfExists(PathFragment path, long newTime) throws IOException {
+    try {
+      setLastModifiedTime(path, newTime);
+      return true;
+    } catch (FileNotFoundException e) {
+      return false;
+    }
+  }
+
   /**
    * Returns value of the given extended attribute name or null if attribute does not exist or file
    * system does not support extended attributes.
