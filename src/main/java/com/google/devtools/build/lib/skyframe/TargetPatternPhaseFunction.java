@@ -113,10 +113,9 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       if (targets == null) {
         return null;
       }
-      // Local parsing errors must be replayed after a Skyframe restart.
+      // Package errors remain in targets; local parsing errors must be replayed after a restart.
       if (probeState != null
           && failedPatterns.isEmpty()
-          && !targets.hasError()
           && !options.getCompileOneDependency()) {
         probeState.selection = new ProbeSelection(ImmutableList.copyOf(expandedPatterns), targets);
       }
@@ -311,7 +310,8 @@ final class TargetPatternPhaseFunction implements SkyFunction {
                 mapOriginalPatternsToLabels(expandedPatterns, targets.getTargets()),
                 options.isCacheProbe()
                     ? filterSuiteExpansions(testSuiteExpansions.buildOrThrow(), selectedLabels)
-                    : testSuiteExpansions.buildOrThrow()));
+                    : testSuiteExpansions.buildOrThrow(),
+                result.hasError() || result.hasPostExpansionError()));
     env.getListener()
         .post(
             new LoadingPhaseCompleteEvent(
