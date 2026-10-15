@@ -854,12 +854,13 @@ public class SandboxHelpersTest {
     InMemoryFileSystem trackingFs =
         new InMemoryFileSystem(DigestHashFunction.SHA256) {
           @Override
-          public synchronized void setLastModifiedTimeNanos(PathFragment path, long newTime)
+          public synchronized boolean setLastModifiedTimeNanosIfExists(
+              PathFragment path, long newTime)
               throws IOException {
             if (path.getBaseName().equals("sandbox")) {
               rootOperations.add("touch");
             }
-            super.setLastModifiedTimeNanos(path, newTime);
+            return super.setLastModifiedTimeNanosIfExists(path, newTime);
           }
 
           @Override
