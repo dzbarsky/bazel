@@ -22,7 +22,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.Map;
-import javax.annotation.Nullable;
 
 /** Utility class for digests/metadata relating to the action cache. */
 public final class MetadataDigestUtils {
@@ -54,22 +53,32 @@ public final class MetadataDigestUtils {
    * @param mdMap A collection of (execPath, FileArtifactValue) pairs. Values may be null.
    */
   public static byte[] fromMetadata(Map<String, FileArtifactValue> mdMap) {
-    byte[] result = new byte[1]; // reserve the empty string
+    if (mdMap.isEmpty()) {
+      return new byte[1]; // reserve the empty string
+    }
     // Profiling showed that MessageDigest engine instantiation was a hotspot, so create one
     // instance for this computation to amortize its cost.
     Fingerprint fp = new Fingerprint();
-    for (Map.Entry<String, FileArtifactValue> entry : mdMap.entrySet()) {
-      result =
-          DigestUtils.combineUnordered(result, getDigest(fp, entry.getKey(), entry.getValue()));
+    var entries = mdMap.entrySet().iterator();
+    addMetadata(fp, entries.next());
+    byte[] result = fp.digestAndReset();
+    if (!entries.hasNext()) {
+      return result;
     }
+    byte[] digest = new byte[result.length];
+    do {
+      addMetadata(fp, entries.next());
+      fp.digestAndReset(digest, 0, digest.length);
+      DigestUtils.combineUnordered(result, digest);
+    } while (entries.hasNext());
     return result;
   }
 
-  private static byte[] getDigest(Fingerprint fp, String execPath, @Nullable FileArtifactValue md) {
-    fp.addString(execPath);
+  private static void addMetadata(Fingerprint fp, Map.Entry<String, FileArtifactValue> entry) {
+    fp.addString(entry.getKey());
+    FileArtifactValue md = entry.getValue();
     if (md != null) {
       md.addTo(fp);
     }
-    return fp.digestAndReset();
   }
 }
