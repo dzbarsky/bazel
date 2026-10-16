@@ -418,6 +418,9 @@ public interface ActionCache {
 
       private static byte[] computeMapDigest(Map<String, String> map) {
         byte[] result = new byte[0];
+        if (map.isEmpty()) {
+          return result;
+        }
         Fingerprint fp = new Fingerprint();
         for (Map.Entry<String, String> entry : map.entrySet()) {
           fp.addString(entry.getKey());
