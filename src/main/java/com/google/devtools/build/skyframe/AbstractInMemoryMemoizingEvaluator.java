@@ -254,6 +254,14 @@ public abstract class AbstractInMemoryMemoizingEvaluator implements MemoizingEva
   }
 
   @Override
+  public final void deletePendingNodes() throws InterruptedException {
+    EagerInvalidator.delete(
+        getInMemoryGraph(), valuesToDelete, progressReceiver, deleterState, keepEdges);
+    // Clearing would retain the backing storage of a potentially large deletion queue.
+    valuesToDelete = new LinkedHashSet<>();
+  }
+
+  @Override
   public final Map<SkyKey, SkyValue> getValues() {
     return getInMemoryGraph().getValues();
   }
@@ -479,16 +487,11 @@ public abstract class AbstractInMemoryMemoizingEvaluator implements MemoizingEva
   }
 
   private void performInvalidation() throws InterruptedException {
-    EagerInvalidator.delete(
-        getInMemoryGraph(), valuesToDelete, progressReceiver, deleterState, keepEdges);
-    // Note that clearing the valuesToDelete would not do an internal resizing. Therefore, if any
-    // build has a large set of dirty values, subsequent operations (even clearing) will be slower.
-    // Instead, just start afresh with a new LinkedHashSet.
-    valuesToDelete = new LinkedHashSet<>();
+    deletePendingNodes();
 
     EagerInvalidator.invalidate(
         getInMemoryGraph(), valuesToDirty, progressReceiver, invalidatorState);
-    // Ditto.
+    // Clearing would retain the backing storage of a potentially large invalidation queue.
     valuesToDirty = new LinkedHashSet<>();
   }
 

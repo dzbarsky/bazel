@@ -514,6 +514,32 @@ public abstract class MemoizingEvaluatorTest {
   }
 
   @Test
+  public void deletePendingNodesPreservesDeferredInvalidation() throws Exception {
+    SkyKey leaf = nonHermeticKey("leaf");
+    SkyKey top = skyKey("top");
+    SkyKey stable = skyKey("stable");
+    StringValue stableValue = new StringValue("stable");
+    tester.set(leaf, new StringValue("one"));
+    tester.set(stable, stableValue);
+    tester.getOrCreate(top).addDependency(leaf).setComputedValue(CONCATENATE);
+    tester.eval(true, top, stable);
+
+    tester.set(leaf, new StringValue("two"));
+    tester.invalidate();
+    tester.eval(true, leaf);
+    tester.evaluator.deleteDirty(0);
+
+    tester.set(leaf, new StringValue("three"));
+    tester.invalidate();
+    tester.evaluator.deletePendingNodes();
+
+    assertThat(tester.evaluator.getValues()).doesNotContainKey(top);
+    assertThat(tester.evaluator.getExistingValue(leaf)).isEqualTo(new StringValue("two"));
+    assertThat(tester.evaluator.getExistingValue(stable)).isSameInstanceAs(stableValue);
+    assertThat(tester.evalAndGet(true, top)).isEqualTo(new StringValue("three"));
+  }
+
+  @Test
   public void deleteNonexistentValues() throws Exception {
     tester.getOrCreate("d1").setConstantValue(new StringValue("1"));
     tester.delete("d1");
