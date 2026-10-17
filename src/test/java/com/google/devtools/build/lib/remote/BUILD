@@ -66,6 +66,7 @@ java_library(
             "BuildWithoutTheBytesIntegrationTest.java",
             "BuildWithoutTheBytesIntegrationTestBase.java",
             "ChunkedTransferBenchmark.java",
+            "BatchOutputServiceBenchmark.java",
             "ChunkedCacheIntegrationTestBase.java",
             "ChunkedCacheFastCdcIntegrationTest.java",
             "ChunkedCacheRepMaxIntegrationTest.java",
@@ -163,6 +164,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/skyframe",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/main/java/com/google/devtools/common/options",
+        "//src/main/protobuf:batch_output_service_java_grpc",
+        "//src/main/protobuf:batch_output_service_java_proto",
         "//src/main/protobuf:bazel_output_service_java_grpc",
         "//src/main/protobuf:bazel_output_service_java_proto",
         "//src/main/protobuf:cache_salt_java_proto",
@@ -446,5 +449,21 @@ java_test(
         "//third_party:truth",
         "@maven//:com_google_testparameterinjector_test_parameter_injector",
         "@remoteapis//:build_bazel_remote_execution_v2_remote_execution_java_proto",
+    ],
+)
+
+java_opt_binary(
+    name = "BatchOutputServiceBenchmark",
+    srcs = ["BatchOutputServiceBenchmark.java"],
+    main_class = "org.openjdk.jmh.Main",
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/authandtls",
+        "//src/main/java/com/google/devtools/build/lib/remote",
+        "//src/main/java/com/google/devtools/build/lib/unix",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
+        "//src/main/java/com/google/devtools/common/options",
+        "//third_party/grpc-java:grpc-jar",
+        "//third_party:jmh",
     ],
 )

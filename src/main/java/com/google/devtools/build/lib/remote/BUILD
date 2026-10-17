@@ -155,6 +155,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/skyframe",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/main/java/com/google/devtools/common/options",
+        "//src/main/protobuf:batch_output_service_java_grpc",
+        "//src/main/protobuf:batch_output_service_java_proto",
         "//src/main/protobuf:bazel_output_service_java_grpc",
         "//src/main/protobuf:bazel_output_service_java_proto",
         "//src/main/protobuf:bazel_output_service_rev2_java_proto",

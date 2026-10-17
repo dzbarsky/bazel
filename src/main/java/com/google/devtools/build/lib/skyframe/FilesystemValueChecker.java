@@ -394,27 +394,13 @@ public class FilesystemValueChecker {
         ActionExecutionValue actionValue = keyAndValue.getValue();
         SkyKey key = keyAndValue.getKey();
         FileArtifactValue lastKnownData = actionValue.getExistingFileArtifactValue(artifact);
-        try {
-          FileArtifactValue newData =
-              ActionOutputMetadataStore.fileArtifactValueFromArtifact(
-                  artifact, stat, xattrProviderOverrider.getXattrProvider(syscallCache), tsgm);
-          if (newData.couldBeModifiedSince(lastKnownData)) {
-            long maybeModifiedTime = -1;
-            if (stat != null) {
-              try {
-                maybeModifiedTime = stat.getLastChangeTime();
-              } catch (UnsupportedOperationException ignored) {
-                // Not all filesystems support change time; falling back to -1.
-              }
-            }
-            modifiedOutputsReceiver.reportModifiedOutputFile(maybeModifiedTime, artifact);
-            dirtyKeys.add(key);
-          }
-        } catch (IOException e) {
-          logger.atWarning().withCause(e).log(
-              "Error for %s (%s %s %s)", artifact, stat, keyAndValue, lastKnownData);
-          // This is an unexpected failure getting a digest or symlink target.
-          modifiedOutputsReceiver.reportModifiedOutputFile(-1, artifact);
+        if (artifactIsDirty(
+            artifact,
+            lastKnownData,
+            stat,
+            /* knownMissing= */ stat == null,
+            outputChecker,
+            modifiedOutputsReceiver)) {
           dirtyKeys.add(key);
         }
       }
@@ -529,10 +515,30 @@ public class FilesystemValueChecker {
     if (file.isRunfilesTree() || !shouldCheckFile(knownModifiedOutputFiles, file)) {
       return false;
     }
+    return artifactIsDirty(
+        file,
+        lastKnownData,
+        null,
+        /* knownMissing= */ false,
+        outputChecker,
+        modifiedOutputsReceiver);
+  }
+
+  private boolean artifactIsDirty(
+      Artifact file,
+      FileArtifactValue lastKnownData,
+      @Nullable FileStatusWithDigest stat,
+      boolean knownMissing,
+      OutputChecker outputChecker,
+      ModifiedOutputsReceiver modifiedOutputsReceiver) {
     try {
+      // A null batch result already established absence. Passing it to the metadata
+      // reader would perform the same stat again, since null there means "not queried".
       FileArtifactValue fileMetadata =
-          ActionOutputMetadataStore.fileArtifactValueFromArtifact(
-              file, null, xattrProviderOverrider.getXattrProvider(syscallCache), tsgm);
+          knownMissing && !file.isSymlink()
+              ? FileArtifactValue.MISSING_FILE_MARKER
+              : ActionOutputMetadataStore.fileArtifactValueFromArtifact(
+                  file, stat, xattrProviderOverrider.getXattrProvider(syscallCache), tsgm);
       // Remote metadata may record that the file has been materialized in the local filesystem as
       // a requested top-level output without its generating action having been reexecuted (e.g. by
       // the completion function after an action cache hit). If the file is missing now, the action

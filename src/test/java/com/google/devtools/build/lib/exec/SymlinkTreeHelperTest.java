@@ -26,15 +26,20 @@ import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
+import com.google.devtools.build.lib.vfs.FileStatusWithDigest;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
+import com.google.devtools.build.lib.vfs.OutputService.BatchOperations;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
+import java.io.IOException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -138,5 +143,49 @@ public final class SymlinkTreeHelperTest {
     assertThat(treeSymlink.isSymbolicLink()).isTrue();
     assertThat(treeSymlink.readSymbolicLink()).isEqualTo(PathFragment.create("/path/to/target"));
     assertThat(treeMissing.exists()).isFalse();
+  }
+
+  @Test
+  public void batchesMissingLinksAcrossDirectoriesAfterReconciliation() throws Exception {
+    Path root = execRoot.getRelative("batch.runfiles");
+    Path manifest = root.getChild("MANIFEST");
+    PathFragment target = PathFragment.create("../literal-target");
+    Map<PathFragment, PathFragment> missing =
+        Map.of(PathFragment.create("a/new"), target, PathFragment.create("b/new"), target);
+    var links = new HashMap<>(missing);
+    links.put(PathFragment.create("a/existing"), target);
+    links.put(PathFragment.create("b/empty"), null);
+    root.getRelative("a").createDirectoryAndParents();
+    root.getRelative("a/existing").createSymbolicLink(target);
+    FileSystemUtils.createEmptyFile(root.getChild("obsolete"));
+    var calls = new AtomicInteger();
+    BatchOperations batch =
+        new BatchOperations() {
+          @Override
+          public List<FileStatusWithDigest> batchStat(Iterable<PathFragment> paths) {
+            throw new AssertionError("Symlink creation must not batch stat");
+          }
+
+          @Override
+          public void createSymlinks(Path directory, Map<PathFragment, PathFragment> requested)
+              throws IOException {
+            calls.incrementAndGet();
+            assertThat(directory).isEqualTo(root);
+            assertThat(requested).containsExactlyEntriesIn(missing);
+            assertThat(root.getChild("obsolete").exists()).isFalse();
+            assertThat(root.getRelative("b/empty").isFile()).isTrue();
+            assertThat(manifest.exists()).isFalse();
+            for (var link : requested.entrySet()) {
+              directory.getRelative(link.getKey()).createSymbolicLink(link.getValue());
+            }
+          }
+        };
+    var helper =
+        new SymlinkTreeHelper(execRoot.getChild("manifest"), manifest, root, WORKSPACE_NAME, batch);
+    helper.createFilesetSymlinks(links);
+    assertThat(calls.get()).isEqualTo(1);
+    for (var link : missing.entrySet()) {
+      assertThat(root.getRelative(link.getKey()).readSymbolicLink()).isEqualTo(link.getValue());
+    }
   }
 }

@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.remote;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -26,6 +27,8 @@ import com.google.devtools.build.lib.actions.FileStateType;
 import com.google.devtools.build.lib.actions.cache.OutputMetadataStore;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.remote.BazelOutputServiceProto.BatchStatRequest;
+import com.google.devtools.build.lib.remote.BazelOutputServiceProto.BatchStatResponse;
 import com.google.devtools.build.lib.remote.BazelOutputServiceProto.FinalizeArtifactsRequest;
 import com.google.devtools.build.lib.remote.BazelOutputServiceProto.FinalizeArtifactsResponse;
 import com.google.devtools.build.lib.remote.BazelOutputServiceProto.StageArtifactsRequest;
@@ -37,6 +40,7 @@ import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.SyscallCache;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.rpc.Status;
@@ -45,6 +49,7 @@ import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -61,6 +66,15 @@ public class BazelOutputServiceTest {
 
   private static class FakeBazelOutputService
       extends BazelOutputServiceGrpc.BazelOutputServiceImplBase {
+    private BatchStatResponse statResponse = BatchStatResponse.getDefaultInstance();
+
+    @Override
+    public void batchStat(
+        BatchStatRequest request, StreamObserver<BatchStatResponse> responseObserver) {
+      responseObserver.onNext(statResponse);
+      responseObserver.onCompleted();
+    }
+
     private final List<StageArtifactsRequest> stageRequests = new ArrayList<>();
     private final List<FinalizeArtifactsRequest> finalizeRequests = new ArrayList<>();
 
@@ -176,6 +190,44 @@ public class BazelOutputServiceTest {
         service.startBuild(
             UUID.randomUUID(), "workspace", mock(EventHandler.class), /* finalizeActions= */ true);
     return service;
+  }
+
+  @Test
+  public void batchStat_missingPathReturnsNull() throws Exception {
+    BazelOutputService service = createService(10000);
+    fakeService.statResponse =
+        BatchStatResponse.newBuilder()
+            .addResponses(BatchStatResponse.StatResponse.getDefaultInstance())
+            .build();
+    assertThat(service.getBatchStatter().batchStat(List.of(PathFragment.create("outputs/missing"))))
+        .containsExactly((Object) null);
+  }
+
+  @Test
+  public void batchStat_unknownMetadataRequiresLocalFallback() throws Exception {
+    BazelOutputService service = createService(10000);
+    for (var stat :
+        List.of(
+            BatchStatResponse.Stat.getDefaultInstance(),
+            BatchStatResponse.Stat.newBuilder()
+                .setFile(BatchStatResponse.Stat.File.getDefaultInstance())
+                .build())) {
+      fakeService.statResponse =
+          BatchStatResponse.newBuilder()
+              .addResponses(BatchStatResponse.StatResponse.newBuilder().setStat(stat))
+              .build();
+      assertThrows(
+          IOException.class,
+          () -> service.getBatchStatter().batchStat(List.of(PathFragment.create("outputs/file"))));
+    }
+  }
+
+  @Test
+  public void batchStat_unsupportedPathRequiresLocalFallback() throws Exception {
+    BazelOutputService service = createService(10000);
+    assertThrows(
+        IOException.class,
+        () -> service.getBatchStatter().batchStat(List.of(PathFragment.create("source"))));
   }
 
   @Test

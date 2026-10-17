@@ -65,7 +65,6 @@ import io.grpc.StatusRuntimeException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -659,7 +658,6 @@ public class BazelOutputService implements OutputService {
       var request = BatchStatRequest.newBuilder();
       request.setBuildId(checkNotNull(buildId));
 
-      var unsupportedPathIndexSet = new HashSet<Integer>();
       int index = 0;
       for (var execPath : paths) {
         String pathString = null;
@@ -671,7 +669,9 @@ public class BazelOutputService implements OutputService {
         }
 
         if (pathString == null) {
-          unsupportedPathIndexSet.add(index);
+          // BatchStat nulls must mean absence, not an unsupported lookup. Let the caller
+          // fall back to ordinary filesystem stats for this batch.
+          throw new IOException("Cannot batch stat path outside the output tree: " + path);
         } else {
           request.addPaths(pathString);
         }
@@ -688,11 +688,6 @@ public class BazelOutputService implements OutputService {
 
       var result = new ArrayList<FileStatusWithDigest>(index);
       for (int i = 0; i < index; ++i) {
-        if (unsupportedPathIndexSet.contains(i)) {
-          result.add(null);
-          continue;
-        }
-
         var statResponse = response.getResponses(i);
         if (!statResponse.hasStat()) {
           result.add(null);
@@ -711,7 +706,8 @@ public class BazelOutputService implements OutputService {
         } else if (stat.hasDirectory()) {
           result.add(new BazelOutputServiceDirectory());
         } else {
-          result.add(null);
+          throw new IOException(
+              "Output service did not provide usable metadata for batch entry " + i);
         }
       }
       return result;

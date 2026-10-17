@@ -105,6 +105,7 @@ import com.google.devtools.build.lib.util.TempPathGenerator;
 import com.google.devtools.build.lib.util.io.AsynchronousMessageOutputStream;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
+import com.google.devtools.build.lib.vfs.LocalOutputService;
 import com.google.devtools.build.lib.vfs.OutputPermissions;
 import com.google.devtools.build.lib.vfs.OutputService;
 import com.google.devtools.build.lib.vfs.Path;
@@ -153,6 +154,8 @@ public final class RemoteModule extends BlazeModule {
   @Nullable private RemoteOptions remoteOptions;
   @Nullable private CommandEnvironment env;
   @Nullable private OutputService outputService;
+  @Nullable private ManagedChannel batchOutputServiceChannel;
+  @Nullable private BatchOutputServiceClient batchOutputServiceClient;
   @Nullable private TempPathGenerator tempPathGenerator;
   @Nullable private BlockWaitingModule blockWaitingModule;
   @Nullable private RemoteOutputChecker remoteOutputChecker;
@@ -436,6 +439,33 @@ public final class RemoteModule extends BlazeModule {
     this.remoteOptions = remoteOptions;
     this.env = env;
 
+    if (!Strings.isNullOrEmpty(remoteOptions.batchOutputService)) {
+      if (!remoteOptions.batchOutputService.startsWith("unix:")) {
+        throw createOptionsExitException(
+            "--experimental_batch_output_service requires a unix: endpoint",
+            FailureDetails.RemoteOptions.Code.EXECUTION_WITH_INVALID_CACHE);
+      }
+      if (shouldEnableRemoteOutputService(remoteOptions)) {
+        throw createOptionsExitException(
+            "The full and partial output services cannot be combined",
+            FailureDetails.RemoteOptions.Code.EXECUTION_WITH_INVALID_CACHE);
+      }
+      try {
+        batchOutputServiceChannel =
+            channelFactory.newChannel(
+                remoteOptions.batchOutputService,
+                null,
+                Options.getDefaults(AuthAndTLSOptions.class),
+                ImmutableList.of(),
+                ImmutableMap.of());
+        batchOutputServiceClient =
+            new BatchOutputServiceClient(batchOutputServiceChannel, env::getExecRoot);
+      } catch (IOException e) {
+        handleInitFailure(env, e, Code.CREDENTIALS_INIT_FAILURE);
+        return false;
+      }
+    }
+
     AuthAndTLSOptions authAndTlsOptions = env.getOptions().getOptions(AuthAndTLSOptions.class);
     DigestHashFunction hashFn = env.getRuntime().getFileSystem().getDigestFunction();
     DigestUtil digestUtil = new DigestUtil(env.getXattrProvider(), hashFn);
@@ -524,6 +554,9 @@ public final class RemoteModule extends BlazeModule {
     tempPathGenerator = getTempPathGenerator(env);
 
     if (!enableDiskCache && !enableHttpCache && !enableGrpcCache && !enableRemoteExecution) {
+      if (batchOutputServiceClient != null) {
+        outputService = new LocalOutputService(env.getDirectories(), batchOutputServiceClient);
+      }
       // Quit if no remote caching or execution was enabled.
       actionContextProvider =
           RemoteActionContextProvider.createForPlaceholder(
@@ -703,7 +736,8 @@ public final class RemoteModule extends BlazeModule {
       outputService =
           new RemoteOutputService(
               env.getDirectories(),
-              buildRequestOptions != null && buildRequestOptions.rewindLostInputs);
+              buildRequestOptions != null && buildRequestOptions.rewindLostInputs,
+              batchOutputServiceClient);
     }
 
     // Verifying that the blobs referenced by a disk cache action result are present locally turns
@@ -1124,6 +1158,12 @@ public final class RemoteModule extends BlazeModule {
                   remoteDownloaderRef,
                   tempPathGeneratorRef,
                   rpcLogFileRef));
+    }
+
+    if (batchOutputServiceChannel != null) {
+      batchOutputServiceChannel.shutdown();
+      batchOutputServiceChannel = null;
+      batchOutputServiceClient = null;
     }
 
     Preconditions.checkNotNull(env);

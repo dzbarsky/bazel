@@ -264,19 +264,19 @@ public final class FilesystemValueCheckerTest {
     DISABLED {
       @Nullable
       @Override
-      BatchStat getBatchStat(FileSystem fileSystem) {
+      BatchStat getBatchStat(Path execRoot) {
         return null;
       }
     },
     ENABLED {
       @Override
-      BatchStat getBatchStat(FileSystem fileSystem) {
+      BatchStat getBatchStat(Path execRoot) {
         return (paths) -> {
           List<FileStatusWithDigest> stats = new ArrayList<>();
           for (PathFragment pathFrag : paths) {
             stats.add(
                 FileStatusWithDigestAdapter.maybeAdapt(
-                    fileSystem.getPath("/").getRelative(pathFrag).statIfFound(Symlinks.NOFOLLOW)));
+                    execRoot.getRelative(pathFrag).statIfFound(Symlinks.NOFOLLOW)));
           }
           return stats;
         };
@@ -284,7 +284,12 @@ public final class FilesystemValueCheckerTest {
     };
 
     @Nullable
-    abstract BatchStat getBatchStat(FileSystem fileSystem);
+    abstract BatchStat getBatchStat(Path execRoot);
+
+    @Nullable
+    BatchStat getBatchStat(FileSystem fileSystem) {
+      return getBatchStat(fileSystem.getPath("/"));
+    }
   }
 
   @Before
@@ -1497,7 +1502,8 @@ public final class FilesystemValueCheckerTest {
             .resolveSymbolicLinks()
             .getRelative(UUID.randomUUID().toString());
     Path target =
-        root.getRelative(StringEncoding.unicodeToInternal(nonAscii ? "rémote/file" : "remote/file"));
+        root.getRelative(
+            StringEncoding.unicodeToInternal(nonAscii ? "rémote/file" : "remote/file"));
     target.getParentDirectory().createDirectoryAndParents();
     Path redirect = root.getRelative("different/dir");
     redirect.createDirectoryAndParents();
@@ -1586,6 +1592,10 @@ public final class FilesystemValueCheckerTest {
     differencer.inject(ImmutableMap.of(actionKey, actionValueWithMetadata(output, metadata)));
     assertThat(evaluator.evaluate(ImmutableList.of(actionKey), EVALUATION_OPTIONS).hasError())
         .isFalse();
+    Path execRoot = output.getPath();
+    for (int i = 0; i < output.getExecPath().segmentCount(); i++) {
+      execRoot = execRoot.getParentDirectory();
+    }
     return new FilesystemValueChecker(
             /* tsgm= */ null,
             SyscallCache.NO_CACHE,
@@ -1593,7 +1603,7 @@ public final class FilesystemValueCheckerTest {
             FSVC_THREADS_FOR_TEST)
         .getDirtyActionValues(
             evaluator.getValues(),
-            /* batchStatter= */ null,
+            batchStat.getBatchStat(execRoot),
             ModifiedFileSet.EVERYTHING_MODIFIED,
             outputChecker,
             (ignored, ignored2) -> {});
@@ -1636,7 +1646,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     OutputChecker.TRUST_ALL,
                     (ignored, ignored2) -> {}))
@@ -1658,7 +1668,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     OutputChecker.TRUST_ALL,
                     (ignored, ignored2) -> {}))
@@ -1701,7 +1711,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     OutputChecker.TRUST_ALL,
                     (ignored, ignored2) -> {}))
@@ -1721,7 +1731,7 @@ public final class FilesystemValueCheckerTest {
                 FSVC_THREADS_FOR_TEST)
             .getDirtyActionValues(
                 evaluator.getValues(),
-                /* batchStatter= */ null,
+                batchStat.getBatchStat(fs),
                 ModifiedFileSet.EVERYTHING_MODIFIED,
                 OutputChecker.TRUST_ALL,
                 (ignored, ignored2) -> {});
@@ -1767,7 +1777,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     OutputChecker.TRUST_ALL,
                     (ignored, ignored2) -> {}))
@@ -1782,7 +1792,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     OutputChecker.TRUST_ALL,
                     (ignored, ignored2) -> {}))
@@ -1825,7 +1835,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     CHECK_TTL,
                     (ignored, ignored2) -> {}))
@@ -1867,7 +1877,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     OutputChecker.TRUST_ALL,
                     (ignored, ignored2) -> {}))
@@ -1884,7 +1894,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     OutputChecker.TRUST_LOCAL_ONLY,
                     (ignored, ignored2) -> {}))
@@ -1927,7 +1937,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     OutputChecker.TRUST_ALL,
                     (ignored, ignored2) -> {}))
@@ -1948,7 +1958,7 @@ public final class FilesystemValueCheckerTest {
                 FSVC_THREADS_FOR_TEST)
             .getDirtyActionValues(
                 evaluator.getValues(),
-                /* batchStatter= */ null,
+                batchStat.getBatchStat(fs),
                 ModifiedFileSet.EVERYTHING_MODIFIED,
                 OutputChecker.TRUST_ALL,
                 (ignored, ignored2) -> {});
@@ -1994,7 +2004,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     OutputChecker.TRUST_ALL,
                     (ignored, ignored2) -> {}))
@@ -2018,7 +2028,7 @@ public final class FilesystemValueCheckerTest {
                 FSVC_THREADS_FOR_TEST)
             .getDirtyActionValues(
                 evaluator.getValues(),
-                /* batchStatter= */ null,
+                batchStat.getBatchStat(fs),
                 ModifiedFileSet.EVERYTHING_MODIFIED,
                 OutputChecker.TRUST_ALL,
                 (ignored, ignored2) -> {});
@@ -2064,7 +2074,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     CHECK_TTL,
                     (ignored, ignored2) -> {}))
@@ -2110,7 +2120,7 @@ public final class FilesystemValueCheckerTest {
                     FSVC_THREADS_FOR_TEST)
                 .getDirtyActionValues(
                     evaluator.getValues(),
-                    /* batchStatter= */ null,
+                    batchStat.getBatchStat(fs),
                     ModifiedFileSet.EVERYTHING_MODIFIED,
                     CHECK_TTL,
                     (ignored, ignored2) -> {}))

@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.server.FailureDetails.Execution.Code;
 import com.google.devtools.build.lib.vfs.Dirent;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
+import com.google.devtools.build.lib.vfs.OutputService.BatchOperations;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
@@ -45,6 +46,7 @@ public final class SymlinkTreeHelper {
   private final Path outputManifest;
   private final Path symlinkTreeRoot;
   private final String workspaceName;
+  @Nullable private final BatchOperations batchOperations;
 
   /**
    * Creates SymlinkTreeHelper instance. Can be used independently of SymlinkTreeAction.
@@ -56,6 +58,16 @@ public final class SymlinkTreeHelper {
    */
   public SymlinkTreeHelper(
       Path inputManifest, Path outputManifest, Path symlinkTreeRoot, String workspaceName) {
+    this(inputManifest, outputManifest, symlinkTreeRoot, workspaceName, null);
+  }
+
+  public SymlinkTreeHelper(
+      Path inputManifest,
+      Path outputManifest,
+      Path symlinkTreeRoot,
+      String workspaceName,
+      @Nullable BatchOperations batchOperations) {
+    this.batchOperations = batchOperations;
     // Do not indirect paths through overlay filesystems (such as the action filesystem or a
     // snapshotting filesystem), for a few reasons:
     // (1) we always want to create the symlinks on disk, even if the overlay filesystem creates
@@ -138,7 +150,11 @@ public final class SymlinkTreeHelper {
         Directory<T> parentDir = root.walk(path.getParentDirectory());
         parentDir.addSymlink(path.getBaseName(), value);
       }
-      root.syncTreeRecursively(symlinkTreeRoot, targetPathFn);
+      Map<PathFragment, PathFragment> missing = batchOperations == null ? null : new HashMap<>();
+      root.syncTreeRecursively(symlinkTreeRoot, targetPathFn, symlinkTreeRoot, missing);
+      if (missing != null && !missing.isEmpty()) {
+        batchOperations.createSymlinks(symlinkTreeRoot, missing);
+      }
       createWorkspaceSubdirectory();
     } catch (IOException e) {
       throw new EnvironmentalExecException(e, Code.SYMLINK_TREE_CREATION_IO_EXCEPTION);
@@ -220,7 +236,12 @@ public final class SymlinkTreeHelper {
       return result;
     }
 
-    void syncTreeRecursively(Path at, TargetPathFunction<T> targetPathFn) throws IOException {
+    void syncTreeRecursively(
+        Path at,
+        TargetPathFunction<T> targetPathFn,
+        Path treeRoot,
+        @Nullable Map<PathFragment, PathFragment> missing)
+        throws IOException {
       FileStatus stat = at.statIfFound(Symlinks.FOLLOW);
       if (stat == null) {
         at.createDirectoryAndParents();
@@ -262,23 +283,30 @@ public final class SymlinkTreeHelper {
           if (dirent.getType() != Dirent.Type.DIRECTORY) {
             next.deleteTree();
           }
-          nextDir.syncTreeRecursively(at.getChild(basename), targetPathFn);
+          nextDir.syncTreeRecursively(at.getChild(basename), targetPathFn, treeRoot, missing);
         } else {
           at.getChild(basename).deleteTree();
         }
       }
 
       for (Map.Entry<String, T> entry : symlinks.entrySet()) {
-        Path next = at.getChild(entry.getKey());
         T value = entry.getValue();
         if (value == null) {
-          FileSystemUtils.createEmptyFile(next);
+          FileSystemUtils.createEmptyFile(at.getChild(entry.getKey()));
         } else {
-          FileSystemUtils.ensureSymbolicLink(next, targetPathFn.get(value));
+          Path link = at.getChild(entry.getKey());
+          PathFragment target = targetPathFn.get(value);
+          if (missing == null) {
+            FileSystemUtils.ensureSymbolicLink(link, target);
+          } else {
+            missing.put(link.relativeTo(treeRoot), target);
+          }
         }
       }
       for (Map.Entry<String, Directory<T>> entry : directories.entrySet()) {
-        entry.getValue().syncTreeRecursively(at.getChild(entry.getKey()), targetPathFn);
+        entry
+            .getValue()
+            .syncTreeRecursively(at.getChild(entry.getKey()), targetPathFn, treeRoot, missing);
       }
     }
   }

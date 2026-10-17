@@ -310,6 +310,22 @@ proto_library(
     ],
 )
 
+proto_library(
+    name = "batch_output_service_proto",
+    srcs = ["batch_output_service.proto"],
+)
+
+java_proto_library(
+    name = "batch_output_service_java_proto",
+    deps = [":batch_output_service_proto"],
+)
+
+java_grpc_library(
+    name = "batch_output_service_java_grpc",
+    srcs = [":batch_output_service_proto"],
+    deps = [":batch_output_service_java_proto"],
+)
+
 java_proto_library(
     name = "bazel_output_service_java_proto",
     deps = [":bazel_output_service_proto"],
