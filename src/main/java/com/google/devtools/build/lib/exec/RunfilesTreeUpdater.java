@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue.Run
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.DigestUtils;
+import com.google.devtools.build.lib.vfs.OutputService.BatchOperations;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
@@ -34,6 +35,7 @@ import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
@@ -46,6 +48,7 @@ import javax.annotation.concurrent.ThreadSafe;
 public class RunfilesTreeUpdater {
   private final Path execRoot;
   private final XattrProvider xattrProvider;
+  @Nullable private final BatchOperations batchOperations;
 
   /**
    * Deduplicates multiple attempts to update the same runfiles tree.
@@ -59,10 +62,17 @@ public class RunfilesTreeUpdater {
       new ConcurrentHashMap<>();
 
   public static RunfilesTreeUpdater forCommandEnvironment(CommandEnvironment env) {
-    return new RunfilesTreeUpdater(env.getExecRoot(), env.getXattrProvider());
+    return new RunfilesTreeUpdater(
+        env.getExecRoot(), env.getXattrProvider(), env.getOutputService().getBatchOperations());
   }
 
   public RunfilesTreeUpdater(Path execRoot, XattrProvider xattrProvider) {
+    this(execRoot, xattrProvider, null);
+  }
+
+  private RunfilesTreeUpdater(
+      Path execRoot, XattrProvider xattrProvider, @Nullable BatchOperations batchOperations) {
+    this.batchOperations = batchOperations;
     this.execRoot = execRoot;
     this.xattrProvider = xattrProvider;
   }
@@ -151,7 +161,8 @@ public class RunfilesTreeUpdater {
     }
 
     SymlinkTreeHelper helper =
-        new SymlinkTreeHelper(inputManifest, outputManifest, runfilesDir, tree.getWorkspaceName());
+        new SymlinkTreeHelper(
+            inputManifest, outputManifest, runfilesDir, tree.getWorkspaceName(), batchOperations);
 
     switch (tree.getSymlinksMode()) {
       case CREATE -> {

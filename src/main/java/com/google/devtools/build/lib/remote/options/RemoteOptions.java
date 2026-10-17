@@ -818,6 +818,17 @@ public final class RemoteOptions extends CommonRemoteOptions {
   public String remoteOutputService;
 
   @Option(
+      name = "experimental_batch_output_service",
+      defaultValue = "null",
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "Unix socket endpoint (unix:/path) for optional batch stat and symlink RPCs. "
+              + "The ordinary output service retains all other responsibilities. The service must "
+              + "run in the build user's filesystem context. Unsupported operations run locally.")
+  public String batchOutputService;
+
+  @Option(
       name = "experimental_remote_output_service_output_path_prefix",
       defaultValue = "",
       documentationCategory = OptionDocumentationCategory.REMOTE,

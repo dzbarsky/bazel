@@ -172,6 +172,17 @@ public interface OutputService {
   @Nullable
   BatchStat getBatchStatter();
 
+  /** Optional local filesystem RPCs, independent of output-tree ownership and remote metadata. */
+  interface BatchOperations extends BatchStat {
+    /** Creates missing links below an existing root; existing identical links are accepted. */
+    void createSymlinks(Path root, Map<PathFragment, PathFragment> symlinks) throws IOException;
+  }
+
+  @Nullable
+  default BatchOperations getBatchOperations() {
+    return null;
+  }
+
   /** Returns true iff {@link #createSymlinkTree} is available. */
   boolean canCreateSymlinkTree();
 
