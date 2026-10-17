@@ -13,11 +13,16 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote;
 
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.remote.BatchOutputServiceProto.BatchStatRequest;
 import com.google.devtools.build.lib.remote.BatchOutputServiceProto.BatchSymlinkRequest;
+import com.google.devtools.build.lib.remote.BatchOutputServiceProto.BatchSymlinkResponse;
 import com.google.devtools.build.lib.remote.BatchOutputServiceProto.FileStat;
 import com.google.devtools.build.lib.remote.BatchOutputServiceProto.Symlink;
 import com.google.devtools.build.lib.vfs.FileStatusWithDigest;
@@ -33,6 +38,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -42,13 +48,16 @@ import java.util.function.Supplier;
 final class BatchOutputServiceClient implements BatchOperations {
   private static final int MAX_ENTRIES = 4096;
   private static final int MAX_PATH_BYTES = 1024 * 1024;
+  private static final int MAX_SYMLINK_REQUESTS = 4;
   private final BatchOutputServiceGrpc.BatchOutputServiceBlockingStub stub;
+  private final BatchOutputServiceGrpc.BatchOutputServiceFutureStub symlinkStub;
   private final Supplier<Path> execRoot;
   private volatile boolean statSupported = true;
   private volatile boolean symlinkSupported = true;
 
   BatchOutputServiceClient(Channel channel, Supplier<Path> execRoot) {
     this.stub = BatchOutputServiceGrpc.newBlockingStub(channel);
+    this.symlinkStub = BatchOutputServiceGrpc.newFutureStub(channel);
     this.execRoot = execRoot;
   }
 
@@ -125,6 +134,7 @@ final class BatchOutputServiceClient implements BatchOperations {
   @Override
   public void createSymlinks(Path root, Map<PathFragment, PathFragment> symlinks)
       throws IOException {
+    List<PendingSymlinks> pending = new ArrayList<>(MAX_SYMLINK_REQUESTS);
     var request = BatchSymlinkRequest.newBuilder().setDirectory(pathBytes(root.asFragment()));
     int bytes = 0;
     for (var entry : symlinks.entrySet()) {
@@ -136,7 +146,7 @@ final class BatchOutputServiceClient implements BatchOperations {
       int size = link.getSerializedSize();
       if (request.getSymlinksCount() > 0
           && (request.getSymlinksCount() == MAX_ENTRIES || bytes + size > MAX_PATH_BYTES)) {
-        symlink(root, request.build());
+        enqueueSymlinks(root, request.build(), pending);
         request.clearSymlinks();
         bytes = 0;
       }
@@ -144,16 +154,57 @@ final class BatchOutputServiceClient implements BatchOperations {
       bytes += size;
     }
     if (request.getSymlinksCount() > 0) {
-      symlink(root, request.build());
+      enqueueSymlinks(root, request.build(), pending);
+    }
+    finishSymlinks(root, pending);
+  }
+
+  private record PendingSymlinks(
+      BatchSymlinkRequest request, ListenableFuture<BatchSymlinkResponse> response) {}
+
+  private void enqueueSymlinks(
+      Path root, BatchSymlinkRequest request, List<PendingSymlinks> pending) throws IOException {
+    if (!symlinkSupported) {
+      finishSymlinks(root, pending);
+      symlinkLocally(root, request);
+      return;
+    }
+    long start = Profiler.nanoTimeMaybe();
+    // No retries or deadline: transport failure may leave a partially completed batch.
+    var response = symlinkStub.batchSymlink(request);
+    response.addListener(
+        () ->
+            Profiler.instance()
+                .logSimpleTask(start, ProfilerTask.INFO, "Batch output service symlink"),
+        directExecutor());
+    pending.add(new PendingSymlinks(request, response));
+    if (pending.size() == MAX_SYMLINK_REQUESTS) {
+      finishSymlinks(root, pending);
     }
   }
 
-  @SuppressWarnings("try")
-  private void symlink(Path root, BatchSymlinkRequest request) throws IOException {
-    if (symlinkSupported) {
-      try (var ignored = Profiler.instance().profile("Batch output service symlink")) {
-        // No retries or deadline: transport failure may leave a partially completed batch.
-        var response = stub.batchSymlink(request);
+  private void finishSymlinks(Path root, List<PendingSymlinks> pending) throws IOException {
+    // Drain every submitted request before reporting a failure or falling back locally.
+    try {
+      for (var batch : pending) {
+        try {
+          batch.response().get();
+        } catch (ExecutionException ignored) {
+          // Inspect all results only after the other requests finish.
+        }
+      }
+    } catch (InterruptedException e) {
+      for (var batch : pending) {
+        batch.response().cancel(true);
+      }
+      Thread.currentThread().interrupt();
+      throw new IOException("Batch symlink interrupted; completion is unknown", e);
+    }
+    List<BatchSymlinkRequest> unsupported = new ArrayList<>();
+    for (var batch : pending) {
+      var request = batch.request();
+      try {
+        var response = Futures.getDone(batch.response());
         if (response.getErrorsCount() != request.getSymlinksCount()) {
           throw new IOException("Batch symlink returned an incorrect result count");
         }
@@ -167,15 +218,22 @@ final class BatchOutputServiceClient implements BatchOperations {
                     + request.getSymlinks(i).getPath().toString(ISO_8859_1));
           }
         }
-        return;
-      } catch (StatusRuntimeException e) {
-        if (e.getStatus().getCode() != Status.Code.UNIMPLEMENTED) {
+      } catch (ExecutionException e) {
+        if (Status.fromThrowable(e.getCause()).getCode() != Status.Code.UNIMPLEMENTED) {
           throw new IOException("Batch symlink RPC failed; completion is unknown", e);
         }
         // The protocol guarantees UNIMPLEMENTED is returned before any mutation.
         symlinkSupported = false;
+        unsupported.add(request);
       }
     }
+    pending.clear();
+    for (var request : unsupported) {
+      symlinkLocally(root, request);
+    }
+  }
+
+  private static void symlinkLocally(Path root, BatchSymlinkRequest request) throws IOException {
     for (Symlink link : request.getSymlinksList()) {
       FileSystemUtils.ensureSymbolicLink(
           root.getRelative(link.getPath().toString(ISO_8859_1)),

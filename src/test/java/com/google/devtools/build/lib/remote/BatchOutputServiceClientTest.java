@@ -27,11 +27,19 @@ import io.grpc.Server;
 import io.grpc.Status;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
+import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BiConsumer;
 import org.junit.After;
 import org.junit.Before;
@@ -241,5 +249,108 @@ public final class BatchOutputServiceClientTest {
             client.createSymlinks(
                 root, Map.of(PathFragment.create("link"), PathFragment.create("target"))));
     assertThat(root.getChild("link").isSymbolicLink()).isFalse();
+  }
+
+  @Test(timeout = 10000)
+  public void symlinkBatchesAreBoundedAndAcceptOutOfOrderReplies() throws Exception {
+    List<StreamObserver<BatchSymlinkResponse>> observers = new ArrayList<>();
+    List<Integer> sizes = new ArrayList<>();
+    symlinkHandler =
+        (request, observer) -> {
+          observers.add(observer);
+          sizes.add(request.getSymlinksCount());
+          if (observers.size() == 4 || request.getSymlinksCount() == 1) {
+            for (int i = observers.size() - 1; i >= 0; i--) {
+              observers.get(i).onNext(successfulSymlinks(sizes.get(i)));
+              observers.get(i).onCompleted();
+            }
+            observers.clear();
+            sizes.clear();
+          }
+        };
+    client.createSymlinks(root, symlinks(4 * 4096 + 1));
+    assertThat(symlinkRequests.stream().map(BatchSymlinkRequest::getSymlinksCount).toList())
+        .containsExactly(4096, 4096, 4096, 4096, 1)
+        .inOrder();
+    assertThat(observers).isEmpty();
+  }
+
+  @Test(timeout = 10000)
+  public void failedSymlinkBatchDrainsOutstandingRequestsWithoutFallback() throws Exception {
+    CountDownLatch received = new CountDownLatch(3);
+    List<StreamObserver<BatchSymlinkResponse>> observers = new ArrayList<>();
+    symlinkHandler =
+        (request, observer) -> {
+          observers.add(observer);
+          received.countDown();
+        };
+    var executor = Executors.newSingleThreadExecutor();
+    try {
+      var result =
+          executor.submit(
+              () -> {
+                client.createSymlinks(root, symlinks(8193));
+                return null;
+              });
+      assertThat(received.await(5, TimeUnit.SECONDS)).isTrue();
+      observers.getFirst().onError(Status.UNAVAILABLE.asRuntimeException());
+      assertThrows(TimeoutException.class, () -> result.get(100, TimeUnit.MILLISECONDS));
+      observers.get(1).onError(Status.UNIMPLEMENTED.asRuntimeException());
+      observers.get(2).onNext(successfulSymlinks(1));
+      observers.get(2).onCompleted();
+      var error = assertThrows(ExecutionException.class, () -> result.get(5, TimeUnit.SECONDS));
+      assertThat(error).hasCauseThat().isInstanceOf(IOException.class);
+      assertThat(root.getDirectoryEntries()).isEmpty();
+      assertThat(symlinkRequests).hasSize(3);
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test(timeout = 10000)
+  public void interruptionCancelsEveryPendingSymlinkRequest() throws Exception {
+    CountDownLatch received = new CountDownLatch(3);
+    List<StreamObserver<BatchSymlinkResponse>> observers = new ArrayList<>();
+    symlinkHandler =
+        (request, observer) -> {
+          observers.add(observer);
+          received.countDown();
+        };
+    var result =
+        new FutureTask<Boolean>(
+            () -> {
+              assertThrows(IOException.class, () -> client.createSymlinks(root, symlinks(8193)));
+              return Thread.currentThread().isInterrupted();
+            });
+    var caller = new Thread(result);
+    caller.start();
+    try {
+      assertThat(received.await(5, TimeUnit.SECONDS)).isTrue();
+      caller.interrupt();
+      assertThat(result.get(5, TimeUnit.SECONDS)).isTrue();
+      for (var observer : observers) {
+        assertThat(((ServerCallStreamObserver<?>) observer).isCancelled()).isTrue();
+      }
+      assertThat(root.getDirectoryEntries()).isEmpty();
+    } finally {
+      caller.interrupt();
+      caller.join(5000);
+    }
+  }
+
+  private static Map<PathFragment, PathFragment> symlinks(int count) {
+    Map<PathFragment, PathFragment> links = new LinkedHashMap<>();
+    for (int i = 0; i < count; i++) {
+      links.put(PathFragment.create("link" + i), PathFragment.create("target"));
+    }
+    return links;
+  }
+
+  private static BatchSymlinkResponse successfulSymlinks(int count) {
+    var response = BatchSymlinkResponse.newBuilder();
+    for (int i = 0; i < count; i++) {
+      response.addErrors(0);
+    }
+    return response.build();
   }
 }
