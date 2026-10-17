@@ -1691,8 +1691,8 @@ class RemoteRepoContentsCacheTest(
         'other_repo.bzl',
         [
             'def _other_repo_impl(rctx):',
-            # Reading my_repo's BUILD forces full materialization of my_repo.
-            '  rctx.read(rctx.attr.build_file)',
+            # rctx.path forces full materialization of my_repo on this branch.
+            '  rctx.read(rctx.path(rctx.attr.build_file))',
             '  rctx.file("BUILD", "filegroup(name=\'haha\')")',
             '  return rctx.repo_metadata()',
             (
