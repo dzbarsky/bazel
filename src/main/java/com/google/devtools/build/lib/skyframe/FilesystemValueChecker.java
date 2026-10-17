@@ -226,6 +226,9 @@ public class FilesystemValueChecker {
 
     logger.atInfo().log("Accumulating dirty actions and batching them into shards");
     int numShards = Runtime.getRuntime().availableProcessors() * 4;
+    if (batchStatter != null) {
+      numShards = Math.min(numShards, batchStatter.getMaxConcurrentCalls());
+    }
     Collection<List<Map.Entry<SkyKey, ActionExecutionValue>>> actionKeyShards;
     try (SilentCloseable c =
         Profiler.instance().profile("getDirtyActionValues/filterAndBatchActions")) {

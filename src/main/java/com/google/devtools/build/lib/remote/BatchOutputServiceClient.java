@@ -57,6 +57,12 @@ final class BatchOutputServiceClient implements BatchOperations {
   }
 
   @Override
+  public int getMaxConcurrentCalls() {
+    // Amortize RPC overhead with larger batches instead of creating four shards per CPU.
+    return 16;
+  }
+
+  @Override
   public List<FileStatusWithDigest> batchStat(Iterable<PathFragment> paths) throws IOException {
     if (!statSupported) {
       throw new IOException("Batch stat is unavailable");
