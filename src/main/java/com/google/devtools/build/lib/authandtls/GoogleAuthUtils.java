@@ -223,8 +223,11 @@ public final class GoogleAuthUtils {
 
   private static NettyChannelBuilder newUnixNettyChannelBuilder(String target) throws IOException {
     DomainSocketAddress address = new DomainSocketAddress(target.replaceFirst("^unix:", ""));
+    // Netty otherwise uses the socket pathname as :authority, which HTTP/2 servers reject.
     NettyChannelBuilder builder =
-        NettyChannelBuilder.forAddress(address).eventLoopGroup(getEventLoopGroup());
+        NettyChannelBuilder.forAddress(address)
+            .overrideAuthority("localhost")
+            .eventLoopGroup(getEventLoopGroup());
     if (KQueue.isAvailable()) {
       return builder.channelType(KQueueDomainSocketChannel.class);
     }

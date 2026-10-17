@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.authandtls;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assume.assumeTrue;
 
 import com.google.auth.Credentials;
 import com.google.common.base.Preconditions;
@@ -27,10 +28,12 @@ import com.google.devtools.build.lib.authandtls.credentialhelper.CredentialHelpe
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.runtime.CommandLinePathFactory;
 import com.google.devtools.build.lib.testutil.Scratch;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
+import com.google.devtools.common.options.Options;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -45,6 +48,26 @@ import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public class GoogleAuthUtilsTest {
+  @Test
+  public void unixChannelHasValidHttpAuthority() throws Exception {
+    assumeTrue(OS.getCurrent() != OS.WINDOWS);
+    var channel =
+        GoogleAuthUtils.newChannel(
+            null,
+            "unix:/tmp/bazel-output-service.sock",
+            null,
+            Options.getDefaults(AuthAndTLSOptions.class),
+            null,
+            Map.of());
+    try {
+      URI uri = URI.create("http://" + channel.authority());
+      assertThat(uri.getHost()).isNotNull();
+      assertThat(uri.getRawPath()).isEmpty();
+    } finally {
+      channel.shutdownNow();
+    }
+  }
+
   @Test
   public void testNetrc_emptyEnv_shouldIgnore() throws Exception {
     ImmutableMap<String, String> clientEnv = ImmutableMap.of();
