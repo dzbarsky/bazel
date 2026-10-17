@@ -1,14 +1,13 @@
-name: Build and publish Bazel 9.3
+name: Build and publish Bazel 9.4
 
 on:
   push:
     branches:
-      - codex/bazel-9.3-buildbuddy-release
-      - codex/bazel-9.3-jvm-buildbuddy-release
+      - codex/bazel-9.4-jvm-buildbuddy-release
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Bazelisk-compatible release tag (for example, 9.3.0-dzbarsky123)
+        description: Bazelisk-compatible release tag (for example, 9.4.0-dzbarsky123)
         required: false
         type: string
 
@@ -20,7 +19,7 @@ defaults:
     shell: bash
 
 concurrency:
-  group: bazel-9.3-release
+  group: bazel-9.4-release
   cancel-in-progress: false
 
 jobs:
@@ -52,16 +51,16 @@ jobs:
             published_tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[] | select(.draft == false) | .tag_name')"
             max_release_number=0
             while IFS= read -r published_tag; do
-              if [[ "${published_tag}" =~ ^9\.3\.0-dzbarsky([0-9]+)$ ]]; then
+              if [[ "${published_tag}" =~ ^9\.4\.0-dzbarsky([0-9]+)$ ]]; then
                 release_number=$((10#${BASH_REMATCH[1]}))
                 if (( release_number > max_release_number )); then
                   max_release_number="${release_number}"
                 fi
               fi
             done <<< "${published_tags}"
-            release_tag="9.3.0-dzbarsky$((max_release_number + 1))"
+            release_tag="9.4.0-dzbarsky$((max_release_number + 1))"
           fi
-          if [[ ! "${release_tag}" =~ ^9\.3\.0-[A-Za-z0-9]+$ ]]; then
+          if [[ ! "${release_tag}" =~ ^9\.4\.0-[A-Za-z0-9]+$ ]]; then
             echo "Invalid Bazelisk release tag: ${release_tag}" >&2
             exit 1
           fi

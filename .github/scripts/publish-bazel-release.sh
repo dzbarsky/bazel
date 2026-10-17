@@ -4,7 +4,7 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?}"
 : "${GITHUB_SHA:?}"
 : "${RELEASE_TAG:?}"
-if [[ ! "${RELEASE_TAG}" =~ ^9\.3\.0-[A-Za-z0-9]+$ ]] ||
+if [[ ! "${RELEASE_TAG}" =~ ^9\.4\.0-[A-Za-z0-9]+$ ]] ||
    [[ ! "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "Invalid release tag or commit SHA." >&2
   exit 1
@@ -12,7 +12,7 @@ fi
 
 artifacts_dir="${1:-artifacts}"
 notes_file="${RELEASE_NOTES_FILE:-$(dirname "${BASH_SOURCE[0]}")/../release-notes/${RELEASE_TAG}.md}"
-release_body="Bazel 9.3 binaries for Linux, macOS, and Windows. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
+release_body="Bazel 9.4 binaries for Linux, macOS, and Windows. Use USE_BAZEL_VERSION=dzbarsky/${RELEASE_TAG} with Bazelisk."
 if [[ -f "${notes_file}" ]]; then
   test -s "${notes_file}"
   release_body+=$'\n\n'"$(cat "${notes_file}")"

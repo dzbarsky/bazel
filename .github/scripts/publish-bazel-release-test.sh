@@ -60,9 +60,9 @@ elif endpoint == repo + '/releases?per_page=100':
     event('releases')
     assert '--paginate' in args
     if case == 'release_api_error': fail()
-    releases = [dict(id=16, tag_name='9.3.0-dzbarsky16', draft=False),
-                dict(id=99, tag_name='9.3.0-actiond99', draft=False),
-                dict(id=500, tag_name='9.3.0-dzbarsky500', draft=True)]
+    releases = [dict(id=16, tag_name='9.4.0-dzbarsky16', draft=False),
+                dict(id=99, tag_name='9.4.0-actiond99', draft=False),
+                dict(id=500, tag_name='9.4.0-dzbarsky500', draft=True)]
     if case in ('existing_published', 'existing_draft'):
         releases.append(dict(id=17, tag_name=tag, draft=case == 'existing_draft'))
     emit(releases)
@@ -73,7 +73,7 @@ elif method == 'POST' and endpoint == repo + '/releases':
     assert fields['draft'] == 'true'
     assert fields['target_commitish'] == sha
     assert fields['tag_name'] == tag
-    expected_body = f'Bazel 9.3 binaries for Linux, macOS, and Windows. Use USE_BAZEL_VERSION=dzbarsky/{tag} with Bazelisk.'
+    expected_body = f'Bazel 9.4 binaries for Linux, macOS, and Windows. Use USE_BAZEL_VERSION=dzbarsky/{tag} with Bazelisk.'
     if case == 'release_notes':
         expected_body += '\n\n## Changes\n\n- Preserve `toolchain_type` aliases.'
     assert fields['body'] == expected_body, fields['body']
@@ -111,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
     (temporary / 'bin/gh').chmod(0o755)
     environment = dict(os.environ, PATH=str(temporary / 'bin') + os.pathsep + os.environ['PATH'],
                        GITHUB_REPOSITORY='dzbarsky/bazel', GITHUB_SHA='1' * 40,
-                       RELEASE_TAG='9.3.0-dzbarsky17', GH_TOKEN='', GITHUB_TOKEN='')
+                       RELEASE_TAG='9.4.0-dzbarsky17', GH_TOKEN='', GITHUB_TOKEN='')
     cases = ['success', 'release_notes', 'missing_notes', 'wrong_remote_body',
              'existing_tag', 'existing_published', 'existing_draft',
              'tag_api_error', 'release_api_error', 'missing_local_asset', 'bad_checksum',
@@ -183,7 +183,7 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
     # Execute the unchanged workflow numbering code against published16 plus an
     # unrelated actiond99 release and a draft500 release.
     workflow = (root / '.github/workflows/build-and-publish-bazel.yml').read_text()
-    assert 'group: bazel-9.3-release\n  cancel-in-progress: false' in workflow
+    assert 'group: bazel-9.4-release\n  cancel-in-progress: false' in workflow
     assert '--clobber' not in workflow
     start = workflow.index('        run: |\n') + len('        run: |\n')
     code = []
@@ -194,7 +194,7 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
     env = dict(environment, MOCK_CASE='numbering', MOCK_STATE=str(temporary),
                INPUT_RELEASE_TAG='', GITHUB_OUTPUT=str(output))
     subprocess.run(['bash', '-c', '\n'.join(code)], env=env, check=True)
-    assert output.read_text() == 'release_tag=9.3.0-dzbarsky17\n', output.read_text()
+    assert output.read_text() == 'release_tag=9.4.0-dzbarsky17\n', output.read_text()
     print('PASS numbering_16_to_17')
 print(f'All {len(cases) + 1} mocked publication checks passed; no network calls or GitHub mutations.')
 PY
