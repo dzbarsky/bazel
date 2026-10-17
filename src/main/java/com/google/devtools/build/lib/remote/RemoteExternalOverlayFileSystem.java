@@ -111,6 +111,7 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
 
   // Per-build information that is set in beforeCommand and cleared in afterCommand.
   @Nullable private CombinedCache cache;
+  @Nullable private Consumer<DetailedIOException> onLostRemoteFile;
   @Nullable private AbstractActionInputPrefetcher inputPrefetcher;
   @Nullable private Reporter reporter;
   @Nullable private String buildRequestId;
@@ -135,9 +136,11 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
       String buildRequestId,
       String commandId,
       MemoizingEvaluator evaluator,
-      Duration remoteCacheTtl) {
+      Duration remoteCacheTtl,
+      Consumer<DetailedIOException> onLostRemoteFile) {
     checkState(
         this.cache == null
+            && this.onLostRemoteFile == null
             && this.inputPrefetcher == null
             && this.reporter == null
             && this.buildRequestId == null
@@ -146,6 +149,7 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
             && this.remoteCacheTtl == null
             && this.materializationExecutor == null);
     this.cache = cache;
+    this.onLostRemoteFile = onLostRemoteFile;
     this.inputPrefetcher = inputPrefetcher;
     this.reporter = reporter;
     this.buildRequestId = buildRequestId;
@@ -179,6 +183,7 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
                 .build()
             : ImmutableSet.of();
     this.cache = null;
+    this.onLostRemoteFile = null;
     this.inputPrefetcher = null;
     this.reporter = null;
     this.buildRequestId = null;
@@ -485,12 +490,15 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
   private DetailedIOException lostRemoteFile(
       PathFragment relativePath, Digest digest, BulkTransferException cause) {
     reposWithLostFiles.add(relativePath.getSegment(0));
-    return new DetailedIOException(
-        "%s/%s with digest %s is no longer available in the remote cache"
-            .formatted(externalDirectory.getBaseName(), relativePath, DigestUtil.toString(digest)),
-        cause,
-        FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED,
-        SkyFunctionException.Transience.TRANSIENT);
+    var failure =
+        new DetailedIOException(
+            "%s/%s with digest %s is no longer available in the remote cache"
+                .formatted(externalDirectory.getBaseName(), relativePath, DigestUtil.toString(digest)),
+            cause,
+            FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED,
+            SkyFunctionException.Transience.TRANSIENT);
+    onLostRemoteFile.accept(failure);
+    return failure;
   }
 
   private void prefetch(Iterable<PathFragment> paths) throws IOException, InterruptedException {

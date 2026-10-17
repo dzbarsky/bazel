@@ -44,6 +44,7 @@ import com.google.devtools.build.skyframe.SkyKey;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -70,7 +71,8 @@ public final class RemoteExternalOverlayFileSystemTest {
         "build-request",
         "command",
         mock(MemoizingEvaluator.class),
-        Duration.ofMinutes(1));
+        Duration.ofMinutes(1),
+        unused -> {});
     try {
       var repo = RepositoryName.create("repo");
       assertThat(overlay.injectRemoteRepo(repo, Tree.getDefaultInstance(), "marker")).isTrue();
@@ -178,7 +180,8 @@ public final class RemoteExternalOverlayFileSystemTest {
         "build-request",
         "command",
         mock(MemoizingEvaluator.class),
-        Duration.ofMinutes(1));
+        Duration.ofMinutes(1),
+        unused -> {});
     return overlay;
   }
 
@@ -191,6 +194,7 @@ public final class RemoteExternalOverlayFileSystemTest {
     var externalRoot = PathFragment.create("/output/external");
     var overlay = new RemoteExternalOverlayFileSystem(externalRoot, nativeFs);
     var evaluator = mock(MemoizingEvaluator.class);
+    var reportedFailure = new AtomicReference<DetailedIOException>();
     var prefetcher = mock(AbstractActionInputPrefetcher.class);
     when(prefetcher.prefetchFilesInterruptibly(isNull(), any(), any(), any(), any()))
         .thenReturn(immediateVoidFuture());
@@ -201,7 +205,8 @@ public final class RemoteExternalOverlayFileSystemTest {
         "build-request",
         "command",
         evaluator,
-        Duration.ofMinutes(1));
+        Duration.ofMinutes(1),
+        reportedFailure::set);
 
     var digest = digestUtil.compute("evicted contents".getBytes(UTF_8));
     var tree =
@@ -213,11 +218,13 @@ public final class RemoteExternalOverlayFileSystemTest {
     var trackedRepo = RepositoryName.create("tracked");
     assertThat(overlay.injectRemoteRepo(trackedRepo, tree, "marker")).isTrue();
 
-    assertThrows(
-        DetailedIOException.class,
-        () ->
-            FileSystemUtils.readContent(
-                overlay.getPath(externalRoot.getRelative("tracked/data.txt"))));
+    var failure =
+        assertThrows(
+            DetailedIOException.class,
+            () ->
+                FileSystemUtils.readContent(
+                    overlay.getPath(externalRoot.getRelative("tracked/data.txt"))));
+    assertThat(reportedFailure.get()).isSameInstanceAs(failure);
     overlay.afterCommand();
 
     ArgumentCaptor<Predicate<SkyKey>> deletion = ArgumentCaptor.forClass(Predicate.class);

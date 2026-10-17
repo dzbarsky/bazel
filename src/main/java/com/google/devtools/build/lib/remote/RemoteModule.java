@@ -383,7 +383,14 @@ public final class RemoteModule extends BlazeModule {
           buildRequestId,
           invocationId,
           env.getSkyframeExecutor().getEvaluator(),
-          remoteOptions.remoteCacheTtl);
+          remoteOptions.remoteCacheTtl,
+          failure -> {
+            if (env.getCommand().buildPhase().executes()) {
+              // Retry before --keep_going can hide a loading failure or finish unrelated work.
+              env.getBlazeModuleEnvironment()
+                  .exit(new AbruptExitException(failure.getDetailedExitCode()));
+            }
+          });
     }
   }
 
