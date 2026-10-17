@@ -33,6 +33,7 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import javax.annotation.Nullable;
 
@@ -150,7 +151,9 @@ public final class SymlinkTreeHelper {
         Directory<T> parentDir = root.walk(path.getParentDirectory());
         parentDir.addSymlink(path.getBaseName(), value);
       }
-      Map<PathFragment, PathFragment> missing = batchOperations == null ? null : new HashMap<>();
+      // Keep siblings together when the client splits RPCs, so the service can reuse parent handles.
+      Map<PathFragment, PathFragment> missing =
+          batchOperations == null ? null : new LinkedHashMap<>();
       root.syncTreeRecursively(symlinkTreeRoot, targetPathFn, symlinkTreeRoot, missing);
       if (missing != null && !missing.isEmpty()) {
         batchOperations.createSymlinks(symlinkTreeRoot, missing);
