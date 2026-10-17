@@ -938,9 +938,10 @@ public class RegisteredToolchainsFunctionTest extends ToolchainTestCase {
             data = "extra",
         )
         """);
-    useConfiguration("--extra_toolchains=//extra:extra_toolchain");
+    useConfiguration(
+        "--extra_toolchains=//extra:extra_toolchain", "--platforms=//defaults:target");
 
-    SkyKey toolchainsKey = RegisteredToolchainsValue.key(targetConfigKey, /* debug= */ false);
+    SkyKey toolchainsKey = registeredToolchainsKey(testToolchainTypeLabel, /* debug= */ false);
     EvaluationResult<RegisteredToolchainsValue> result =
         requestToolchainsFromSkyframe(toolchainsKey);
     assertThatEvaluationResult(result).hasNoError();
@@ -977,6 +978,11 @@ public class RegisteredToolchainsFunctionTest extends ToolchainTestCase {
             name = "b",
             constraint_setting = ":setting",
         )
+
+        platform(
+            name = "target",
+            constraint_values = [":a"],
+        )
         """
             .formatted(defaultValue));
   }
@@ -992,7 +998,7 @@ public class RegisteredToolchainsFunctionTest extends ToolchainTestCase {
     writeExtraToolchainUsingTargetPlatformConstraints(true);
     useConfiguration("--extra_toolchains=//extra:extra_toolchain");
 
-    SkyKey toolchainsKey = RegisteredToolchainsValue.key(targetConfigKey, /* debug= */ false);
+    SkyKey toolchainsKey = registeredToolchainsKey(testToolchainTypeLabel, /* debug= */ false);
     EvaluationResult<RegisteredToolchainsValue> result =
         requestToolchainsFromSkyframe(toolchainsKey);
     assertThatEvaluationResult(result).hasNoError();
