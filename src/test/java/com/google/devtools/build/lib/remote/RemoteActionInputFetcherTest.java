@@ -203,7 +203,8 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
         "none",
         "none",
         /* evaluator= */ null,
-        /* remoteCacheTtl= */ Duration.ofHours(1));
+        /* remoteCacheTtl= */ Duration.ofHours(1),
+        unused -> {});
     for (String invalidPath :
         ImmutableList.of("../../../../../.bashrc.bzl", "/etc/cron.d/evil.bzl")) {
       Tree tree =
@@ -248,7 +249,7 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
             ActionOutputDirectoryHelper.createForTesting(),
             OutputPermissions.WRITABLE);
     overlayFs.beforeCommand(
-        cache, prefetcher, reporter, "none", "none", null, Duration.ofHours(1));
+        cache, prefetcher, reporter, "none", "none", null, Duration.ofHours(1), unused -> {});
     try {
       var root = Directory.newBuilder();
       for (String name : ImmutableList.of("plain.txt", "run.sh", "helper.bzl")) {

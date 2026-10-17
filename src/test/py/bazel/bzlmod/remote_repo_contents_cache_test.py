@@ -2368,9 +2368,8 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     self.assertTrue(os.path.exists(os.path.join(repo_dir, 'data.txt')))
 
   def testLostRemoteFile_externalModuleExtensionUnusedPatch_keepGoing(self):
-    # Like Gazelle's go_deps, a module extension reads two cached external
-    # repositories. Resolving their tools fully materializes both repositories,
-    # including unrelated test patches whose distinct blobs may be evicted.
+    # Materialize two cached repositories through module_ctx.path(), including
+    # unrelated files whose blobs may have been evicted.
     self.ScratchFile(
         'MODULE.bazel',
         [
@@ -2423,11 +2422,11 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
             'def _ext_impl(module_ctx):',
             (
                 '  extension = module_ctx.read('
-                'Label("@my_repo//:tool.txt"), watch="no")'
+                'module_ctx.path(Label("@my_repo//:tool.txt")), watch="no")'
             ),
             (
                 '  support = module_ctx.read('
-                'Label("@support_repo//:tool.txt"), watch="no")'
+                'module_ctx.path(Label("@support_repo//:tool.txt")), watch="no")'
             ),
             '  generated_repo(name="generated", contents=extension)',
             '  generated_repo(name="support_generated", contents=support)',
@@ -2628,12 +2627,11 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     with open(out) as f:
       self.assertEqual(f.read(), 'unique-source-dir-contents')
 
-  def doTestLostRemoteFile_analysisMaterialization(self, *, keep_going):
-    # Regression test for the retry of a lost blob discovered while fetching a
-    # repo that is only reachable via a dependency edge: the failure surfaces
-    # as an analysis error of the top-level target rather than during target
-    # pattern expansion, which is reported differently with and without
-    # --keep_going.
+  def doTestLostRemoteFile_materialization(
+      self, *, keep_going, cache_probe=False
+  ):
+    # Reach the lost blob through another repo, during analysis or recursive
+    # probe loading. An unrelated cache miss must not hide the loading error.
     self.ScratchFile(
         'MODULE.bazel',
         [
@@ -2665,9 +2663,10 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
             'def _other_repo_impl(rctx):',
             (
                 '  rctx.file("BUILD.bazel",'
-                ' "exports_files([\'copy.txt\'])")'
+                ' "exports_files([\'copy.txt\', \'defs.bzl\'])")'
             ),
             '  rctx.file("copy.txt", rctx.read(rctx.path(rctx.attr.data)))',
+            '  rctx.file("defs.bzl", "READY = True\\n")',
             '  return rctx.repo_metadata()',
             (
                 'other_repo = repository_rule(_other_repo_impl,'
@@ -2677,7 +2676,7 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     )
     self.ScratchFile(
         'main/BUILD.bazel',
-        [
+        (['load("@other//:defs.bzl", "READY")'] if cache_probe else []) + [
             'genrule(',
             '  name = "bin",',
             '  srcs = ["@other//:copy.txt"],',
@@ -2686,6 +2685,11 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
             ')',
         ],
     )
+    if cache_probe:
+      self.ScratchFile(
+          'healthy/BUILD.bazel',
+          ['genrule(name="bin", outs=["out.txt"], cmd="echo healthy > $@")'],
+      )
 
     repo_dir = self.RepoDir('my_repo')
 
@@ -2706,25 +2710,44 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     args = ['build']
     if keep_going:
       args.append('--keep_going')
-    args.append('//main:bin')
+    if cache_probe:
+      args.extend([
+          '--experimental_cache_probe_output=' + self.Path('probe.json'),
+          '--build_tag_filters=-manual,-noci',
+      ])
+    args.append('//...' if cache_probe else '//main:bin')
     _, _, stderr = self.RunBazel(args)
     self.assertEqual(
         1,
         stderr.count(
             'Found transient remote cache error, retrying the build...'
         ),
+        msg='\n'.join(stderr),
     )
     stderr = '\n'.join(stderr)
     self.assertIn('JUST FETCHED', stderr)
     self.assertTrue(os.path.exists(os.path.join(repo_dir, 'data.txt')))
+    if cache_probe:
+      with open(self.Path('probe.json')) as f:
+        manifest = json.load(f)
+      self.assertTrue(manifest['complete'])
+      self.assertEqual(
+          sorted(target['label'] for target in manifest['affected']),
+          ['//healthy:bin', '//main:bin'],
+      )
+      self.assertFalse(os.path.exists(self.Path('bazel-bin/main/bin.txt')))
+      return
     with open(self.Path('bazel-bin/main/bin.txt')) as f:
       self.assertEqual(f.read(), 'unique-data-file-contents')
 
   def testLostRemoteFile_analysisMaterialization(self):
-    self.doTestLostRemoteFile_analysisMaterialization(keep_going=False)
+    self.doTestLostRemoteFile_materialization(keep_going=False)
 
   def testLostRemoteFile_analysisMaterialization_keepGoing(self):
-    self.doTestLostRemoteFile_analysisMaterialization(keep_going=True)
+    self.doTestLostRemoteFile_materialization(keep_going=True)
+
+  def testLostRemoteFile_loadingMaterialization_cacheProbe(self):
+    self.doTestLostRemoteFile_materialization(keep_going=True, cache_probe=True)
 
   def testLostRemoteFile_remoteExecutionUpload(self):
     self.ScratchFile(
@@ -2763,7 +2786,6 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
         '//main:use_data',
         '--spawn_strategy=remote',
         '--remote_executor=grpc://localhost:' + str(self._worker_port),
-        '--experimental_remote_cache_eviction_retries=0',
     ]
     self.RunBazel(args + ['--nobuild'])
     self.RunBazel(['clean', '--expunge'])
@@ -2773,16 +2795,20 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
 
     # Analysis is warm, so eviction is first noticed while uploading inputs.
     self.ClearRemoteCache()
-    exit_code, _, stderr = self.RunBazel(args, allow_failure=True)
-    self.AssertExitCode(exit_code, 34, stderr)
+    _, _, stderr = self.RunBazel(args)
+    self.assertEqual(
+        1,
+        stderr.count(
+            'Found transient remote cache error, retrying the build...'
+        ),
+        msg='\n'.join(stderr),
+    )
     self.assertRegex(
         '\n'.join(stderr),
         r'external/[^/]+/data.txt with digest .*/.* no longer available in the'
         ' remote cache',
     )
 
-    # The repository overlay records the eviction and invalidates the repo.
-    _, _, stderr = self.RunBazel(args)
     self.assertIn('JUST FETCHED', '\n'.join(stderr))
     with open(self.Path('bazel-bin/main/out.txt')) as f:
       self.assertEqual(f.read(), 'hello')
