@@ -226,7 +226,8 @@ public class FilesystemValueChecker {
 
     logger.atInfo().log("Accumulating dirty actions and batching them into shards");
     int numShards = Runtime.getRuntime().availableProcessors() * 4;
-    if (batchStatter != null) {
+    boolean useBatchStat = batchStatter != null && batchStatter.getMaxConcurrentCalls() > 0;
+    if (useBatchStat) {
       numShards = Math.min(numShards, batchStatter.getMaxConcurrentCalls());
     }
     Collection<List<Map.Entry<SkyKey, ActionExecutionValue>>> actionKeyShards;
@@ -269,7 +270,7 @@ public class FilesystemValueChecker {
     try (SilentCloseable c = Profiler.instance().profile("getDirtyActionValues/statFiles")) {
       for (List<Map.Entry<SkyKey, ActionExecutionValue>> shard : actionKeyShards) {
         Runnable job =
-            (batchStatter == null)
+            !useBatchStat
                 ? outputStatJob(
                     dirtyKeys,
                     shard,
@@ -535,6 +536,14 @@ public class FilesystemValueChecker {
       OutputChecker outputChecker,
       ModifiedOutputsReceiver modifiedOutputsReceiver) {
     try {
+      // Validate a recorded, absent remote target before walking the output path only to
+      // discover that same absence. The exact raw link and canonical parent are checked below.
+      if (!file.isSymlink()
+          && !knownMissing
+          && (stat == null || stat.isSymbolicLink())
+          && canTrustDanglingSymlink(file, lastKnownData, outputChecker)) {
+        return false;
+      }
       // A null batch result already established absence. Passing it to the metadata
       // reader would perform the same stat again, since null there means "not queried".
       FileArtifactValue fileMetadata =
@@ -606,7 +615,8 @@ public class FilesystemValueChecker {
       while ((parentStat = parent.statIfFound(Symlinks.NOFOLLOW)) == null) {
         parent = parent.getParentDirectory();
       }
-      return parentStat.isDirectory() && parent.resolveSymbolicLinks().equals(parent);
+      return parentStat.isDirectory()
+          && parent.getFileSystem().isCanonicalPath(parent.asFragment());
     } catch (IOException e) {
       return false;
     }

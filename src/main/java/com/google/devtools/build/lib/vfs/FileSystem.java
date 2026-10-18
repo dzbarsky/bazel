@@ -484,6 +484,11 @@ public abstract class FileSystem {
                 resolveSymbolicLinks(parentNode).asFragment(), path.getBaseName(), MAX_SYMLINKS));
   }
 
+  /** Returns whether an existing absolute path already names its canonical location. */
+  public boolean isCanonicalPath(PathFragment path) throws IOException {
+    return resolveSymbolicLinks(path).asFragment().equals(path);
+  }
+
   /** Returns the status of a file. See {@link Path#stat(Symlinks)} for specification. */
   public abstract FileStatus stat(PathFragment path, boolean followSymlinks) throws IOException;
 

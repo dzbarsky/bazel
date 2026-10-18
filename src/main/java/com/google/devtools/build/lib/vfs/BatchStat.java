@@ -21,7 +21,7 @@ import java.util.List;
  */
 public interface BatchStat {
 
-  /** Maximum concurrent batches to use when partitioning output checks. Must be positive. */
+  /** Maximum concurrent batches, or zero to use individual local stats. */
   default int getMaxConcurrentCalls() {
     return Integer.MAX_VALUE;
   }

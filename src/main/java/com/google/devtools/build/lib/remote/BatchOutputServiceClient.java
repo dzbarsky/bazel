@@ -54,14 +54,17 @@ final class BatchOutputServiceClient implements BatchOperations {
   private final BatchOutputServiceGrpc.BatchOutputServiceFutureStub symlinkStub;
   private final Supplier<Path> execRoot;
   private final int symlinkMinEntries;
+  private final int statConcurrency;
   private volatile boolean statSupported = true;
   private volatile boolean symlinkSupported = true;
 
-  BatchOutputServiceClient(Channel channel, Supplier<Path> execRoot, int symlinkMinEntries) {
+  BatchOutputServiceClient(
+      Channel channel, Supplier<Path> execRoot, int symlinkMinEntries, int statConcurrency) {
     this.stub = BatchOutputServiceGrpc.newBlockingStub(channel);
     this.symlinkStub = BatchOutputServiceGrpc.newFutureStub(channel);
     this.execRoot = execRoot;
     this.symlinkMinEntries = symlinkMinEntries;
+    this.statConcurrency = statConcurrency;
   }
 
   private static ByteString pathBytes(PathFragment path) {
@@ -70,8 +73,7 @@ final class BatchOutputServiceClient implements BatchOperations {
 
   @Override
   public int getMaxConcurrentCalls() {
-    // Amortize RPC overhead with larger batches instead of creating four shards per CPU.
-    return 16;
+    return statConcurrency;
   }
 
   @Override

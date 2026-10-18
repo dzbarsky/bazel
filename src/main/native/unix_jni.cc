@@ -31,6 +31,10 @@
 #include <unistd.h>
 #include <utime.h>
 
+#if defined(__linux__) && __has_include(<linux/openat2.h>)
+#include <linux/openat2.h>
+#endif
+
 // Linting disabled for this line because for google code we could use
 // absl::Mutex but we cannot yet because Bazel doesn't depend on absl.
 #include <mutex>  // NOLINT
@@ -264,6 +268,32 @@ Java_com_google_devtools_build_lib_unix_NativePosixFiles_readlink(JNIEnv *env,
   }
   target[len] = '\0';
   return NewStringLatin1(env, target);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_google_devtools_build_lib_unix_NativePosixFiles_isCanonicalPath(
+    JNIEnv *env, jclass clazz, jstring path) {
+#if defined(__linux__) && defined(SYS_openat2) && defined(RESOLVE_NO_SYMLINKS)
+  JStringLatin1Holder path_chars(env, path);
+  if (env->ExceptionOccurred()) {
+    return -1;
+  }
+  // PathFragment is already absolute and lexically normalized. Rejecting every
+  // symlink proves that kernel traversal cannot redirect any of its components.
+  struct open_how how = {};
+  how.flags = O_PATH | O_CLOEXEC;
+  how.resolve = RESOLVE_NO_SYMLINKS;
+  int fd;
+  RESTARTABLE(syscall(SYS_openat2, AT_FDCWD, static_cast<const char*>(path_chars),
+                      &how, sizeof(how)), fd);
+  if (fd == -1) {
+    return errno == ELOOP ? 0 : -1;
+  }
+  close(fd);
+  return 1;
+#else
+  return -1;
+#endif
 }
 
 extern "C" JNIEXPORT void JNICALL

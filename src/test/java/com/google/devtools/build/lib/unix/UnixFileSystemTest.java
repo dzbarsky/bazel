@@ -52,6 +52,24 @@ public class UnixFileSystemTest extends SymlinkAwareFileSystemTest {
   // Most tests are just inherited from FileSystemTest.
 
   @Test
+  public void isCanonicalPathRejectsSymlinksInAnyComponent() throws Exception {
+    Path root = absolutize("canonical");
+    root.createDirectory();
+    root = root.resolveSymbolicLinks();
+    Path directory = root.getChild("directory");
+    directory.createDirectory();
+    FileSystemUtils.createEmptyFile(directory.getChild("file"));
+    Path alias = root.getChild("alias");
+    alias.createSymbolicLink(directory);
+    FileSystem fs = root.getFileSystem();
+
+    assertThat(fs.isCanonicalPath(directory.asFragment())).isTrue();
+    assertThat(fs.isCanonicalPath(directory.getChild("file").asFragment())).isTrue();
+    assertThat(fs.isCanonicalPath(alias.asFragment())).isFalse();
+    assertThat(fs.isCanonicalPath(alias.getChild("file").asFragment())).isFalse();
+  }
+
+  @Test
   public void testPermissions() throws Exception {
     Path file = absolutize("file");
     FileSystemUtils.createEmptyFile(file);

@@ -13,6 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.lib.unix;
 
+import static com.google.common.base.Preconditions.checkArgument;
+
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.profiler.Profiler;
@@ -72,6 +74,23 @@ public class UnixFileSystem extends DiskBackedFileSystem {
     // Beware, this seemingly simple code belies the complex specification of
     // FileSystem.resolveOneLink().
     return stat(path, false).isSymbolicLink() ? readSymbolicLink(path) : null;
+  }
+
+  @Override
+  public boolean isCanonicalPath(PathFragment path) throws IOException {
+    checkArgument(path.isAbsolute());
+    if (OS.getCurrent() == OS.LINUX) {
+      var comp = Blocker.begin();
+      try {
+        int result = NativePosixFiles.isCanonicalPath(path.getPathString());
+        if (result >= 0) {
+          return result != 0;
+        }
+      } finally {
+        Blocker.end(comp);
+      }
+    }
+    return super.isCanonicalPath(path);
   }
 
   /** Converts from {@link NativePosixFiles.Dirent.Type} to {@link Dirent.Type}. */

@@ -86,7 +86,7 @@ public final class BatchOutputServiceClientTest {
             .build()
             .start();
     channel = InProcessChannelBuilder.forName(name).directExecutor().build();
-    client = new BatchOutputServiceClient(channel, () -> root, 0);
+    client = new BatchOutputServiceClient(channel, () -> root, 0, 16);
   }
 
   @After
@@ -215,7 +215,7 @@ public final class BatchOutputServiceClientTest {
 
   @Test
   public void symlinkCutoffUsesLocalCreationBelowThresholdAndRpcAtThreshold() throws Exception {
-    client = new BatchOutputServiceClient(channel, () -> root, 3);
+    client = new BatchOutputServiceClient(channel, () -> root, 3, 16);
     root.getChild("a").createDirectory();
     client.createSymlinks(
         root,
@@ -278,7 +278,7 @@ public final class BatchOutputServiceClientTest {
 
   @Test(timeout = 10000)
   public void symlinkBatchesAreBoundedAndAcceptOutOfOrderReplies() throws Exception {
-    client = new BatchOutputServiceClient(channel, () -> root, 4096);
+    client = new BatchOutputServiceClient(channel, () -> root, 4096, 16);
     List<StreamObserver<BatchSymlinkResponse>> observers = new ArrayList<>();
     List<Integer> sizes = new ArrayList<>();
     symlinkHandler =

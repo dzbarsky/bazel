@@ -828,6 +828,27 @@ public final class RemoteOptions extends CommonRemoteOptions {
               + "run in the build user's filesystem context. Unsupported operations run locally.")
   public String batchOutputService;
 
+  /** Accepts zero to disable output-stat RPCs or a positive concurrency limit. */
+  public static class BatchStatConcurrencyConverter extends Converters.RangeConverter {
+    public BatchStatConcurrencyConverter() {
+      super(0, Integer.MAX_VALUE);
+    }
+  }
+
+  @Option(
+      name = "experimental_batch_output_service_stat_concurrency",
+      defaultValue = "0",
+      converter = BatchStatConcurrencyConverter.class,
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
+      help =
+          "Maximum number of concurrent output-stat shards with --experimental_batch_output_service. "
+              + "Each shard sends batches sequentially and checks their metadata locally. Higher "
+              + "values increase parallelism but may create smaller RPC batches. The limit is also "
+              + "capped at four shards per available processor. Zero (the default) uses individual "
+              + "local stats without disabling symlink RPCs.")
+  public int batchOutputServiceStatConcurrency;
+
   /** Accepts a nonnegative minimum number of symlinks for a batch RPC. */
   public static class BatchSymlinkMinimumConverter extends Converters.RangeConverter {
     public BatchSymlinkMinimumConverter() {

@@ -41,6 +41,9 @@ final class NativePosixFiles {
    */
   static native String readlink(String path) throws IOException;
 
+  /** Returns 1 for a canonical path, 0 for a symlink in the path, or -1 for ordinary resolution. */
+  static native int isCanonicalPath(String path);
+
   /**
    * Native wrapper around POSIX chmod(2) syscall: Changes the file access permissions of 'path' to
    * 'mode'.

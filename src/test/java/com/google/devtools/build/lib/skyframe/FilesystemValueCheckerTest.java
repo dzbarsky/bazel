@@ -261,6 +261,22 @@ public final class FilesystemValueCheckerTest {
   }
 
   private enum BatchStatMode {
+    ZERO_CONCURRENCY {
+      @Override
+      BatchStat getBatchStat(Path execRoot) {
+        return new BatchStat() {
+          @Override
+          public int getMaxConcurrentCalls() {
+            return 0;
+          }
+
+          @Override
+          public List<FileStatusWithDigest> batchStat(Iterable<PathFragment> paths) {
+            throw new AssertionError("Disabled batches must use local filesystem checks");
+          }
+        };
+      }
+    },
     DISABLED {
       @Nullable
       @Override
@@ -1539,6 +1555,7 @@ public final class FilesystemValueCheckerTest {
   }
 
   private enum RemoteSymlinkInvalidation {
+    TARGET_EXISTS,
     RETARGETED_ALIAS,
     RETARGETED_ANCESTOR,
     PREVIOUSLY_MATERIALIZED,
@@ -1570,6 +1587,7 @@ public final class FilesystemValueCheckerTest {
       metadata = FileArtifactValue.createFromExistingWithResolvedPath(metadata, target.asFragment());
     }
     switch (invalidation) {
+      case TARGET_EXISTS -> FileSystemUtils.writeContentAsLatin1(target, "local-content");
       case RETARGETED_ALIAS -> {
         output.getPath().delete();
         output.getPath().createSymbolicLink(fs.getPath("/other-missing-target").asFragment());

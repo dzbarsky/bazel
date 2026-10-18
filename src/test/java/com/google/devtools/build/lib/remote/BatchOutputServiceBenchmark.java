@@ -89,7 +89,7 @@ public class BatchOutputServiceBenchmark {
       channel =
           GoogleAuthUtils.newChannel(
               null, endpoint, null, Options.getDefaults(AuthAndTLSOptions.class), null, Map.of());
-      client = new BatchOutputServiceClient(channel, () -> directory, 0);
+      client = new BatchOutputServiceClient(channel, () -> directory, 0, 16);
       paths = new ArrayList<>();
       fragments = new ArrayList<>();
       for (int i = 0; i < entries; i++) {
@@ -163,7 +163,7 @@ public class BatchOutputServiceBenchmark {
       channel =
           GoogleAuthUtils.newChannel(
               null, endpoint, null, Options.getDefaults(AuthAndTLSOptions.class), null, Map.of());
-      client = new BatchOutputServiceClient(channel, () -> directory, 0);
+      client = new BatchOutputServiceClient(channel, () -> directory, 0, 16);
       links = new LinkedHashMap<>();
       for (int i = 0; i < entries; i++) {
         Path parent =
