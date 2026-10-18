@@ -456,6 +456,7 @@ public final class RemoteModule extends BlazeModule {
         batchOperations =
             new NativeBatchOperations(
                 env.getRuntime().getFileSystem(),
+                executorService,
                 remoteOptions.batchOutputServiceSymlinkMinEntries,
                 remoteOptions.batchOutputServiceMkdirMinEntries);
       } else {
