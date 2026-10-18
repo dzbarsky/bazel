@@ -72,8 +72,8 @@ message BatchSymlinkRequest {
 
 message BatchSymlinkResponse {
   // One result per request entry. An existing symlink with exactly the requested
-  // textual target is success; other existing entries produce EEXIST. Batches
-  // can partially succeed. A lost response must not be interpreted as no writes.
+  // textual target is success. Batches can partially succeed. A lost response
+  // must not be interpreted as no writes.
   repeated int32 errors = 1;
 }
 
