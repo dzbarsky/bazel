@@ -38,6 +38,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BiConsumer;
@@ -301,8 +302,71 @@ public final class BatchOutputServiceClientTest {
   }
 
   @Test(timeout = 10000)
+  public void completedSymlinkBatchRefillsSlotBeforeEarlierRequestsFinish() throws Exception {
+    var received = new LinkedBlockingQueue<StreamObserver<BatchSymlinkResponse>>();
+    symlinkHandler = (request, observer) -> received.add(observer);
+    var executor = Executors.newSingleThreadExecutor();
+    try {
+      var result =
+          executor.submit(
+              () -> {
+                client.createSymlinks(root, symlinks(4 * 4096 + 1));
+                return null;
+              });
+      List<StreamObserver<BatchSymlinkResponse>> observers = new ArrayList<>();
+      for (int i = 0; i < 4; i++) {
+        var observer = received.poll(5, TimeUnit.SECONDS);
+        assertThat(observer).isNotNull();
+        observers.add(observer);
+      }
+      assertThat(received.poll(100, TimeUnit.MILLISECONDS)).isNull();
+      observers.get(2).onNext(successfulSymlinks(4096));
+      observers.get(2).onCompleted();
+      var fifth = received.poll(5, TimeUnit.SECONDS);
+      assertThat(fifth).isNotNull();
+      fifth.onNext(successfulSymlinks(1));
+      fifth.onCompleted();
+      for (int i : new int[] {0, 1, 3}) {
+        observers.get(i).onNext(successfulSymlinks(4096));
+        observers.get(i).onCompleted();
+      }
+      result.get(5, TimeUnit.SECONDS);
+      assertThat(symlinkRequests).hasSize(5);
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void unsupportedSymlinkWindowDrainsBeforeLocalFallback() throws Exception {
+    List<StreamObserver<BatchSymlinkResponse>> observers = new ArrayList<>();
+    symlinkHandler =
+        (request, observer) -> {
+          observers.add(observer);
+          if (observers.size() == 4) {
+            for (var pending : observers) {
+              pending.onError(Status.UNIMPLEMENTED.asRuntimeException());
+              assertThat(root.getChild("link0").isSymbolicLink()).isFalse();
+            }
+          }
+        };
+    client.createSymlinks(root, symlinks(4 * 4096 + 1));
+    assertThat(symlinkRequests).hasSize(4);
+    assertThat(root.getDirectoryEntries()).hasSize(4 * 4096 + 1);
+    assertThat(root.getChild("link0").readSymbolicLink()).isEqualTo(PathFragment.create("target"));
+    assertThat(root.getChild("link16384").readSymbolicLink())
+        .isEqualTo(PathFragment.create("target"));
+  }
+
+  @Test(timeout = 20000)
   public void failedSymlinkBatchDrainsOutstandingRequestsWithoutFallback() throws Exception {
-    CountDownLatch received = new CountDownLatch(3);
+    assertFailedSymlinkBatchDrains(8193, 3);
+    assertFailedSymlinkBatchDrains(4 * 4096 + 1, 4);
+  }
+
+  private void assertFailedSymlinkBatchDrains(int links, int batches) throws Exception {
+    symlinkRequests.clear();
+    CountDownLatch received = new CountDownLatch(batches);
     List<StreamObserver<BatchSymlinkResponse>> observers = new ArrayList<>();
     symlinkHandler =
         (request, observer) -> {
@@ -314,27 +378,35 @@ public final class BatchOutputServiceClientTest {
       var result =
           executor.submit(
               () -> {
-                client.createSymlinks(root, symlinks(8193));
+                client.createSymlinks(root, symlinks(links));
                 return null;
               });
       assertThat(received.await(5, TimeUnit.SECONDS)).isTrue();
       observers.getFirst().onError(Status.UNAVAILABLE.asRuntimeException());
       assertThrows(TimeoutException.class, () -> result.get(100, TimeUnit.MILLISECONDS));
       observers.get(1).onError(Status.UNIMPLEMENTED.asRuntimeException());
-      observers.get(2).onNext(successfulSymlinks(1));
-      observers.get(2).onCompleted();
+      for (int i = 2; i < batches; i++) {
+        observers.get(i).onNext(successfulSymlinks(symlinkRequests.get(i).getSymlinksCount()));
+        observers.get(i).onCompleted();
+      }
       var error = assertThrows(ExecutionException.class, () -> result.get(5, TimeUnit.SECONDS));
       assertThat(error).hasCauseThat().isInstanceOf(IOException.class);
       assertThat(root.getDirectoryEntries()).isEmpty();
-      assertThat(symlinkRequests).hasSize(3);
+      assertThat(symlinkRequests).hasSize(batches);
     } finally {
       executor.shutdownNow();
     }
   }
 
-  @Test(timeout = 10000)
+  @Test(timeout = 20000)
   public void interruptionCancelsEveryPendingSymlinkRequest() throws Exception {
-    CountDownLatch received = new CountDownLatch(3);
+    assertInterruptionCancelsSymlinks(8193, 3);
+    assertInterruptionCancelsSymlinks(4 * 4096 + 1, 4);
+  }
+
+  private void assertInterruptionCancelsSymlinks(int links, int batches) throws Exception {
+    symlinkRequests.clear();
+    CountDownLatch received = new CountDownLatch(batches);
     List<StreamObserver<BatchSymlinkResponse>> observers = new ArrayList<>();
     symlinkHandler =
         (request, observer) -> {
@@ -344,7 +416,7 @@ public final class BatchOutputServiceClientTest {
     var result =
         new FutureTask<Boolean>(
             () -> {
-              assertThrows(IOException.class, () -> client.createSymlinks(root, symlinks(8193)));
+              assertThrows(IOException.class, () -> client.createSymlinks(root, symlinks(links)));
               return Thread.currentThread().isInterrupted();
             });
     var caller = new Thread(result);

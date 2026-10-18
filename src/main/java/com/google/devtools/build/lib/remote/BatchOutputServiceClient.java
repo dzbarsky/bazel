@@ -38,6 +38,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -144,6 +145,7 @@ final class BatchOutputServiceClient implements BatchOperations {
       return;
     }
     List<PendingSymlinks> pending = new ArrayList<>(MAX_SYMLINK_REQUESTS);
+    var completed = new ArrayBlockingQueue<PendingSymlinks>(MAX_SYMLINK_REQUESTS);
     var request = BatchSymlinkRequest.newBuilder().setDirectory(pathBytes(root.asFragment()));
     int bytes = 0;
     for (var entry : symlinks.entrySet()) {
@@ -155,7 +157,7 @@ final class BatchOutputServiceClient implements BatchOperations {
       int size = link.getSerializedSize();
       if (request.getSymlinksCount() > 0
           && (request.getSymlinksCount() == MAX_ENTRIES || bytes + size > MAX_PATH_BYTES)) {
-        enqueueSymlinks(root, request.build(), pending);
+        enqueueSymlinks(root, request.build(), pending, completed);
         request.clearSymlinks();
         bytes = 0;
       }
@@ -163,7 +165,7 @@ final class BatchOutputServiceClient implements BatchOperations {
       bytes += size;
     }
     if (request.getSymlinksCount() > 0) {
-      enqueueSymlinks(root, request.build(), pending);
+      enqueueSymlinks(root, request.build(), pending, completed);
     }
     finishSymlinks(root, pending);
   }
@@ -172,7 +174,11 @@ final class BatchOutputServiceClient implements BatchOperations {
       BatchSymlinkRequest request, ListenableFuture<BatchSymlinkResponse> response) {}
 
   private void enqueueSymlinks(
-      Path root, BatchSymlinkRequest request, List<PendingSymlinks> pending) throws IOException {
+      Path root,
+      BatchSymlinkRequest request,
+      List<PendingSymlinks> pending,
+      ArrayBlockingQueue<PendingSymlinks> completed)
+      throws IOException {
     if (!symlinkSupported) {
       finishSymlinks(root, pending);
       symlinkLocally(root, request);
@@ -181,14 +187,34 @@ final class BatchOutputServiceClient implements BatchOperations {
     long start = Profiler.nanoTimeMaybe();
     // No retries or deadline: transport failure may leave a partially completed batch.
     var response = symlinkStub.batchSymlink(request);
+    var batch = new PendingSymlinks(request, response);
+    pending.add(batch);
     response.addListener(
-        () ->
+        () -> {
+          try {
             Profiler.instance()
-                .logSimpleTask(start, ProfilerTask.INFO, "Batch output service symlink"),
+                .logSimpleTask(start, ProfilerTask.INFO, "Batch output service symlink");
+          } finally {
+            completed.add(batch);
+          }
+        },
         directExecutor());
-    pending.add(new PendingSymlinks(request, response));
     if (pending.size() == MAX_SYMLINK_REQUESTS) {
-      finishSymlinks(root, pending);
+      // Refill whichever slot finishes first, without waiting for the rest of a wave.
+      try {
+        var finished = completed.take();
+        try {
+          checkSymlinkResponse(finished);
+        } catch (ExecutionException | IOException e) {
+          // Retain every pending batch until all writes finish and all replies are checked.
+          finishSymlinks(root, pending);
+          return;
+        }
+        pending.remove(finished);
+      } catch (InterruptedException e) {
+        cancelSymlinks(pending);
+        throw new IOException("Batch symlink interrupted; completion is unknown", e);
+      }
     }
   }
 
@@ -203,42 +229,51 @@ final class BatchOutputServiceClient implements BatchOperations {
         }
       }
     } catch (InterruptedException e) {
-      for (var batch : pending) {
-        batch.response().cancel(true);
-      }
-      Thread.currentThread().interrupt();
+      cancelSymlinks(pending);
       throw new IOException("Batch symlink interrupted; completion is unknown", e);
     }
     List<BatchSymlinkRequest> unsupported = new ArrayList<>();
     for (var batch : pending) {
-      var request = batch.request();
       try {
-        var response = Futures.getDone(batch.response());
-        if (response.getErrorsCount() != request.getSymlinksCount()) {
-          throw new IOException("Batch symlink returned an incorrect result count");
-        }
-        for (int i = 0; i < response.getErrorsCount(); i++) {
-          int error = response.getErrors(i);
-          if (error != 0) {
-            throw new IOException(
-                "Batch symlink failed: errno "
-                    + error
-                    + " for "
-                    + request.getSymlinks(i).getPath().toString(ISO_8859_1));
-          }
-        }
+        checkSymlinkResponse(batch);
       } catch (ExecutionException e) {
         if (Status.fromThrowable(e.getCause()).getCode() != Status.Code.UNIMPLEMENTED) {
           throw new IOException("Batch symlink RPC failed; completion is unknown", e);
         }
         // The protocol guarantees UNIMPLEMENTED is returned before any mutation.
         symlinkSupported = false;
-        unsupported.add(request);
+        unsupported.add(batch.request());
       }
     }
     pending.clear();
     for (var request : unsupported) {
       symlinkLocally(root, request);
+    }
+  }
+
+  private static void cancelSymlinks(List<PendingSymlinks> pending) {
+    for (var batch : pending) {
+      batch.response().cancel(true);
+    }
+    Thread.currentThread().interrupt();
+  }
+
+  private static void checkSymlinkResponse(PendingSymlinks batch)
+      throws ExecutionException, IOException {
+    var response = Futures.getDone(batch.response());
+    var request = batch.request();
+    if (response.getErrorsCount() != request.getSymlinksCount()) {
+      throw new IOException("Batch symlink returned an incorrect result count");
+    }
+    for (int i = 0; i < response.getErrorsCount(); i++) {
+      int error = response.getErrors(i);
+      if (error != 0) {
+        throw new IOException(
+            "Batch symlink failed: errno "
+                + error
+                + " for "
+                + request.getSymlinks(i).getPath().toString(ISO_8859_1));
+      }
     }
   }
 
