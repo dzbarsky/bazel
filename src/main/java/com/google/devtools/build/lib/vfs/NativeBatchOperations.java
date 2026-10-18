@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.vfs;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.util.concurrent.Uninterruptibles.getUninterruptibly;
 
 import com.google.devtools.build.lib.profiler.Profiler;
@@ -32,18 +33,18 @@ import java.util.concurrent.Future;
 public final class NativeBatchOperations implements BatchOperations {
   private static final int MAX_ENTRIES = 4096;
   private static final int MAX_BYTES = 1024 * 1024;
-  private static final int MAX_CONCURRENT_SYMLINKS = 4;
-  private final FileSystem localFileSystem;
   private final Executor executor;
   private final int symlinkMinEntries;
   private final int mkdirMinEntries;
+  private final int symlinkConcurrency;
 
   public NativeBatchOperations(
-      FileSystem localFileSystem, Executor executor, int symlinkMinEntries, int mkdirMinEntries) {
-    this.localFileSystem = localFileSystem;
+      Executor executor, int symlinkMinEntries, int mkdirMinEntries, int symlinkConcurrency) {
+    checkArgument(symlinkConcurrency > 0);
     this.executor = executor;
     this.symlinkMinEntries = symlinkMinEntries;
     this.mkdirMinEntries = mkdirMinEntries;
+    this.symlinkConcurrency = symlinkConcurrency;
   }
 
   @Override
@@ -80,8 +81,8 @@ public final class NativeBatchOperations implements BatchOperations {
       int count;
       try (var ignored = Profiler.instance().profile("Native batch mkdir")) {
         count =
-            localFileSystem.createDirectoriesBatch(
-                root.asFragment(), directories.subList(created, end));
+            root.getFileSystem()
+                .createDirectoriesBatch(root.asFragment(), directories.subList(created, end));
       }
       if (count < -1 || count > end - created) {
         throw new IOException("Native batch mkdir returned an invalid created count");
@@ -116,9 +117,13 @@ public final class NativeBatchOperations implements BatchOperations {
                 + 2;
         if (!paths.isEmpty() && (paths.size() == MAX_ENTRIES || size > MAX_BYTES - bytes)) {
           var batch = new SymlinkBatch(paths, targets, null);
-          pending.add(completed.submit(() -> executeSymlinkBatch(root, batch)));
-          if (pending.size() == MAX_CONCURRENT_SYMLINKS) {
-            finishSymlinkBatch(root, pending, completed);
+          if (symlinkConcurrency == 1) {
+            reconcileSymlinkBatch(root, executeSymlinkBatch(root, batch));
+          } else {
+            pending.add(completed.submit(() -> executeSymlinkBatch(root, batch)));
+            if (pending.size() == symlinkConcurrency) {
+              finishSymlinkBatch(root, pending, completed);
+            }
           }
           paths = new ArrayList<>();
           targets = new ArrayList<>();
@@ -180,7 +185,8 @@ public final class NativeBatchOperations implements BatchOperations {
     int[] errors;
     try (var ignored = Profiler.instance().profile("Native batch symlink")) {
       errors =
-          localFileSystem.createSymlinksBatch(root.asFragment(), batch.paths(), batch.targets());
+          root.getFileSystem()
+              .createSymlinksBatch(root.asFragment(), batch.paths(), batch.targets());
     }
     if (errors != null && errors.length != batch.paths().size()) {
       throw new IOException("Native batch symlink returned an invalid result count");

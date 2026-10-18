@@ -871,6 +871,26 @@ public final class RemoteOptions extends CommonRemoteOptions {
               + "does not affect output stat batching or the size of individual RPC requests.")
   public int batchOutputServiceSymlinkMinEntries;
 
+  /** Bounds the number of mutating native batches retained by a runfiles tree. */
+  public static class BatchSymlinkConcurrencyConverter extends Converters.RangeConverter {
+    public BatchSymlinkConcurrencyConverter() {
+      super(1, 32);
+    }
+  }
+
+  @Option(
+      name = "experimental_batch_output_service_symlink_concurrency",
+      defaultValue = "4",
+      converter = BatchSymlinkConcurrencyConverter.class,
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
+      help =
+          "Maximum concurrent native symlink batches per runfiles tree (1-32). Applies only to"
+              + " --experimental_batch_output_service=ioctl. One executes every batch on the"
+              + " calling thread; larger values use the shared executor. Single-batch trees"
+              + " always stay on the calling thread.")
+  public int batchOutputServiceSymlinkConcurrency;
+
   @Option(
       name = "experimental_batch_output_service_mkdir_min_entries",
       defaultValue = "128",

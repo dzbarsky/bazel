@@ -600,13 +600,7 @@ public class RemoteActionFileSystem extends FileSystem {
     linkPath = resolveSymbolicLinksForParent(linkPath);
 
     if (isOutput(linkPath)) {
-      try {
-        remoteOutputTree.getPath(linkPath).createSymbolicLink(targetFragment, type);
-      } catch (FileNotFoundException e) {
-        // A batch output service may have created the parent only on the local filesystem.
-        remoteOutputTree.createDirectoryAndParents(linkPath.getParentDirectory());
-        remoteOutputTree.getPath(linkPath).createSymbolicLink(targetFragment, type);
-      }
+      remoteOutputTree.getPath(linkPath).createSymbolicLink(targetFragment, type);
     }
 
     localFs.getPath(linkPath).createSymbolicLink(targetFragment, type);
@@ -823,16 +817,7 @@ public class RemoteActionFileSystem extends FileSystem {
   public boolean createDirectory(PathFragment path) throws IOException {
     boolean created = localFs.createDirectory(path);
     if (isOutput(path)) {
-      try {
-        created = remoteOutputTree.createDirectory(path) || created;
-      } catch (FileNotFoundException e) {
-        // Repair locally batched parents without adding parent walks to ordinary creation.
-        path = resolveSymbolicLinksForParent(path);
-        if (isOutput(path)) {
-          remoteOutputTree.createDirectoryAndParents(path.getParentDirectory());
-          created = remoteOutputTree.createDirectory(path) || created;
-        }
-      }
+      created = remoteOutputTree.createDirectory(path) || created;
     }
     return created;
   }

@@ -73,8 +73,7 @@ public final class NativeBatchOperationsTest {
     Path root = fs.getPath("/tree");
     root.createDirectory();
     root.getChild("second").createSymbolicLink(PathFragment.create("/old"));
-    new NativeBatchOperations(root.getFileSystem(), Runnable::run, 0, 0)
-        .createSymlinks(root, links());
+    new NativeBatchOperations(Runnable::run, 0, 0, 4).createSymlinks(root, links());
     assertThat(fs.readbacks).containsExactly("second");
     assertThat(root.getChild("first").readSymbolicLink())
         .isEqualTo(PathFragment.create("/target1"));
@@ -91,9 +90,7 @@ public final class NativeBatchOperationsTest {
     IOException error =
         assertThrows(
             IOException.class,
-            () ->
-                new NativeBatchOperations(root.getFileSystem(), Runnable::run, 0, 0)
-                    .createSymlinks(root, links()));
+            () -> new NativeBatchOperations(Runnable::run, 0, 0, 4).createSymlinks(root, links()));
     assertThat(error).hasMessageThat().contains("completion unknown");
     assertThat(fs.readbacks).isEmpty();
     assertThat(root.getChild("first").isSymbolicLink()).isTrue();
@@ -145,7 +142,6 @@ public final class NativeBatchOperationsTest {
           caller.submit(
               () -> {
                 new NativeBatchOperations(
-                        fs,
                         command ->
                             workers.execute(
                                 () -> {
@@ -155,7 +151,8 @@ public final class NativeBatchOperationsTest {
                                   failed.countDown();
                                 }),
                         0,
-                        0)
+                        0,
+                        4)
                     .createSymlinks(root, symlinks);
                 return null;
               });
@@ -175,11 +172,39 @@ public final class NativeBatchOperationsTest {
   }
 
   @Test
+  public void serialConcurrencyKeepsEveryChunkOnCaller() throws Exception {
+    List<Integer> batches = new ArrayList<>();
+    FileSystem fs =
+        new InMemoryFileSystem(DigestHashFunction.SHA256) {
+          @Override
+          public int[] createSymlinksBatch(
+              PathFragment root, List<PathFragment> paths, List<PathFragment> targets) {
+            batches.add(paths.size());
+            return new int[paths.size()];
+          }
+        };
+    Path root = fs.getPath("/tree");
+    root.createDirectory();
+    Map<PathFragment, PathFragment> symlinks = new LinkedHashMap<>();
+    for (int i = 0; i < 4097; i++) {
+      symlinks.put(PathFragment.create("link" + i), PathFragment.create("/target"));
+    }
+    new NativeBatchOperations(
+            command -> {
+              throw new AssertionError("Serial mode must not dispatch work");
+            },
+            0,
+            0,
+            1)
+        .createSymlinks(root, symlinks);
+    assertThat(batches).containsExactly(4096, 1).inOrder();
+  }
+
+  @Test
   public void unsupportedFilesystemCreatesLinksLocally() throws Exception {
     Path root = new InMemoryFileSystem(DigestHashFunction.SHA256).getPath("/tree");
     root.createDirectory();
-    new NativeBatchOperations(root.getFileSystem(), Runnable::run, 0, 0)
-        .createSymlinks(root, links());
+    new NativeBatchOperations(Runnable::run, 0, 0, 4).createSymlinks(root, links());
     assertThat(root.getChild("first").readSymbolicLink())
         .isEqualTo(PathFragment.create("/target1"));
     assertThat(root.getChild("second").readSymbolicLink())
@@ -210,9 +235,7 @@ public final class NativeBatchOperationsTest {
     root.getChild("d4096").createDirectory();
     List<PathFragment> paths =
         IntStream.range(0, 4098).mapToObj(i -> PathFragment.create("d" + i)).toList();
-    assertThat(
-            new NativeBatchOperations(root.getFileSystem(), Runnable::run, 0, 0)
-                .createDirectories(root, paths))
+    assertThat(new NativeBatchOperations(Runnable::run, 0, 0, 4).createDirectories(root, paths))
         .isEqualTo(4096);
     assertThat(batches).containsExactly(4096, 2).inOrder();
     assertThat(root.getChild("d4095").isDirectory()).isTrue();

@@ -354,17 +354,18 @@ public final class SymlinkTreeHelper {
         @Nullable Map<PathFragment, PathFragment> missing,
         @Nullable BatchOperations batchOperations)
         throws IOException {
+      PathFragment relativeDirectory =
+          missing == null ? PathFragment.EMPTY_FRAGMENT : at.relativeTo(treeRoot);
       for (Map.Entry<String, T> entry : symlinks.entrySet()) {
         T value = entry.getValue();
         if (value == null) {
           FileSystemUtils.createEmptyFile(at.getChild(entry.getKey()));
         } else {
-          Path link = at.getChild(entry.getKey());
           PathFragment target = targetPathFn.get(value);
           if (missing == null) {
-            FileSystemUtils.ensureSymbolicLink(link, target);
+            FileSystemUtils.ensureSymbolicLink(at.getChild(entry.getKey()), target);
           } else {
-            missing.put(link.relativeTo(treeRoot), target);
+            missing.put(relativeDirectory.getChild(entry.getKey()), target);
           }
         }
       }

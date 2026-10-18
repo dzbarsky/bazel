@@ -455,10 +455,10 @@ public final class RemoteModule extends BlazeModule {
       if (remoteOptions.batchOutputService.equals("ioctl")) {
         batchOperations =
             new NativeBatchOperations(
-                env.getRuntime().getFileSystem(),
                 executorService,
                 remoteOptions.batchOutputServiceSymlinkMinEntries,
-                remoteOptions.batchOutputServiceMkdirMinEntries);
+                remoteOptions.batchOutputServiceMkdirMinEntries,
+                remoteOptions.batchOutputServiceSymlinkConcurrency);
       } else {
         try {
           batchOutputServiceChannel =

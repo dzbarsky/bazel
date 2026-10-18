@@ -805,52 +805,6 @@ public final class RemoteActionFileSystemTest extends RemoteActionFileSystemTest
   }
 
   @Test
-  public void createDirectory_withParentOnlyOnLocalFilesystem() throws Exception {
-    RemoteActionFileSystem actionFs = (RemoteActionFileSystem) createActionFileSystem();
-    PathFragment path = getOutputPath("batch/parent/child");
-    actionFs.getLocalFileSystem().createDirectoryAndParents(path.getParentDirectory());
-
-    assertThat(actionFs.createDirectory(path)).isTrue();
-
-    assertThat(actionFs.getLocalFileSystem().getPath(path).isDirectory()).isTrue();
-    assertThat(actionFs.getRemoteOutputTree().getPath(path).isDirectory()).isTrue();
-  }
-
-  @Test
-  public void createDirectory_withParentSymlinkOnlyOnLocalFilesystem() throws Exception {
-    RemoteActionFileSystem actionFs = (RemoteActionFileSystem) createActionFileSystem();
-    PathFragment parent = getOutputPath("batch/parent");
-    PathFragment alias = getOutputPath("alias");
-    actionFs.getLocalFileSystem().createDirectoryAndParents(parent);
-    actionFs.getLocalFileSystem().getPath(alias).createSymbolicLink(parent);
-
-    assertThat(actionFs.createDirectory(alias.getChild("child"))).isTrue();
-
-    assertThat(actionFs.readSymbolicLink(alias)).isEqualTo(parent);
-    assertThat(actionFs.getLocalFileSystem().getPath(parent.getChild("child")).isDirectory())
-        .isTrue();
-    assertThat(actionFs.getRemoteOutputTree().getPath(parent.getChild("child")).isDirectory())
-        .isTrue();
-  }
-
-  @Test
-  public void ensureSymbolicLink_withParentOnlyOnLocalFilesystem() throws Exception {
-    RemoteActionFileSystem actionFs = (RemoteActionFileSystem) createActionFileSystem();
-    PathFragment path = getOutputPath("batch/parent/link");
-    PathFragment target = PathFragment.create("/new/target");
-    actionFs.getLocalFileSystem().createDirectoryAndParents(path.getParentDirectory());
-    actionFs
-        .getLocalFileSystem()
-        .getPath(path)
-        .createSymbolicLink(PathFragment.create("/old/target"));
-
-    FileSystemUtils.ensureSymbolicLink(actionFs.getPath(path), target);
-
-    assertThat(actionFs.getLocalFileSystem().getPath(path).readSymbolicLink()).isEqualTo(target);
-    assertThat(actionFs.getRemoteOutputTree().getPath(path).readSymbolicLink()).isEqualTo(target);
-  }
-
-  @Test
   public void readSymbolicLink_fromLocalFilesystem() throws Exception {
     RemoteActionFileSystem actionFs = (RemoteActionFileSystem) createActionFileSystem();
     PathFragment filePath = getOutputPath("file");
