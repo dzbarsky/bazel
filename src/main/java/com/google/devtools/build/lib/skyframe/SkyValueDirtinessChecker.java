@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.skyframe;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
+import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.SyscallCache;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
@@ -34,6 +35,12 @@ public abstract class SkyValueDirtinessChecker {
    * key.functionName().getHermeticity() == FunctionHermeticity.NONHERMETIC}.
    */
   public abstract boolean applies(SkyKey key);
+
+  /** Returns a build-stable source path whose nofollow stat may be prefetched, or null. */
+  @Nullable
+  public RootedPath getCacheablePath(SkyKey key) {
+    return null;
+  }
 
   /** If {@code applies(key)}, returns the new value for {@code key}. */
   public abstract SkyValue createNewValue(

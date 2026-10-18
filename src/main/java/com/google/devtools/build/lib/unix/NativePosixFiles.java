@@ -120,6 +120,9 @@ final class NativePosixFiles {
    */
   private static native FileStatus lstat(String path, char errorHandling) throws IOException;
 
+  static native FileStatus[] statBatch(
+      String root, String[] paths, String digestXattr, boolean useIoctl) throws IOException;
+
   /**
    * Native wrapper around POSIX utimensat(2) syscall.
    *

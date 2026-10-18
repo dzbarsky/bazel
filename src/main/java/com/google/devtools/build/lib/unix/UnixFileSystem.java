@@ -34,7 +34,9 @@ import com.google.devtools.build.lib.vfs.SymlinkTargetType;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
 import javax.annotation.Nullable;
 
 /**
@@ -50,6 +52,27 @@ public class UnixFileSystem extends DiskBackedFileSystem {
   public UnixFileSystem(DigestHashFunction hashFunction, String hashAttributeName) {
     super(hashFunction);
     this.hashAttributeName = hashAttributeName;
+  }
+
+  @Override
+  public List<FileStatus> statBatch(PathFragment root, List<PathFragment> paths, boolean useIoctl)
+      throws IOException {
+    checkArgument(root.isAbsolute());
+    checkArgument(paths.size() <= 4096);
+    for (PathFragment path : paths) {
+      checkArgument(!path.isAbsolute() && !path.containsUplevelReferences());
+    }
+    long startTime = Profiler.nanoTimeMaybe();
+    try {
+      return Arrays.asList(
+          NativePosixFiles.statBatch(
+              root.getPathString(),
+              paths.stream().map(PathFragment::getPathString).toArray(String[]::new),
+              hashAttributeName,
+              useIoctl));
+    } finally {
+      profiler.logSimpleTask(startTime, ProfilerTask.VFS_STAT, "batch stat");
+    }
   }
 
   @Override
@@ -389,7 +412,8 @@ public class UnixFileSystem extends DiskBackedFileSystem {
   public boolean setLastModifiedTimeIfExists(PathFragment path, long newTime) throws IOException {
     var comp = Blocker.begin();
     try {
-      return NativePosixFiles.utimensat(path.toString(), newTime == Path.NOW_SENTINEL_TIME, newTime);
+      return NativePosixFiles.utimensat(
+          path.toString(), newTime == Path.NOW_SENTINEL_TIME, newTime);
     } finally {
       Blocker.end(comp);
     }

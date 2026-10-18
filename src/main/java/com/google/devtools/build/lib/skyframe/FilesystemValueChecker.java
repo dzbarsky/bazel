@@ -33,6 +33,7 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.FileStateType;
+import com.google.devtools.build.lib.actions.FileStateValue;
 import com.google.devtools.build.lib.actions.OutputChecker;
 import com.google.devtools.build.lib.concurrent.ExecutorUtil;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
@@ -50,8 +51,10 @@ import com.google.devtools.build.lib.vfs.FileStatusWithDigest;
 import com.google.devtools.build.lib.vfs.ModifiedFileSet;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.lib.vfs.SyscallCache;
+import com.google.devtools.build.lib.vfs.SyscallCache.StatBatchMode;
 import com.google.devtools.build.lib.vfs.XattrProvider;
 import com.google.devtools.build.skyframe.Differencer;
 import com.google.devtools.build.skyframe.Differencer.DiffWithDelta.Delta;
@@ -65,6 +68,7 @@ import com.google.devtools.build.skyframe.Version;
 import com.google.devtools.build.skyframe.WalkableGraph;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -103,16 +107,27 @@ public class FilesystemValueChecker {
   private final SyscallCache syscallCache;
   private final XattrProviderOverrider xattrProviderOverrider;
   private final int numThreads;
+  private final StatBatchMode inputStatBatch;
 
   public FilesystemValueChecker(
       @Nullable TimestampGranularityMonitor tsgm,
       SyscallCache syscallCache,
       XattrProviderOverrider xattrProviderOverrider,
       int numThreads) {
+    this(tsgm, syscallCache, xattrProviderOverrider, numThreads, StatBatchMode.OFF);
+  }
+
+  public FilesystemValueChecker(
+      @Nullable TimestampGranularityMonitor tsgm,
+      SyscallCache syscallCache,
+      XattrProviderOverrider xattrProviderOverrider,
+      int numThreads,
+      StatBatchMode inputStatBatch) {
     this.tsgm = tsgm;
     this.syscallCache = syscallCache;
     this.xattrProviderOverrider = xattrProviderOverrider;
     this.numThreads = numThreads;
+    this.inputStatBatch = inputStatBatch;
   }
 
   /**
@@ -751,6 +766,21 @@ public class FilesystemValueChecker {
       for (List<SkyKey> batch : Iterables.partition(applicableKeys, batchSize)) {
         executor.execute(
             () -> {
+              if (inputStatBatch != StatBatchMode.OFF
+                  && fetcher instanceof MapBackedValueFetcher mapFetcher) {
+                List<RootedPath> paths = new ArrayList<>();
+                for (SkyKey key : batch) {
+                  // Other states can often be checked from readdir without any stat at all.
+                  if (mapFetcher.get(key) instanceof FileStateValue oldFile
+                      && oldFile.getType() == FileStateType.REGULAR_FILE) {
+                    RootedPath path = checker.getCacheablePath(key);
+                    if (path != null) {
+                      paths.add(path);
+                    }
+                  }
+                }
+                syscallCache.prefetchStats(paths, inputStatBatch);
+              }
               for (SkyKey key : batch) {
                 SkyValue value;
                 try {

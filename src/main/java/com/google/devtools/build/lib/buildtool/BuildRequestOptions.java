@@ -19,11 +19,13 @@ import com.google.common.flogger.GoogleLogger;
 import com.google.devtools.build.lib.util.OptionsUtils;
 import com.google.devtools.build.lib.util.ResourceConverter;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.SyscallCache.StatBatchMode;
 import com.google.devtools.common.options.BoolOrEnumConverter;
 import com.google.devtools.common.options.Converters;
 import com.google.devtools.common.options.Converters.CaffeineSpecConverter;
 import com.google.devtools.common.options.Converters.PercentageConverter;
 import com.google.devtools.common.options.Converters.RangeConverter;
+import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
@@ -447,6 +449,26 @@ public class BuildRequestOptions extends OptionsBase {
       effectTags = {OptionEffectTag.EXECUTION},
       help = "The number of threads that are used by the `FileSystemValueChecker`.")
   public int fsvcThreads;
+
+  public static final class StatBatchModeConverter extends EnumConverter<StatBatchMode> {
+    public StatBatchModeConverter() {
+      super(StatBatchMode.class, "input stat batching mode");
+    }
+  }
+
+  @Option(
+      name = "experimental_input_stat_batch",
+      defaultValue = "off",
+      converter = StatBatchModeConverter.class,
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      metadataTags = OptionMetadataTag.EXPERIMENTAL,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "Batch known regular source-file stats and fast digest xattrs during filesystem scans."
+              + " Modes: off, native (one JNI call per batch), ioctl (prefer the Timber kernel"
+              + " ioctl). Unavailable batching or digests fall back to ordinary filesystem"
+              + " operations.")
+  public StatBatchMode inputStatBatch;
 
   @Option(
       name = "experimental_skyframe_memory_dump",

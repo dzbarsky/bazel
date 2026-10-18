@@ -18,6 +18,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.List;
 import javax.annotation.Nullable;
 
 /**
@@ -45,6 +46,12 @@ public final class SingleFileSystemSyscallCache implements SyscallCache {
   public SingleFileSystemSyscallCache(SyscallCache delegate, FileSystem fs) {
     this.delegate = checkNotNull(delegate);
     this.fs = checkNotNull(fs);
+  }
+
+  @Override
+  public void prefetchStats(List<RootedPath> paths, StatBatchMode mode) {
+    delegate.prefetchStats(
+        paths.stream().filter(path -> path.asPath().getFileSystem().equals(fs)).toList(), mode);
   }
 
   @Override

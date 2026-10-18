@@ -518,6 +518,17 @@ public abstract class FileSystem {
   }
 
   /**
+   * Optionally returns ordered nofollow stats, including available fast digests, for paths relative
+   * to {@code root}. Missing entries are null; a null list means batching is unsupported.
+   * Implementations may fall back to ordinary syscalls when {@code useIoctl} is unavailable.
+   */
+  @Nullable
+  public List<FileStatus> statBatch(PathFragment root, List<PathFragment> paths, boolean useIoctl)
+      throws IOException {
+    return null;
+  }
+
+  /**
    * Returns true iff {@code path} denotes an existing regular or special file. See {@link
    * Path#isFile(Symlinks)} for specification.
    */

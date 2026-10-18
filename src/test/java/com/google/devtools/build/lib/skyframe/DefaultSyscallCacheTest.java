@@ -15,17 +15,27 @@ package com.google.devtools.build.lib.skyframe;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.devtools.build.lib.actions.FileStateValue;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.Dirent;
 import com.google.devtools.build.lib.vfs.FileStatus;
+import com.google.devtools.build.lib.vfs.FileStatusWithDigestAdapter;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
+import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.lib.vfs.SyscallCache.DirentTypeWithSkip;
+import com.google.devtools.build.lib.vfs.SyscallCache.StatBatchMode;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -42,6 +52,72 @@ public final class DefaultSyscallCacheTest {
   public void setUp() {
     fs = new InMemoryFileSystem(DigestHashFunction.SHA256);
     cache = DefaultSyscallCache.newBuilder().build();
+  }
+
+  @Test
+  public void prefetchedStatsPreserveDigestsSymlinksAndCacheLifetime() throws Exception {
+    byte[] digest = new byte[32];
+    fs =
+        new InMemoryFileSystem(DigestHashFunction.SHA256) {
+          @Override
+          public List<FileStatus> statBatch(
+              PathFragment root, List<PathFragment> paths, boolean ioctl) throws IOException {
+            List<FileStatus> result = new ArrayList<>();
+            for (PathFragment path : paths) {
+              FileStatus stat = statIfFound(root.getRelative(path), false);
+              result.add(
+                  stat != null && stat.isFile()
+                      ? new FileStatusWithDigestAdapter(stat, digest)
+                      : stat);
+            }
+            return result;
+          }
+        };
+    Path root = fs.getPath("/source");
+    root.createDirectory();
+    Path file = root.getChild("file");
+    FileSystemUtils.writeContentAsLatin1(file, "content");
+    Path link = root.getChild("link");
+    link.createSymbolicLink(PathFragment.create("file"));
+    Path missing = root.getChild("missing");
+    List<RootedPath> paths =
+        List.of(file, link, missing).stream()
+            .map(path -> RootedPath.toRootedPath(Root.fromPath(root), path))
+            .toList();
+
+    cache.prefetchStats(paths, StatBatchMode.NATIVE);
+
+    assertThat(FileStateValue.create(paths.get(0), cache, null).getDigest()).isEqualTo(digest);
+    assertThat(cache.getType(link, Symlinks.NOFOLLOW)).isEqualTo(DirentTypeWithSkip.SYMLINK);
+    assertThat(cache.statIfFound(link, Symlinks.NOFOLLOW).isSymbolicLink()).isTrue();
+    assertThat(cache.getType(link, Symlinks.FOLLOW)).isEqualTo(DirentTypeWithSkip.FILE);
+    FileSystemUtils.createEmptyFile(missing);
+    assertThat(cache.statIfFound(missing, Symlinks.NOFOLLOW)).isNull();
+    cache.clear();
+    assertThat(cache.statIfFound(missing, Symlinks.NOFOLLOW)).isNotNull();
+  }
+
+  @Test
+  public void prefetchDoesNotReplaceAConcurrentScalarObservation() throws Exception {
+    AtomicReference<FileStatus> observed = new AtomicReference<>();
+    fs =
+        new InMemoryFileSystem(DigestHashFunction.SHA256) {
+          @Override
+          public List<FileStatus> statBatch(
+              PathFragment root, List<PathFragment> paths, boolean ioctl) throws IOException {
+            observed.set(
+                cache.statIfFound(getPath(root.getRelative(paths.getFirst())), Symlinks.NOFOLLOW));
+            return Collections.singletonList(null);
+          }
+        };
+    Path root = fs.getPath("/source");
+    root.createDirectory();
+    Path file = root.getChild("file");
+    FileSystemUtils.createEmptyFile(file);
+    cache.prefetchStats(
+        List.of(RootedPath.toRootedPath(Root.fromPath(root), file)), StatBatchMode.NATIVE);
+    assertThat(observed.get()).isNotNull();
+    assertThat(cache.statIfFound(file, Symlinks.NOFOLLOW)).isSameInstanceAs(observed.get());
   }
 
   @Test

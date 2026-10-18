@@ -31,6 +31,11 @@
 #include <unistd.h>
 #include <utime.h>
 
+#if defined(__linux__)
+#include <sys/ioctl.h>
+#include <sys/vfs.h>
+#endif
+
 #if defined(__linux__) && __has_include(<linux/openat2.h>)
 #include <linux/openat2.h>
 #endif
@@ -1100,6 +1105,169 @@ Java_com_google_devtools_build_lib_unix_NativePosixFiles_lgetxattr(JNIEnv *env,
                                                       jstring path,
                                                       jstring name) {
   return getxattr_common(env, path, name, portable_lgetxattr);
+}
+
+namespace {
+// Timber's bounded directory ioctl. The request size distinguishes this layout
+// from metadata-only versions; other filesystems use ordinary syscalls below.
+struct TimberStatEntry {
+  uint64_t pathname;
+  int32_t error;
+  uint32_t mode;
+  uint64_t inode;
+  int64_t size;
+  int64_t mtime_sec;
+  int64_t ctime_sec;
+  uint32_t mtime_nsec;
+  uint32_t ctime_nsec;
+  int32_t digest_size;
+  uint8_t digest[32];
+  uint32_t reserved;
+};
+
+bool TimberStatBatch(const char* root, const std::vector<std::string>& paths,
+                     const char* xattr, std::vector<TimberStatEntry>* entries) {
+#if defined(__linux__)
+  struct Request {
+    uint64_t entries;
+    uint32_t count;
+    int32_t dirfd;
+    uint32_t flags;
+    uint32_t reserved;
+    uint64_t digest_xattr;
+  };
+  static_assert(sizeof(Request) == 32);
+  static_assert(sizeof(TimberStatEntry) == 96);
+  int fd;
+  RESTARTABLE(open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC), fd);
+  if (fd < 0) return false;
+  struct statfs fs;
+  bool supported = false;
+  if (fstatfs(fd, &fs) == 0 && fs.f_type == 0x54494d4b) {
+    entries->resize(paths.size());
+    for (size_t i = 0; i < paths.size(); ++i) {
+      (*entries)[i].pathname = reinterpret_cast<uint64_t>(paths[i].c_str());
+    }
+    Request request = {reinterpret_cast<uint64_t>(entries->data()),
+                       static_cast<uint32_t>(entries->size()),
+                       fd,
+                       0,
+                       0,
+                       *xattr ? reinterpret_cast<uint64_t>(xattr) : 0};
+    supported = ioctl(fd, _IOWR(0xb7, 1, Request), &request) == 0;
+  }
+  close(fd);
+  return supported;
+#else
+  return false;
+#endif
+}
+
+jobject WithDigest(JNIEnv* env, jobject stat, const jbyte* digest, int size) {
+  static const jclass adapter_class = getClass(
+      env, "com/google/devtools/build/lib/vfs/FileStatusWithDigestAdapter");
+  static const jmethodID constructor =
+      getConstructorID(env, adapter_class,
+                       "(Lcom/google/devtools/build/lib/vfs/FileStatus;[B)V");
+  jbyteArray bytes = env->NewByteArray(size);
+  if (bytes == nullptr) return nullptr;
+  env->SetByteArrayRegion(bytes, 0, size, digest);
+  jobject result = env->NewObject(adapter_class, constructor, stat, bytes);
+  env->DeleteLocalRef(bytes);
+  return result;
+}
+}  // namespace
+
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_google_devtools_build_lib_unix_NativePosixFiles_statBatch(
+    JNIEnv* env, jclass clazz, jstring root, jobjectArray relative_paths,
+    jstring digest_xattr, jboolean use_ioctl) {
+  JStringLatin1Holder root_chars(env, root);
+  JStringLatin1Holder xattr_chars(env, digest_xattr);
+  if (env->ExceptionCheck()) return nullptr;
+  const jsize count = env->GetArrayLength(relative_paths);
+  if (count > 4096) {
+    POST_EXCEPTION_FROM_ERRNO(env, E2BIG, root_chars);
+    return nullptr;
+  }
+  static const jclass status_class =
+      getClass(env, "com/google/devtools/build/lib/vfs/FileStatus");
+  jobjectArray result = env->NewObjectArray(count, status_class, nullptr);
+  if (result == nullptr || count == 0) return result;
+  std::vector<std::string> paths;
+  paths.reserve(count);
+  for (jsize i = 0; i < count; ++i) {
+    jstring path =
+        static_cast<jstring>(env->GetObjectArrayElement(relative_paths, i));
+    {
+      JStringLatin1Holder chars(env, path);
+      if (env->ExceptionCheck()) return nullptr;
+      paths.emplace_back(chars);
+    }
+    env->DeleteLocalRef(path);
+  }
+  std::vector<TimberStatEntry> entries;
+  const bool batched =
+      use_ioctl && TimberStatBatch(root_chars, paths, xattr_chars, &entries);
+  std::string prefix(root_chars);
+  if (prefix.back() != '/') prefix += '/';
+  for (jsize i = 0; i < count; ++i) {
+    jobject stat = nullptr;
+    // Match getxattr_common: FreeBSD returns bytes copied even when truncated.
+    jbyte digest[4096];
+    int digest_size = -1;
+    const auto& entry = batched ? entries[i] : TimberStatEntry{};
+    if (batched && (entry.error == -ENOENT || entry.error == -ENOTDIR))
+      continue;
+    if (batched && entry.error == 0) {
+      static const jclass unix_status_class =
+          getClass(env, "com/google/devtools/build/lib/unix/UnixFileStatus");
+      static const jmethodID constructor =
+          getConstructorID(env, unix_status_class, "(IJJJJ)V");
+      stat = env->NewObject(
+          unix_status_class, constructor, static_cast<jint>(entry.mode),
+          static_cast<jlong>(entry.mtime_sec * 1000 +
+                             entry.mtime_nsec / 1000000),
+          static_cast<jlong>(entry.ctime_sec * 1000 +
+                             entry.ctime_nsec / 1000000),
+          static_cast<jlong>(entry.size), static_cast<jlong>(entry.inode));
+      if (*static_cast<const char*>(xattr_chars) && S_ISREG(entry.mode) &&
+          entry.digest_size >= 0 && entry.digest_size <= 32) {
+        digest_size = entry.digest_size;
+        memcpy(digest, entry.digest, digest_size);
+      }
+    } else {
+      std::string path = prefix + paths[i];
+      portable_stat_struct metadata;
+      int rc;
+      RESTARTABLE(portable_lstat(path.c_str(), &metadata), rc);
+      if (rc < 0) {
+        int error = errno;
+        if (error == ENOENT || error == ENOTDIR) continue;
+        POST_EXCEPTION_FROM_ERRNO(env, error, path.c_str());
+        return nullptr;
+      }
+      stat = NewUnixFileStatus(env, metadata);
+      if (*static_cast<const char*>(xattr_chars) && S_ISREG(metadata.st_mode)) {
+        bool absent = false;
+        RESTARTABLE(portable_lgetxattr(path.c_str(), xattr_chars, digest,
+                                       sizeof(digest), &absent),
+                    digest_size);
+        // Failed or oversized xattrs leave the existing scalar digest fallback
+        // in charge.
+      }
+    }
+    if (env->ExceptionCheck()) return nullptr;
+    if (digest_size >= 0) {
+      jobject with_digest = WithDigest(env, stat, digest, digest_size);
+      env->DeleteLocalRef(stat);
+      stat = with_digest;
+    }
+    if (env->ExceptionCheck()) return nullptr;
+    env->SetObjectArrayElement(result, i, stat);
+    env->DeleteLocalRef(stat);
+  }
+  return result;
 }
 
 /*

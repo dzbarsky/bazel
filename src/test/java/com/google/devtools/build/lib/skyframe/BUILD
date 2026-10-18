@@ -167,6 +167,7 @@ java_test(
     name = "DefaultSyscallCacheTest",
     srcs = ["DefaultSyscallCacheTest.java"],
     deps = [
+        "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
         "//src/main/java/com/google/devtools/build/lib/skyframe:default_syscall_cache",
         "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",

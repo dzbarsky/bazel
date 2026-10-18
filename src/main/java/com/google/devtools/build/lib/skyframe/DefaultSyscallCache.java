@@ -24,11 +24,17 @@ import com.google.devtools.build.lib.util.LatestObjectMetricExporter;
 import com.google.devtools.build.lib.vfs.Dirent;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.Root;
+import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.lib.vfs.SyscallCache;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
@@ -232,26 +238,67 @@ public final class DefaultSyscallCache implements SyscallCache {
     return (FileStatus) result;
   }
 
+  @Override
+  public void prefetchStats(List<RootedPath> paths, StatBatchMode mode) {
+    if (mode == StatBatchMode.OFF) {
+      return;
+    }
+    Map<Root, List<RootedPath>> roots = new LinkedHashMap<>();
+    for (RootedPath path : paths) {
+      if (statCache.getIfPresent(path.asPath()) == null) {
+        roots.computeIfAbsent(path.getRoot(), unused -> new ArrayList<>()).add(path);
+      }
+    }
+    for (var entry : roots.entrySet()) {
+      Root root = entry.getKey();
+      List<RootedPath> batch = entry.getValue();
+      // Absolute roots have no directory descriptor suitable for a filesystem-specific ioctl.
+      if (root.isAbsolute()) {
+        continue;
+      }
+      try {
+        List<FileStatus> stats =
+            root.asPath()
+                .getFileSystem()
+                .statBatch(
+                    root.asPath().asFragment(),
+                    batch.stream().map(RootedPath::getRootRelativePath).toList(),
+                    mode == StatBatchMode.IOCTL);
+        if (stats == null) {
+          continue;
+        }
+        if (stats.size() != batch.size()) {
+          throw new IllegalStateException("Incorrect batch stat result count");
+        }
+        for (int i = 0; i < batch.size(); i++) {
+          // A concurrent scalar lookup owns its first observation, including absence/errors.
+          statCache.asMap().putIfAbsent(batch.get(i).asPath(), cacheEntry(stats.get(i)));
+        }
+      } catch (IOException e) {
+        // Prefetch is optional. Ordinary checks retain per-file error and absence semantics.
+      }
+    }
+  }
+
   @Nullable
   @Override
   public DirentTypeWithSkip getType(Path path, Symlinks symlinks) throws IOException {
-    // Use a cached stat call if we have one. This is done first so that we don't need to iterate
-    // over a list of directory entries as we do for cached readdir() entries. We don't ever expect
-    // to get a cache hit if symlinks == Symlinks.NOFOLLOW and so we don't bother to check.
-    if (symlinks == Symlinks.FOLLOW) {
-      Object result = statCache.getIfPresent(path);
-      if (result != null && !(result instanceof IOException)) {
-        if (result == NO_STATUS) {
-          return null;
+    // Prefetched nofollow stats can answer type queries without scanning cached directory entries.
+    Object result = statCache.getIfPresent(path);
+    if (result != null && !(result instanceof IOException)) {
+      if (result == NO_STATUS) {
+        return null;
+      }
+      if (result instanceof SymlinkEntry symlinkEntry) {
+        if (symlinks == Symlinks.NOFOLLOW) {
+          return DirentTypeWithSkip.SYMLINK;
         }
-        if (result instanceof SymlinkEntry symlinkEntry) {
-          FileStatus followStatus = symlinkEntry.getFollowStatusIfPresent();
-          if (followStatus != null) {
-            return ofStat(followStatus);
-          }
-        } else {
-          return ofStat((FileStatus) result);
+        FileStatus followStatus = symlinkEntry.getFollowStatusIfPresent();
+        if (followStatus != null) {
+          return ofStat(followStatus);
         }
+      } else {
+        return ofStat((FileStatus) result);
       }
     }
 
@@ -367,17 +414,14 @@ public final class DefaultSyscallCache implements SyscallCache {
   /** Returns {@link FileStatus}, {@link SymlinkEntry}, or {@link IOException}. */
   private static Object statImpl(Path path) {
     try {
-      FileStatus stat = path.statIfFound(Symlinks.NOFOLLOW);
-      if (stat == null) {
-        return NO_STATUS;
-      }
-      if (stat.isSymbolicLink()) {
-        return new SymlinkEntry(stat);
-      }
-      return stat;
+      return cacheEntry(path.statIfFound(Symlinks.NOFOLLOW));
     } catch (IOException e) {
       return e;
     }
+  }
+
+  private static Object cacheEntry(@Nullable FileStatus stat) {
+    return stat == null ? NO_STATUS : stat.isSymbolicLink() ? new SymlinkEntry(stat) : stat;
   }
 
   /** Returns a collection of {@link Dirent} or {@link IOException}. */

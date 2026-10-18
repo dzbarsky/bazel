@@ -18,6 +18,7 @@ import static com.google.common.base.Preconditions.checkState;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.List;
 import javax.annotation.Nullable;
 
 /**
@@ -34,6 +35,15 @@ import javax.annotation.Nullable;
  * external repository files. Calling these methods on source files is allowed.
  */
 public interface SyscallCache extends XattrProvider, UnixGlob.FilesystemOps {
+  enum StatBatchMode {
+    OFF,
+    NATIVE,
+    IOCTL
+  }
+
+  /** Best-effort prefetch of nofollow stats for build-stable sources, grouped by root. */
+  default void prefetchStats(List<RootedPath> paths, StatBatchMode mode) {}
+
   SyscallCache NO_CACHE =
       new SyscallCache() {
         @Override

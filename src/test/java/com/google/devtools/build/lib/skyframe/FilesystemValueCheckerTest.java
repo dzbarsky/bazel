@@ -73,6 +73,7 @@ import com.google.devtools.build.lib.util.StringEncoding;
 import com.google.devtools.build.lib.util.io.OutErr;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.BatchStat;
+import com.google.devtools.build.lib.vfs.DelegatingSyscallCache;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileStateKey;
 import com.google.devtools.build.lib.vfs.FileStatus;
@@ -591,20 +592,34 @@ public final class FilesystemValueCheckerTest {
   }
 
   @Test
-  public void getDirtyKeys_batchesSkipMissingValuesAndIncludeTail() throws Exception {
+  public void getDirtyKeys_batchesSkipMissingValuesAndIncludeTail(
+      @TestParameter SyscallCache.StatBatchMode inputStatBatch) throws Exception {
     Map<SkyKey, SkyValue> values = new LinkedHashMap<>();
     ImmutableList.Builder<SkyKey> changedKeys = ImmutableList.builder();
     for (int i = 0; i < 65; i++) {
       RootedPath path =
           RootedPath.toRootedPath(Root.fromPath(pkgRoot), PathFragment.create("file" + i));
-      values.put(path, i == 0 ? null : FileStateValue.NONEXISTENT_FILE_STATE_NODE);
+      if (i != 0) {
+        writeFile(path.asPath(), "old");
+      }
+      values.put(path, i == 0 ? null : FileStateValue.create(path, SyscallCache.NO_CACHE, null));
       if (i == 1 || i == 64) {
         writeFile(path.asPath(), "contents");
         changedKeys.add(path);
       }
     }
+    AtomicInteger prefetched = new AtomicInteger();
+    SyscallCache cache =
+        new DelegatingSyscallCache() {
+          @Override
+          public void prefetchStats(List<RootedPath> paths, StatBatchMode mode) {
+            assertThat(mode).isEqualTo(inputStatBatch);
+            prefetched.addAndGet(paths.size());
+          }
+        };
     FilesystemValueChecker checker =
-        new FilesystemValueChecker(null, SyscallCache.NO_CACHE, XattrProviderOverrider.NO_OVERRIDE, 2);
+        new FilesystemValueChecker(
+            null, cache, XattrProviderOverrider.NO_OVERRIDE, 2, inputStatBatch);
 
     var diff =
         checker.getDirtyKeys(values, DirtinessCheckerUtils.createBasicFilesystemDirtinessChecker());
@@ -613,6 +628,8 @@ public final class FilesystemValueCheckerTest {
     assertThat(diff.changedKeysWithNewValues().keySet())
         .containsExactlyElementsIn(changedKeys.build());
     assertThat(diff.getNumKeysChecked()).isEqualTo(64);
+    assertThat(prefetched.get())
+        .isEqualTo(inputStatBatch == SyscallCache.StatBatchMode.OFF ? 0 : 64);
   }
 
   @Test
@@ -630,7 +647,8 @@ public final class FilesystemValueCheckerTest {
               return FileStateValue.NONEXISTENT_FILE_STATE_NODE;
             });
     FilesystemValueChecker checker =
-        new FilesystemValueChecker(null, SyscallCache.NO_CACHE, XattrProviderOverrider.NO_OVERRIDE, 1);
+        new FilesystemValueChecker(
+            null, SyscallCache.NO_CACHE, XattrProviderOverrider.NO_OVERRIDE, 1);
     ImmutableList<SkyKey> keys =
         ImmutableList.of(
             RootedPath.toRootedPath(Root.fromPath(pkgRoot), PathFragment.create("first")),
@@ -1584,7 +1602,8 @@ public final class FilesystemValueCheckerTest {
               invalidation == RemoteSymlinkInvalidation.EXPIRED_METADATA ? Instant.EPOCH : null);
     }
     if (invalidation != RemoteSymlinkInvalidation.NO_RESOLVED_PATH) {
-      metadata = FileArtifactValue.createFromExistingWithResolvedPath(metadata, target.asFragment());
+      metadata =
+          FileArtifactValue.createFromExistingWithResolvedPath(metadata, target.asFragment());
     }
     switch (invalidation) {
       case TARGET_EXISTS -> FileSystemUtils.writeContentAsLatin1(target, "local-content");

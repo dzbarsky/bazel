@@ -18,6 +18,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.List;
 import javax.annotation.Nullable;
 
 /** {@link SyscallCache} that delegates to an injectable one. */
@@ -31,6 +32,11 @@ public class DelegatingSyscallCache implements SyscallCache {
   @Override
   public Collection<Dirent> readdir(Path path) throws IOException {
     return delegate.readdir(path);
+  }
+
+  @Override
+  public void prefetchStats(List<RootedPath> paths, StatBatchMode mode) {
+    delegate.prefetchStats(paths, mode);
   }
 
   @Nullable
