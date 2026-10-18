@@ -35,6 +35,7 @@ import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -107,6 +108,15 @@ public final class AsyncTaskCache<KeyT, ValueT> {
    */
   public void put(KeyT key, ValueT value) {
     finished.put(key, value);
+  }
+
+  /**
+   * Returns the cached result for {@code key}, or null if there is none. Safe to call concurrently
+   * with {@link #execute}.
+   */
+  @Nullable
+  public ValueT getFinished(KeyT key) {
+    return finished.get(key);
   }
 
   /** Returns a set of keys for tasks which is still executing. */
