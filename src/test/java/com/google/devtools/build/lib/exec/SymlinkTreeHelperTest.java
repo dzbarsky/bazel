@@ -21,6 +21,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact;
@@ -43,6 +44,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Before;
 import org.junit.Test;
@@ -196,6 +198,7 @@ public final class SymlinkTreeHelperTest {
     Path root = racingFs.getPath("/tree");
     Artifact target = ActionsTestUtil.createArtifact(outputRoot, "target");
     BatchOperations batch = mock(BatchOperations.class);
+    when(batch.createDirectories(any(), any())).thenReturn(-1);
     doAnswer(
             invocation -> {
               Path directory = invocation.getArgument(0);
@@ -215,6 +218,77 @@ public final class SymlinkTreeHelperTest {
     assertThat(root.getRelative("raced/obsolete").exists()).isFalse();
     assertThat(root.getRelative("raced/nested/link").readSymbolicLink())
         .isEqualTo(target.getPath().asFragment());
+  }
+
+  private enum DirectoryConflict {
+    DIRECTORY,
+    FILE,
+    SYMLINK
+  }
+
+  @Test
+  public void reconcilesBatchDirectoryConflict(@TestParameter DirectoryConflict conflict)
+      throws Exception {
+    Path root = execRoot.getRelative("mkdir.runfiles");
+    Path outside = execRoot.getRelative("outside");
+    outside.createDirectoryAndParents();
+    FileSystemUtils.writeContent(outside.getChild("sentinel"), UTF_8, "preserved");
+    Artifact target = ActionsTestUtil.createArtifact(outputRoot, "target");
+    BatchOperations batch = mock(BatchOperations.class);
+    AtomicBoolean injected = new AtomicBoolean();
+    doAnswer(
+            invocation -> {
+              Path at = invocation.getArgument(0);
+              List<PathFragment> paths = invocation.getArgument(1);
+              if (injected.compareAndSet(false, true)) {
+                assertThat(paths)
+                    .containsExactly(
+                        PathFragment.create("first"),
+                        PathFragment.create("first/raced"),
+                        PathFragment.create("first/raced/nested"))
+                    .inOrder();
+                at.getRelative(paths.get(0)).createDirectory();
+                Path raced = at.getRelative(paths.get(1));
+                switch (conflict) {
+                  case DIRECTORY -> {
+                    raced.createDirectory();
+                    FileSystemUtils.createEmptyFile(raced.getChild("obsolete"));
+                    raced.chmod(0000);
+                  }
+                  case FILE -> FileSystemUtils.writeContent(raced, UTF_8, "obsolete");
+                  case SYMLINK -> raced.createSymbolicLink(outside.asFragment());
+                }
+                return 1;
+              }
+              for (PathFragment path : paths) {
+                assertThat(at.getRelative(path).createDirectory()).isTrue();
+              }
+              return paths.size();
+            })
+        .when(batch)
+        .createDirectories(any(), any());
+    doAnswer(
+            invocation -> {
+              Path at = invocation.getArgument(0);
+              Map<PathFragment, PathFragment> links = invocation.getArgument(1);
+              for (var link : links.entrySet()) {
+                at.getRelative(link.getKey()).createSymbolicLink(link.getValue());
+              }
+              return null;
+            })
+        .when(batch)
+        .createSymlinks(any(), any());
+    var helper =
+        new SymlinkTreeHelper(
+            execRoot.getChild("manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME, batch);
+    helper.createRunfilesSymlinks(Map.of(PathFragment.create("first/raced/nested/link"), target));
+    assertThat(root.getRelative("first/raced").isSymbolicLink()).isFalse();
+    assertThat(root.getRelative("first/raced/obsolete").exists()).isFalse();
+    assertThat(root.getRelative("first/raced/nested/link").readSymbolicLink())
+        .isEqualTo(target.getPath().asFragment());
+    assertThat(FileSystemUtils.readContent(outside.getChild("sentinel"), UTF_8))
+        .isEqualTo("preserved");
+    assertThat(outside.getChild("nested").exists()).isFalse();
   }
 
   @Test

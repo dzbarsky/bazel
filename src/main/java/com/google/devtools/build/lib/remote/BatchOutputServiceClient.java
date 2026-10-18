@@ -20,6 +20,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
+import com.google.devtools.build.lib.remote.BatchOutputServiceProto.BatchMkdirRequest;
 import com.google.devtools.build.lib.remote.BatchOutputServiceProto.BatchStatRequest;
 import com.google.devtools.build.lib.remote.BatchOutputServiceProto.BatchSymlinkRequest;
 import com.google.devtools.build.lib.remote.BatchOutputServiceProto.BatchSymlinkResponse;
@@ -55,16 +56,23 @@ final class BatchOutputServiceClient implements BatchOperations {
   private final Supplier<Path> execRoot;
   private final int symlinkMinEntries;
   private final int statConcurrency;
+  private final int mkdirMinEntries;
   private volatile boolean statSupported = true;
   private volatile boolean symlinkSupported = true;
+  private volatile boolean mkdirSupported = true;
 
   BatchOutputServiceClient(
-      Channel channel, Supplier<Path> execRoot, int symlinkMinEntries, int statConcurrency) {
+      Channel channel,
+      Supplier<Path> execRoot,
+      int symlinkMinEntries,
+      int statConcurrency,
+      int mkdirMinEntries) {
     this.stub = BatchOutputServiceGrpc.newBlockingStub(channel);
     this.symlinkStub = BatchOutputServiceGrpc.newFutureStub(channel);
     this.execRoot = execRoot;
     this.symlinkMinEntries = symlinkMinEntries;
     this.statConcurrency = statConcurrency;
+    this.mkdirMinEntries = mkdirMinEntries;
   }
 
   private static ByteString pathBytes(PathFragment path) {
@@ -133,6 +141,55 @@ final class BatchOutputServiceClient implements BatchOperations {
         statSupported = false;
       }
       throw new IOException("Batch stat RPC failed", e);
+    }
+  }
+
+  @Override
+  public int createDirectories(Path root, List<PathFragment> directories) throws IOException {
+    if (!mkdirSupported || directories.size() < mkdirMinEntries || directories.isEmpty()) {
+      return -1;
+    }
+    var request = BatchMkdirRequest.newBuilder().setDirectory(pathBytes(root.asFragment()));
+    int created = 0;
+    int bytes = 0;
+    for (int i = 0; i <= directories.size(); i++) {
+      ByteString path = i == directories.size() ? null : pathBytes(directories.get(i));
+      if (request.getPathsCount() > 0
+          && (path == null
+              || request.getPathsCount() == MAX_ENTRIES
+              || bytes + path.size() + 2 > MAX_PATH_BYTES)) {
+        // Sequential requests preserve ancestor-before-descendant creation across chunks.
+        int count = mkdir(request.build());
+        if (count < request.getPathsCount()) {
+          return count < 0 && created == 0 ? -1 : created + Math.max(count, 0);
+        }
+        created += count;
+        request.clearPaths();
+        bytes = 0;
+      }
+      if (path != null) {
+        request.addPaths(path);
+        bytes += path.size() + 2;
+      }
+    }
+    return created;
+  }
+
+  @SuppressWarnings("try")
+  private int mkdir(BatchMkdirRequest request) throws IOException {
+    try (var ignored = Profiler.instance().profile("Batch output service mkdir")) {
+      // No retry or deadline: a failed transport may have created a prefix.
+      int created = stub.batchMkdir(request).getCreatedCount();
+      if (created < 0 || created > request.getPathsCount()) {
+        throw new IOException("Batch mkdir returned an invalid created count");
+      }
+      return created;
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.UNIMPLEMENTED) {
+        mkdirSupported = false;
+        return -1;
+      }
+      throw new IOException("Batch mkdir RPC failed; completion is unknown", e);
     }
   }
 

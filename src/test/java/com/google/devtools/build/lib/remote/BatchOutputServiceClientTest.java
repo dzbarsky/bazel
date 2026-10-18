@@ -54,6 +54,8 @@ public final class BatchOutputServiceClientTest {
   private ManagedChannel channel;
   private BatchOutputServiceClient client;
   private Path root;
+  private final List<BatchMkdirRequest> mkdirRequests = new ArrayList<>();
+  private BiConsumer<BatchMkdirRequest, StreamObserver<BatchMkdirResponse>> mkdirHandler;
   private final List<BatchStatRequest> statRequests = new ArrayList<>();
   private final List<BatchSymlinkRequest> symlinkRequests = new ArrayList<>();
   private BiConsumer<BatchStatRequest, StreamObserver<BatchStatResponse>> statHandler;
@@ -69,6 +71,13 @@ public final class BatchOutputServiceClientTest {
             .directExecutor()
             .addService(
                 new BatchOutputServiceGrpc.BatchOutputServiceImplBase() {
+                  @Override
+                  public void batchMkdir(
+                      BatchMkdirRequest request, StreamObserver<BatchMkdirResponse> response) {
+                    mkdirRequests.add(request);
+                    mkdirHandler.accept(request, response);
+                  }
+
                   @Override
                   public void batchStat(
                       BatchStatRequest request, StreamObserver<BatchStatResponse> response) {
@@ -86,7 +95,57 @@ public final class BatchOutputServiceClientTest {
             .build()
             .start();
     channel = InProcessChannelBuilder.forName(name).directExecutor().build();
-    client = new BatchOutputServiceClient(channel, () -> root, 0, 16);
+    client = new BatchOutputServiceClient(channel, () -> root, 0, 16, 0);
+  }
+
+  @Test
+  public void directoryBatchesPreservePrefixAcrossChunkBoundary() throws Exception {
+    List<PathFragment> paths = new ArrayList<>();
+    for (int i = 0; i < 8193; i++) {
+      paths.add(PathFragment.create("directory-" + i));
+    }
+    mkdirHandler =
+        (request, response) -> {
+          int created = mkdirRequests.size() == 1 ? request.getPathsCount() : 1;
+          response.onNext(BatchMkdirResponse.newBuilder().setCreatedCount(created).build());
+          response.onCompleted();
+        };
+    assertThat(client.createDirectories(root, paths)).isEqualTo(4097);
+    assertThat(mkdirRequests).hasSize(2);
+    assertThat(mkdirRequests.get(0).getPathsCount()).isEqualTo(4096);
+    assertThat(mkdirRequests.get(1).getPaths(0).toStringUtf8()).isEqualTo("directory-4096");
+  }
+
+  @Test
+  public void directoryCutoffAndUnsupportedPerformNoWrites() throws Exception {
+    client = new BatchOutputServiceClient(channel, () -> root, 0, 16, 2);
+    var paths = List.of(PathFragment.create("a"), PathFragment.create("a/b"));
+    assertThat(client.createDirectories(root, paths.subList(0, 1))).isEqualTo(-1);
+    assertThat(mkdirRequests).isEmpty();
+    mkdirHandler =
+        (request, response) -> response.onError(Status.UNIMPLEMENTED.asRuntimeException());
+    assertThat(client.createDirectories(root, paths)).isEqualTo(-1);
+    assertThat(client.createDirectories(root, paths)).isEqualTo(-1);
+    assertThat(mkdirRequests).hasSize(1);
+    assertThat(root.getDirectoryEntries()).isEmpty();
+  }
+
+  @Test
+  public void directoryTransportFailureAndInvalidPrefixAreFatal() throws Exception {
+    var paths = List.of(PathFragment.create("a"));
+    mkdirHandler = (request, response) -> response.onError(Status.UNAVAILABLE.asRuntimeException());
+    IOException error =
+        assertThrows(IOException.class, () -> client.createDirectories(root, paths));
+    assertThat(error).hasMessageThat().contains("completion is unknown");
+    for (int count : List.of(-1, 2)) {
+      mkdirHandler =
+          (request, response) -> {
+            response.onNext(BatchMkdirResponse.newBuilder().setCreatedCount(count).build());
+            response.onCompleted();
+          };
+      assertThrows(IOException.class, () -> client.createDirectories(root, paths));
+    }
+    assertThat(root.getDirectoryEntries()).isEmpty();
   }
 
   @After
@@ -215,7 +274,7 @@ public final class BatchOutputServiceClientTest {
 
   @Test
   public void symlinkCutoffUsesLocalCreationBelowThresholdAndRpcAtThreshold() throws Exception {
-    client = new BatchOutputServiceClient(channel, () -> root, 3, 16);
+    client = new BatchOutputServiceClient(channel, () -> root, 3, 16, 0);
     root.getChild("a").createDirectory();
     client.createSymlinks(
         root,
@@ -278,7 +337,7 @@ public final class BatchOutputServiceClientTest {
 
   @Test(timeout = 10000)
   public void symlinkBatchesAreBoundedAndAcceptOutOfOrderReplies() throws Exception {
-    client = new BatchOutputServiceClient(channel, () -> root, 4096, 16);
+    client = new BatchOutputServiceClient(channel, () -> root, 4096, 16, 0);
     List<StreamObserver<BatchSymlinkResponse>> observers = new ArrayList<>();
     List<Integer> sizes = new ArrayList<>();
     symlinkHandler =

@@ -28,6 +28,7 @@ option java_outer_classname = "BatchOutputServiceProto";
 service BatchOutputService {
   rpc BatchStat(BatchStatRequest) returns (BatchStatResponse);
   rpc BatchSymlink(BatchSymlinkRequest) returns (BatchSymlinkResponse);
+  rpc BatchMkdir(BatchMkdirRequest) returns (BatchMkdirResponse);
 }
 
 message BatchStatRequest {
@@ -74,4 +75,18 @@ message BatchSymlinkResponse {
   // textual target is success; other existing entries produce EEXIST. Batches
   // can partially succeed. A lost response must not be interpreted as no writes.
   repeated int32 errors = 1;
+}
+
+message BatchMkdirRequest {
+  bytes directory = 1;
+  // Normalized relative paths in ancestor-first order. Create with mode 0777
+  // masked by the caller's umask. Stop at the first error, including EEXIST;
+  // never traverse an existing entry before the caller reconciles it.
+  repeated bytes paths = 2;
+}
+
+message BatchMkdirResponse {
+  // Successfully created prefix, excluding the first failed entry. The caller
+  // reconciles the remainder locally. A lost response is ambiguous completion.
+  uint32 created_count = 1;
 }

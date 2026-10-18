@@ -849,9 +849,9 @@ public final class RemoteOptions extends CommonRemoteOptions {
               + "local stats without disabling symlink RPCs.")
   public int batchOutputServiceStatConcurrency;
 
-  /** Accepts a nonnegative minimum number of symlinks for a batch RPC. */
-  public static class BatchSymlinkMinimumConverter extends Converters.RangeConverter {
-    public BatchSymlinkMinimumConverter() {
+  /** Accepts a nonnegative minimum number of entries for a batch RPC. */
+  public static class BatchMinimumEntriesConverter extends Converters.RangeConverter {
+    public BatchMinimumEntriesConverter() {
       super(0, Integer.MAX_VALUE);
     }
   }
@@ -859,7 +859,7 @@ public final class RemoteOptions extends CommonRemoteOptions {
   @Option(
       name = "experimental_batch_output_service_symlink_min_entries",
       defaultValue = "128",
-      converter = BatchSymlinkMinimumConverter.class,
+      converter = BatchMinimumEntriesConverter.class,
       documentationCategory = OptionDocumentationCategory.REMOTE,
       effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
       help =
@@ -868,6 +868,18 @@ public final class RemoteOptions extends CommonRemoteOptions {
               + "Zero always uses RPC. Applies only with --experimental_batch_output_service; "
               + "does not affect output stat batching or the size of individual RPC requests.")
   public int batchOutputServiceSymlinkMinEntries;
+
+  @Option(
+      name = "experimental_batch_output_service_mkdir_min_entries",
+      defaultValue = "128",
+      converter = BatchMinimumEntriesConverter.class,
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
+      help =
+          "Minimum number of missing directories in a runfiles subtree to use the batch output "
+              + "service. Smaller subtrees create directories locally. Zero always uses RPC; "
+              + "2147483647 disables directory RPCs. Requires --experimental_batch_output_service.")
+  public int batchOutputServiceMkdirMinEntries;
 
   @Option(
       name = "experimental_remote_output_service_output_path_prefix",

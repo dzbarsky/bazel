@@ -463,7 +463,8 @@ public final class RemoteModule extends BlazeModule {
                 batchOutputServiceChannel,
                 env::getExecRoot,
                 remoteOptions.batchOutputServiceSymlinkMinEntries,
-                remoteOptions.batchOutputServiceStatConcurrency);
+                remoteOptions.batchOutputServiceStatConcurrency,
+                remoteOptions.batchOutputServiceMkdirMinEntries);
       } catch (IOException e) {
         handleInitFailure(env, e, Code.CREDENTIALS_INIT_FAILURE);
         return false;

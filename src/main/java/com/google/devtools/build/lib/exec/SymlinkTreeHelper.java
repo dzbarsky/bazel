@@ -32,8 +32,10 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
 
@@ -169,7 +171,8 @@ public final class SymlinkTreeHelper {
       Map<PathFragment, PathFragment> missing =
           batchOperations == null ? null : new LinkedHashMap<>();
       try (SilentCloseable ignored = Profiler.instance().profile("Reconcile symlink tree")) {
-        root.syncTreeRecursively(symlinkTreeRoot, targetPathFn, symlinkTreeRoot, missing);
+        root.syncTreeRecursively(
+            symlinkTreeRoot, targetPathFn, symlinkTreeRoot, missing, batchOperations);
       }
       if (missing != null && !missing.isEmpty()) {
         try (SilentCloseable ignored = Profiler.instance().profile("Create batched symlinks")) {
@@ -244,6 +247,8 @@ public final class SymlinkTreeHelper {
   private static final class Directory<T> {
     private final Map<String, T> symlinks = new HashMap<>();
     private final Map<String, Directory<T>> directories = new HashMap<>();
+    private boolean created;
+    private boolean creationFailed;
 
     void addSymlink(String basename, @Nullable T target) {
       symlinks.put(basename, target);
@@ -261,7 +266,8 @@ public final class SymlinkTreeHelper {
         Path at,
         TargetPathFunction<T> targetPathFn,
         Path treeRoot,
-        @Nullable Map<PathFragment, PathFragment> missing)
+        @Nullable Map<PathFragment, PathFragment> missing,
+        @Nullable BatchOperations batchOperations)
         throws IOException {
       FileStatus stat = at.statIfFound(Symlinks.FOLLOW);
       if (stat == null) {
@@ -304,20 +310,49 @@ public final class SymlinkTreeHelper {
           if (dirent.getType() != Dirent.Type.DIRECTORY) {
             next.deleteTree();
           }
-          nextDir.syncTreeRecursively(at.getChild(basename), targetPathFn, treeRoot, missing);
+          nextDir.syncTreeRecursively(
+              at.getChild(basename), targetPathFn, treeRoot, missing, batchOperations);
         } else {
           at.getChild(basename).deleteTree();
         }
       }
 
-      createMissingEntries(at, targetPathFn, treeRoot, missing);
+      if (batchOperations != null && !directories.isEmpty()) {
+        List<PathFragment> paths = new ArrayList<>();
+        List<Directory<T>> nodes = new ArrayList<>();
+        collectDirectories(PathFragment.EMPTY_FRAGMENT, paths, nodes);
+        int count = batchOperations.createDirectories(at, paths);
+        if (count < -1 || count > nodes.size()) {
+          throw new IOException("Batch directory creation returned an invalid prefix length");
+        }
+        for (int i = 0; i < count; i++) {
+          nodes.get(i).created = true;
+        }
+        if (count >= 0 && count < nodes.size()) {
+          nodes.get(count).creationFailed = true;
+        }
+      }
+      createMissingEntries(at, targetPathFn, treeRoot, missing, batchOperations);
+    }
+
+    private void collectDirectories(
+        PathFragment prefix, List<PathFragment> paths, List<Directory<T>> nodes) {
+      for (var entry : directories.entrySet()) {
+        paths.add(prefix.getRelative(entry.getKey()));
+        nodes.add(entry.getValue());
+      }
+      // Keep siblings together so the kernel can reuse their parent lookup and lock.
+      for (var entry : directories.entrySet()) {
+        entry.getValue().collectDirectories(prefix.getRelative(entry.getKey()), paths, nodes);
+      }
     }
 
     private void createMissingEntries(
         Path at,
         TargetPathFunction<T> targetPathFn,
         Path treeRoot,
-        @Nullable Map<PathFragment, PathFragment> missing)
+        @Nullable Map<PathFragment, PathFragment> missing,
+        @Nullable BatchOperations batchOperations)
         throws IOException {
       for (Map.Entry<String, T> entry : symlinks.entrySet()) {
         T value = entry.getValue();
@@ -335,13 +370,17 @@ public final class SymlinkTreeHelper {
       }
       for (Map.Entry<String, Directory<T>> entry : directories.entrySet()) {
         Path child = at.getChild(entry.getKey());
-        // A directory created by this call is empty: no stat or readdir is needed.
-        // Only runfiles use batching; filesets retain their native prefix-conflict handling.
-        // Reconcile if another creator installed the directory after the parent's listing.
-        if (missing != null && child.createDirectory()) {
-          entry.getValue().createMissingEntries(child, targetPathFn, treeRoot, missing);
+        Directory<T> directory = entry.getValue();
+        // Only directories created by this invocation can skip reconciliation. A batched
+        // failure may be a raced file, symlink, or directory with restrictive permissions.
+        if (directory.created
+            || (!directory.creationFailed && missing != null && child.createDirectory())) {
+          directory.createMissingEntries(child, targetPathFn, treeRoot, missing, batchOperations);
         } else {
-          entry.getValue().syncTreeRecursively(child, targetPathFn, treeRoot, missing);
+          if (directory.creationFailed && child.isSymbolicLink()) {
+            child.delete();
+          }
+          directory.syncTreeRecursively(child, targetPathFn, treeRoot, missing, batchOperations);
         }
       }
     }
