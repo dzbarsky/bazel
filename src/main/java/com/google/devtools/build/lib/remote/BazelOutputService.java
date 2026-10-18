@@ -658,7 +658,6 @@ public class BazelOutputService implements OutputService {
       var request = BatchStatRequest.newBuilder();
       request.setBuildId(checkNotNull(buildId));
 
-      int index = 0;
       for (var execPath : paths) {
         String pathString = null;
         var path = execRoot.getRelative(execPath).asFragment();
@@ -672,10 +671,8 @@ public class BazelOutputService implements OutputService {
           // BatchStat nulls must mean absence, not an unsupported lookup. Let the caller
           // fall back to ordinary filesystem stats for this batch.
           throw new IOException("Cannot batch stat path outside the output tree: " + path);
-        } else {
-          request.addPaths(pathString);
         }
-        ++index;
+        request.addPaths(pathString);
       }
 
       var response = BazelOutputService.this.batchStat(request.build());
@@ -686,8 +683,8 @@ public class BazelOutputService implements OutputService {
                 request.getPathsCount(), response.getResponsesCount()));
       }
 
-      var result = new ArrayList<FileStatusWithDigest>(index);
-      for (int i = 0; i < index; ++i) {
+      var result = new ArrayList<FileStatusWithDigest>(response.getResponsesCount());
+      for (int i = 0; i < response.getResponsesCount(); ++i) {
         var statResponse = response.getResponses(i);
         if (!statResponse.hasStat()) {
           result.add(null);

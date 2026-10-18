@@ -445,8 +445,7 @@ public class UnixFileSystem extends DiskBackedFileSystem {
   public boolean setLastModifiedTimeIfExists(PathFragment path, long newTime) throws IOException {
     var comp = Blocker.begin();
     try {
-      return NativePosixFiles.utimensat(
-          path.toString(), newTime == Path.NOW_SENTINEL_TIME, newTime);
+      return NativePosixFiles.utimensat(path.toString(), newTime == Path.NOW_SENTINEL_TIME, newTime);
     } finally {
       Blocker.end(comp);
     }

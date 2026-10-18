@@ -829,9 +829,9 @@ public final class RemoteOptions extends CommonRemoteOptions {
               + " run locally.")
   public String batchOutputService;
 
-  /** Accepts zero to disable output-stat RPCs or a positive concurrency limit. */
-  public static class BatchStatConcurrencyConverter extends Converters.RangeConverter {
-    public BatchStatConcurrencyConverter() {
+  /** Accepts a nonnegative entry count or concurrency limit. */
+  public static class NonnegativeIntegerConverter extends Converters.RangeConverter {
+    public NonnegativeIntegerConverter() {
       super(0, Integer.MAX_VALUE);
     }
   }
@@ -839,7 +839,7 @@ public final class RemoteOptions extends CommonRemoteOptions {
   @Option(
       name = "experimental_batch_output_service_stat_concurrency",
       defaultValue = "0",
-      converter = BatchStatConcurrencyConverter.class,
+      converter = NonnegativeIntegerConverter.class,
       documentationCategory = OptionDocumentationCategory.REMOTE,
       effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
       help =
@@ -851,17 +851,10 @@ public final class RemoteOptions extends CommonRemoteOptions {
               + " individual local stats without disabling symlink RPCs.")
   public int batchOutputServiceStatConcurrency;
 
-  /** Accepts a nonnegative minimum number of entries for a batch RPC. */
-  public static class BatchMinimumEntriesConverter extends Converters.RangeConverter {
-    public BatchMinimumEntriesConverter() {
-      super(0, Integer.MAX_VALUE);
-    }
-  }
-
   @Option(
       name = "experimental_batch_output_service_symlink_min_entries",
       defaultValue = "128",
-      converter = BatchMinimumEntriesConverter.class,
+      converter = NonnegativeIntegerConverter.class,
       documentationCategory = OptionDocumentationCategory.REMOTE,
       effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
       help =
@@ -894,7 +887,7 @@ public final class RemoteOptions extends CommonRemoteOptions {
   @Option(
       name = "experimental_batch_output_service_mkdir_min_entries",
       defaultValue = "128",
-      converter = BatchMinimumEntriesConverter.class,
+      converter = NonnegativeIntegerConverter.class,
       documentationCategory = OptionDocumentationCategory.REMOTE,
       effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
       help =
