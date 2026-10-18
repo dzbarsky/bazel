@@ -104,6 +104,9 @@ public final class NativeBatchOperations implements BatchOperations {
       }
       return;
     }
+    // Give medium trees useful parallelism while keeping tiny batches inline and bounding overhead.
+    int batchEntries =
+        Math.min(MAX_ENTRIES, Math.max(512, 1 + (symlinks.size() - 1) / symlinkConcurrency));
     var completed = new ExecutorCompletionService<SymlinkBatch>(executor);
     Set<Future<SymlinkBatch>> pending = new HashSet<>();
     try {
@@ -115,7 +118,7 @@ public final class NativeBatchOperations implements BatchOperations {
             (long) entry.getKey().getPathString().length()
                 + entry.getValue().getSafePathString().length()
                 + 2;
-        if (!paths.isEmpty() && (paths.size() == MAX_ENTRIES || size > MAX_BYTES - bytes)) {
+        if (!paths.isEmpty() && (paths.size() == batchEntries || size > MAX_BYTES - bytes)) {
           var batch = new SymlinkBatch(paths, targets, null);
           if (symlinkConcurrency == 1) {
             reconcileSymlinkBatch(root, executeSymlinkBatch(root, batch));

@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
@@ -169,6 +170,38 @@ public final class NativeBatchOperationsTest {
         release.countDown();
       }
     }
+  }
+
+  @Test
+  public void mediumTreeUsesWorkersAndCallerWithoutDuplicatingLinks() throws Exception {
+    Thread caller = Thread.currentThread();
+    AtomicInteger workerBatches = new AtomicInteger();
+    AtomicInteger callerBatches = new AtomicInteger();
+    var seen = new ConcurrentHashMap<PathFragment, PathFragment>();
+    FileSystem fs =
+        new InMemoryFileSystem(DigestHashFunction.SHA256) {
+          @Override
+          public int[] createSymlinksBatch(
+              PathFragment root, List<PathFragment> paths, List<PathFragment> targets) {
+            (Thread.currentThread() == caller ? callerBatches : workerBatches).incrementAndGet();
+            for (int i = 0; i < paths.size(); i++) {
+              assertThat(seen.putIfAbsent(paths.get(i), targets.get(i))).isNull();
+            }
+            return new int[paths.size()];
+          }
+        };
+    Path root = fs.getPath("/tree");
+    root.createDirectory();
+    Map<PathFragment, PathFragment> symlinks = new LinkedHashMap<>();
+    for (int i = 0; i < 2000; i++) {
+      symlinks.put(PathFragment.create("link" + i), PathFragment.create("/target" + i));
+    }
+    try (var workers = Executors.newFixedThreadPool(4)) {
+      new NativeBatchOperations(workers, 0, 0, 4).createSymlinks(root, symlinks);
+    }
+    assertThat(workerBatches.get()).isEqualTo(3);
+    assertThat(callerBatches.get()).isEqualTo(1);
+    assertThat(seen).containsExactlyEntriesIn(symlinks);
   }
 
   @Test
