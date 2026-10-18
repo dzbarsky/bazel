@@ -151,7 +151,8 @@ public final class SymlinkTreeHelper {
         Directory<T> parentDir = root.walk(path.getParentDirectory());
         parentDir.addSymlink(path.getBaseName(), value);
       }
-      // Keep siblings together when the client splits RPCs, so the service can reuse parent handles.
+      // Keep siblings together when the client splits RPCs, so the service can reuse parent
+      // handles.
       Map<PathFragment, PathFragment> missing =
           batchOperations == null ? null : new LinkedHashMap<>();
       root.syncTreeRecursively(symlinkTreeRoot, targetPathFn, symlinkTreeRoot, missing);
@@ -292,6 +293,15 @@ public final class SymlinkTreeHelper {
         }
       }
 
+      createMissingEntries(at, targetPathFn, treeRoot, missing);
+    }
+
+    private void createMissingEntries(
+        Path at,
+        TargetPathFunction<T> targetPathFn,
+        Path treeRoot,
+        @Nullable Map<PathFragment, PathFragment> missing)
+        throws IOException {
       for (Map.Entry<String, T> entry : symlinks.entrySet()) {
         T value = entry.getValue();
         if (value == null) {
@@ -307,9 +317,14 @@ public final class SymlinkTreeHelper {
         }
       }
       for (Map.Entry<String, Directory<T>> entry : directories.entrySet()) {
-        entry
-            .getValue()
-            .syncTreeRecursively(at.getChild(entry.getKey()), targetPathFn, treeRoot, missing);
+        Path child = at.getChild(entry.getKey());
+        // A directory created by this call is empty: no stat or readdir is needed.
+        // Reconcile if another creator installed it after the parent's listing.
+        if (child.createDirectory()) {
+          entry.getValue().createMissingEntries(child, targetPathFn, treeRoot, missing);
+        } else {
+          entry.getValue().syncTreeRecursively(child, targetPathFn, treeRoot, missing);
+        }
       }
     }
   }

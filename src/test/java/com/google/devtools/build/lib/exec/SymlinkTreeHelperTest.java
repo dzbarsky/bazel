@@ -146,12 +146,45 @@ public final class SymlinkTreeHelperTest {
   }
 
   @Test
+  public void reconcilesDirectoryCreatedAfterParentListing() throws Exception {
+    PathFragment raced = PathFragment.create("/tree/raced");
+    FileSystem racingFs =
+        new InMemoryFileSystem(DigestHashFunction.SHA256) {
+          private boolean injected;
+
+          @Override
+          public boolean createDirectory(PathFragment path) throws IOException {
+            if (path.equals(raced) && !injected) {
+              injected = true;
+              super.createDirectory(path);
+              FileSystemUtils.createEmptyFile(getPath(path).getChild("obsolete"));
+              getPath(path).chmod(0000);
+              return false;
+            }
+            return super.createDirectory(path);
+          }
+        };
+    Path root = racingFs.getPath("/tree");
+    PathFragment target = PathFragment.create("../target");
+    var helper =
+        new SymlinkTreeHelper(
+            racingFs.getPath("/manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME);
+    helper.createFilesetSymlinks(Map.of(PathFragment.create("raced/nested/link"), target));
+
+    assertThat(root.getRelative("raced/obsolete").exists()).isFalse();
+    assertThat(root.getRelative("raced/nested/link").readSymbolicLink()).isEqualTo(target);
+  }
+
+  @Test
   public void batchesMissingLinksAcrossDirectoriesAfterReconciliation() throws Exception {
     Path root = execRoot.getRelative("batch.runfiles");
     Path manifest = root.getChild("MANIFEST");
     PathFragment target = PathFragment.create("../literal-target");
     Map<PathFragment, PathFragment> missing =
-        Map.of(PathFragment.create("a/new"), target, PathFragment.create("b/new"), target);
+        Map.of(
+            PathFragment.create("a/new"), target,
+            PathFragment.create("b/new"), target,
+            PathFragment.create("c/d/e/new"), target);
     var links = new HashMap<>(missing);
     links.put(PathFragment.create("a/existing"), target);
     links.put(PathFragment.create("b/empty"), null);
