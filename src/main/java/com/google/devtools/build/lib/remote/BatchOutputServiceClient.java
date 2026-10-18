@@ -52,13 +52,15 @@ final class BatchOutputServiceClient implements BatchOperations {
   private final BatchOutputServiceGrpc.BatchOutputServiceBlockingStub stub;
   private final BatchOutputServiceGrpc.BatchOutputServiceFutureStub symlinkStub;
   private final Supplier<Path> execRoot;
+  private final int symlinkMinEntries;
   private volatile boolean statSupported = true;
   private volatile boolean symlinkSupported = true;
 
-  BatchOutputServiceClient(Channel channel, Supplier<Path> execRoot) {
+  BatchOutputServiceClient(Channel channel, Supplier<Path> execRoot, int symlinkMinEntries) {
     this.stub = BatchOutputServiceGrpc.newBlockingStub(channel);
     this.symlinkStub = BatchOutputServiceGrpc.newFutureStub(channel);
     this.execRoot = execRoot;
+    this.symlinkMinEntries = symlinkMinEntries;
   }
 
   private static ByteString pathBytes(PathFragment path) {
@@ -134,6 +136,13 @@ final class BatchOutputServiceClient implements BatchOperations {
   @Override
   public void createSymlinks(Path root, Map<PathFragment, PathFragment> symlinks)
       throws IOException {
+    // Decide for the whole tree before submitting any potentially mutating RPC.
+    if (symlinks.size() < symlinkMinEntries) {
+      for (var entry : symlinks.entrySet()) {
+        FileSystemUtils.ensureSymbolicLink(root.getRelative(entry.getKey()), entry.getValue());
+      }
+      return;
+    }
     List<PendingSymlinks> pending = new ArrayList<>(MAX_SYMLINK_REQUESTS);
     var request = BatchSymlinkRequest.newBuilder().setDirectory(pathBytes(root.asFragment()));
     int bytes = 0;

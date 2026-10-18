@@ -85,7 +85,7 @@ public final class BatchOutputServiceClientTest {
             .build()
             .start();
     channel = InProcessChannelBuilder.forName(name).directExecutor().build();
-    client = new BatchOutputServiceClient(channel, () -> root);
+    client = new BatchOutputServiceClient(channel, () -> root, 0);
   }
 
   @After
@@ -213,6 +213,30 @@ public final class BatchOutputServiceClientTest {
   }
 
   @Test
+  public void symlinkCutoffUsesLocalCreationBelowThresholdAndRpcAtThreshold() throws Exception {
+    client = new BatchOutputServiceClient(channel, () -> root, 3);
+    root.getChild("a").createDirectory();
+    client.createSymlinks(
+        root,
+        Map.of(
+            PathFragment.create("a/link"), PathFragment.create("../target"),
+            PathFragment.create("other"), PathFragment.create("\u00ff")));
+    assertThat(symlinkRequests).isEmpty();
+    assertThat(root.getRelative("a/link").readSymbolicLink())
+        .isEqualTo(PathFragment.create("../target"));
+    assertThat(root.getChild("other").readSymbolicLink()).isEqualTo(PathFragment.create("\u00ff"));
+
+    symlinkHandler =
+        (request, observer) -> {
+          observer.onNext(successfulSymlinks(request.getSymlinksCount()));
+          observer.onCompleted();
+        };
+    client.createSymlinks(root, symlinks(3));
+    assertThat(symlinkRequests).hasSize(1);
+    assertThat(symlinkRequests.getFirst().getSymlinksCount()).isEqualTo(3);
+  }
+
+  @Test
   public void unsupportedSymlinksFallBackLocally() throws Exception {
     symlinkHandler =
         (request, observer) -> observer.onError(Status.UNIMPLEMENTED.asRuntimeException());
@@ -253,6 +277,7 @@ public final class BatchOutputServiceClientTest {
 
   @Test(timeout = 10000)
   public void symlinkBatchesAreBoundedAndAcceptOutOfOrderReplies() throws Exception {
+    client = new BatchOutputServiceClient(channel, () -> root, 4096);
     List<StreamObserver<BatchSymlinkResponse>> observers = new ArrayList<>();
     List<Integer> sizes = new ArrayList<>();
     symlinkHandler =

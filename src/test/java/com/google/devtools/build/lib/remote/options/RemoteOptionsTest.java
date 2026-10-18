@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.remote.options;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 
 import com.google.common.collect.ImmutableSortedMap;
@@ -31,6 +32,20 @@ import org.junit.runners.JUnit4;
 /** Tests for RemoteOptions. */
 @RunWith(JUnit4.class)
 public class RemoteOptionsTest {
+
+  @Test
+  public void batchSymlinkMinimumAcceptsZeroAndPositiveValuesButRejectsNegative() throws Exception {
+    OptionsParser parser = OptionsParser.builder().optionsClasses(RemoteOptions.class).build();
+    parser.parse("--experimental_batch_output_service_symlink_min_entries=0");
+    assertThat(parser.getOptions(RemoteOptions.class).batchOutputServiceSymlinkMinEntries)
+        .isEqualTo(0);
+    parser.parse("--experimental_batch_output_service_symlink_min_entries=1024");
+    assertThat(parser.getOptions(RemoteOptions.class).batchOutputServiceSymlinkMinEntries)
+        .isEqualTo(1024);
+    assertThrows(
+        OptionsParsingException.class,
+        () -> parser.parse("--experimental_batch_output_service_symlink_min_entries=-1"));
+  }
 
   @Test
   public void testDefaultValueOfExecProperties() throws Exception {

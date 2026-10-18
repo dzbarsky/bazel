@@ -459,7 +459,10 @@ public final class RemoteModule extends BlazeModule {
                 ImmutableList.of(),
                 ImmutableMap.of());
         batchOutputServiceClient =
-            new BatchOutputServiceClient(batchOutputServiceChannel, env::getExecRoot);
+            new BatchOutputServiceClient(
+                batchOutputServiceChannel,
+                env::getExecRoot,
+                remoteOptions.batchOutputServiceSymlinkMinEntries);
       } catch (IOException e) {
         handleInitFailure(env, e, Code.CREDENTIALS_INIT_FAILURE);
         return false;

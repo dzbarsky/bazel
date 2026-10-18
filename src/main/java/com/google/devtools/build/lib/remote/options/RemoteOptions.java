@@ -828,6 +828,26 @@ public final class RemoteOptions extends CommonRemoteOptions {
               + "run in the build user's filesystem context. Unsupported operations run locally.")
   public String batchOutputService;
 
+  /** Accepts a nonnegative minimum number of symlinks for a batch RPC. */
+  public static class BatchSymlinkMinimumConverter extends Converters.RangeConverter {
+    public BatchSymlinkMinimumConverter() {
+      super(0, Integer.MAX_VALUE);
+    }
+  }
+
+  @Option(
+      name = "experimental_batch_output_service_symlink_min_entries",
+      defaultValue = "128",
+      converter = BatchSymlinkMinimumConverter.class,
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
+      help =
+          "Minimum number of missing symlinks in a tree to use the batch output service. "
+              + "Smaller trees create their missing links locally before any symlink RPC is sent. "
+              + "Zero always uses RPC. Applies only with --experimental_batch_output_service; "
+              + "does not affect output stat batching or the size of individual RPC requests.")
+  public int batchOutputServiceSymlinkMinEntries;
+
   @Option(
       name = "experimental_remote_output_service_output_path_prefix",
       defaultValue = "",
