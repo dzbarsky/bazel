@@ -143,21 +143,27 @@ public final class SymlinkTreeHelper {
     //    directory on disk. If it is a directory, recurse into that directory.
     try (SilentCloseable c = Profiler.instance().profile("Create symlink tree")) {
       Directory<T> root = new Directory<>();
-      for (Map.Entry<PathFragment, T> entry : symlinkMap.entrySet()) {
-        PathFragment path = entry.getKey();
-        T value = entry.getValue();
-        checkArgument(!path.isEmpty() && !path.isAbsolute(), path);
-        // This creates intermediate directory nodes as a side effect.
-        Directory<T> parentDir = root.walk(path.getParentDirectory());
-        parentDir.addSymlink(path.getBaseName(), value);
+      try (SilentCloseable ignored = Profiler.instance().profile("Prepare symlink tree")) {
+        for (Map.Entry<PathFragment, T> entry : symlinkMap.entrySet()) {
+          PathFragment path = entry.getKey();
+          T value = entry.getValue();
+          checkArgument(!path.isEmpty() && !path.isAbsolute(), path);
+          // This creates intermediate directory nodes as a side effect.
+          Directory<T> parentDir = root.walk(path.getParentDirectory());
+          parentDir.addSymlink(path.getBaseName(), value);
+        }
       }
       // Keep siblings together when the client splits RPCs, so the service can reuse parent
       // handles.
       Map<PathFragment, PathFragment> missing =
           batchOperations == null ? null : new LinkedHashMap<>();
-      root.syncTreeRecursively(symlinkTreeRoot, targetPathFn, symlinkTreeRoot, missing);
+      try (SilentCloseable ignored = Profiler.instance().profile("Reconcile symlink tree")) {
+        root.syncTreeRecursively(symlinkTreeRoot, targetPathFn, symlinkTreeRoot, missing);
+      }
       if (missing != null && !missing.isEmpty()) {
-        batchOperations.createSymlinks(symlinkTreeRoot, missing);
+        try (SilentCloseable ignored = Profiler.instance().profile("Create batched symlinks")) {
+          batchOperations.createSymlinks(symlinkTreeRoot, missing);
+        }
       }
       createWorkspaceSubdirectory();
     } catch (IOException e) {
@@ -319,8 +325,9 @@ public final class SymlinkTreeHelper {
       for (Map.Entry<String, Directory<T>> entry : directories.entrySet()) {
         Path child = at.getChild(entry.getKey());
         // A directory created by this call is empty: no stat or readdir is needed.
-        // Reconcile if another creator installed it after the parent's listing.
-        if (child.createDirectory()) {
+        // Filesets may also name a conflicting link above; preserve its reconciliation.
+        // Reconcile if another creator installed the directory after the parent's listing.
+        if (!symlinks.containsKey(entry.getKey()) && child.createDirectory()) {
           entry.getValue().createMissingEntries(child, targetPathFn, treeRoot, missing);
         } else {
           entry.getValue().syncTreeRecursively(child, targetPathFn, treeRoot, missing);

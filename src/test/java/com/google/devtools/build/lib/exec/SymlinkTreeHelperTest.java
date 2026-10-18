@@ -146,6 +146,24 @@ public final class SymlinkTreeHelperTest {
   }
 
   @Test
+  public void filesetChildReplacesConflictingParentLink() throws Exception {
+    Path root = execRoot.getRelative("prefix.runfiles");
+    Path target = execRoot.getChild("target");
+    FileSystemUtils.writeContent(target, UTF_8, "preserved");
+    var helper =
+        new SymlinkTreeHelper(
+            execRoot.getChild("manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME);
+    helper.createFilesetSymlinks(
+        Map.of(
+            PathFragment.create("parent"), target.asFragment(),
+            PathFragment.create("parent/child"), target.asFragment()));
+
+    assertThat(root.getChild("parent").isDirectory()).isTrue();
+    assertThat(root.getRelative("parent/child").readSymbolicLink()).isEqualTo(target.asFragment());
+    assertThat(FileSystemUtils.readContent(target, UTF_8)).isEqualTo("preserved");
+  }
+
+  @Test
   public void reconcilesDirectoryCreatedAfterParentListing() throws Exception {
     PathFragment raced = PathFragment.create("/tree/raced");
     FileSystem racingFs =
