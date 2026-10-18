@@ -75,6 +75,39 @@ public class UnixFileSystem extends DiskBackedFileSystem {
     }
   }
 
+  private static String[] batchCreatePaths(PathFragment root, List<PathFragment> paths) {
+    checkArgument(root.isAbsolute() && root.getPathString().indexOf('\0') < 0);
+    checkArgument(paths.size() <= 4096);
+    for (PathFragment path : paths) {
+      checkArgument(
+          !path.isAbsolute()
+              && !path.isEmpty()
+              && !path.containsUplevelReferences()
+              && path.getPathString().indexOf('\0') < 0);
+    }
+    return paths.stream().map(PathFragment::getPathString).toArray(String[]::new);
+  }
+
+  @Override
+  public int createDirectoriesBatch(PathFragment root, List<PathFragment> paths)
+      throws IOException {
+    return NativePosixFiles.createDirectoriesBatch(
+        root.getPathString(), batchCreatePaths(root, paths));
+  }
+
+  @Override
+  public int[] createSymlinksBatch(
+      PathFragment root, List<PathFragment> paths, List<PathFragment> targets) throws IOException {
+    checkArgument(paths.size() == targets.size());
+    for (PathFragment target : targets) {
+      checkArgument(target.getPathString().indexOf('\0') < 0);
+    }
+    return NativePosixFiles.createSymlinksBatch(
+        root.getPathString(),
+        batchCreatePaths(root, paths),
+        targets.stream().map(PathFragment::getSafePathString).toArray(String[]::new));
+  }
+
   @Override
   public Collection<String> getDirectoryEntries(PathFragment path) throws IOException {
     String name = path.getPathString();

@@ -123,6 +123,11 @@ final class NativePosixFiles {
   static native FileStatus[] statBatch(
       String root, String[] paths, String digestXattr, boolean useIoctl) throws IOException;
 
+  static native int createDirectoriesBatch(String root, String[] paths) throws IOException;
+
+  static native int[] createSymlinksBatch(String root, String[] paths, String[] targets)
+      throws IOException;
+
   /**
    * Native wrapper around POSIX utimensat(2) syscall.
    *

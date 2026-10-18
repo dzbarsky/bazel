@@ -26,6 +26,7 @@ PATH_FRAGMENT_SOURCES = [
 OUTPUT_SERVICE_SOURCES = [
     "OutputService.java",
     "LocalOutputService.java",
+    "NativeBatchOperations.java",
 ]
 
 java_library(

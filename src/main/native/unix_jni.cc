@@ -1163,6 +1163,117 @@ bool TimberStatBatch(const char* root, const std::vector<std::string>& paths,
 #endif
 }
 
+struct TimberCreateEntry {
+  int32_t dirfd;
+  int32_t error;
+  uint32_t name_offset;
+  uint32_t target_offset;
+};
+
+// False means unsupported before writes, or an exception already posted to Java.
+// Mutating ioctls must never be retried after an ambiguous failure.
+bool TimberCreateBatch(JNIEnv* env, jstring root, jobjectArray paths,
+                      jobjectArray targets,
+                      std::vector<TimberCreateEntry>* entries) {
+#if defined(__linux__)
+  constexpr size_t kMaxBytes = 1024 * 1024;
+  struct Request {
+    uint64_t entries;
+    uint64_t strings;
+    uint32_t count;
+    uint32_t string_bytes;
+    uint32_t flags;
+    uint32_t reserved;
+  };
+  static_assert(sizeof(Request) == 32);
+  static_assert(sizeof(TimberCreateEntry) == 16);
+  JStringLatin1Holder root_chars(env, root);
+  if (env->ExceptionCheck()) return false;
+  if (strlen(root_chars) != static_cast<size_t>(env->GetStringLength(root))) {
+    POST_EXCEPTION_FROM_ERRNO(env, EINVAL, root_chars);
+    return false;
+  }
+  const jsize count = env->GetArrayLength(paths);
+  if (count > 4096 ||
+      (targets != nullptr && env->GetArrayLength(targets) != count)) {
+    POST_EXCEPTION_FROM_ERRNO(env, EINVAL, root_chars);
+    return false;
+  }
+  std::vector<char> strings;
+  entries->resize(count);
+  for (jsize i = 0; i < count; ++i) {
+    for (int field = 0; field < 2; ++field) {
+      uint32_t offset = strings.size();
+      if (field == 0) {
+        (*entries)[i].name_offset = offset;
+      } else {
+        (*entries)[i].target_offset = offset;
+      }
+      if (field == 1 && targets == nullptr) {
+        if (strings.size() == kMaxBytes) {
+          POST_EXCEPTION_FROM_ERRNO(env, E2BIG, root_chars);
+          return false;
+        }
+        strings.push_back(0);
+        continue;
+      }
+      jstring value = static_cast<jstring>(
+          env->GetObjectArrayElement(field == 0 ? paths : targets, i));
+      if (value == nullptr) {
+        if (!env->ExceptionCheck()) {
+          POST_EXCEPTION_FROM_ERRNO(env, EINVAL, root_chars);
+        }
+        return false;
+      }
+      const size_t length = env->GetStringLength(value);
+      if (length + 1 > kMaxBytes - strings.size()) {
+        env->DeleteLocalRef(value);
+        POST_EXCEPTION_FROM_ERRNO(env, E2BIG, root_chars);
+        return false;
+      }
+      {
+        JStringLatin1Holder chars(env, value);
+        if (env->ExceptionCheck()) return false;
+        if (strlen(chars) != length) {
+          env->DeleteLocalRef(value);
+          POST_EXCEPTION_FROM_ERRNO(env, EINVAL, root_chars);
+          return false;
+        }
+        const char* data = chars;
+        strings.insert(strings.end(), data, data + length + 1);
+      }
+      env->DeleteLocalRef(value);
+    }
+  }
+  int fd;
+  RESTARTABLE(open(root_chars, O_RDONLY | O_DIRECTORY | O_CLOEXEC), fd);
+  if (fd < 0) return false;
+  struct statfs fs;
+  if (fstatfs(fd, &fs) < 0 || fs.f_type != 0x54494d4b) {
+    close(fd);
+    return false;
+  }
+  for (auto& entry : *entries) entry.dirfd = fd;
+  Request request = {reinterpret_cast<uint64_t>(entries->data()),
+                     reinterpret_cast<uint64_t>(strings.data()),
+                     static_cast<uint32_t>(entries->size()),
+                     static_cast<uint32_t>(strings.size()),
+                     targets == nullptr ? 1u : 0u,
+                     0};
+  const int result = ioctl(fd, _IOWR(0xb7, 2, Request), &request);
+  const int error = result < 0 ? errno : 0;
+  close(fd);
+  if (error == ENOTTY) return false;
+  if (error != 0) {
+    POST_EXCEPTION_FROM_ERRNO(env, error, root_chars);
+    return false;
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
 jobject WithDigest(JNIEnv* env, jobject stat, const jbyte* digest, int size) {
   static const jclass adapter_class = getClass(
       env, "com/google/devtools/build/lib/vfs/FileStatusWithDigestAdapter");
@@ -1267,6 +1378,34 @@ Java_com_google_devtools_build_lib_unix_NativePosixFiles_statBatch(
     env->SetObjectArrayElement(result, i, stat);
     env->DeleteLocalRef(stat);
   }
+  return result;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_google_devtools_build_lib_unix_NativePosixFiles_createDirectoriesBatch(
+    JNIEnv* env, jclass clazz, jstring root, jobjectArray paths) {
+  std::vector<TimberCreateEntry> entries;
+  if (!TimberCreateBatch(env, root, paths, nullptr, &entries)) return -1;
+  jint created = 0;
+  for (const auto& entry : entries) {
+    if (entry.error != 0) break;
+    ++created;
+  }
+  return created;
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_google_devtools_build_lib_unix_NativePosixFiles_createSymlinksBatch(
+    JNIEnv* env, jclass clazz, jstring root, jobjectArray paths,
+    jobjectArray targets) {
+  std::vector<TimberCreateEntry> entries;
+  if (!TimberCreateBatch(env, root, paths, targets, &entries)) return nullptr;
+  jintArray result = env->NewIntArray(entries.size());
+  if (result == nullptr) return nullptr;
+  std::vector<jint> errors;
+  errors.reserve(entries.size());
+  for (const auto& entry : entries) errors.push_back(entry.error);
+  env->SetIntArrayRegion(result, 0, errors.size(), errors.data());
   return result;
 }
 

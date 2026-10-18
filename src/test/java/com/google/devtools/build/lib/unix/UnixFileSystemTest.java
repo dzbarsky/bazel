@@ -61,6 +61,27 @@ public class UnixFileSystemTest extends SymlinkAwareFileSystemTest {
   // Most tests are just inherited from FileSystemTest.
 
   @Test
+  public void nativeCreationRejectsInvalidPackedRequestsBeforeWrites() throws Exception {
+    assumeTrue(OS.getCurrent() == OS.LINUX);
+    Path root = absolutize("native-create-bounds");
+    root.createDirectory();
+    for (String invalid : List.of("bad\0path", "x".repeat(1024 * 1024))) {
+      assertThrows(
+          IOException.class,
+          () ->
+              NativePosixFiles.createSymlinksBatch(
+                  root.getPathString(),
+                  new String[] {"first", invalid},
+                  new String[] {"target", "target"}));
+      assertThat(root.getChild("first").exists(Symlinks.NOFOLLOW)).isFalse();
+    }
+    assertThrows(
+        IOException.class,
+        () -> NativePosixFiles.createDirectoriesBatch(root.getPathString(), new String[4097]));
+    assertThat(root.getDirectoryEntries()).isEmpty();
+  }
+
+  @Test
   public void batchStatPreservesNoFollowMetadata() throws Exception {
     Path root = absolutize("stat-batch");
     root.createDirectory();

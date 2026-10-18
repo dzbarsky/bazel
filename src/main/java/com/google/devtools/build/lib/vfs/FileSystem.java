@@ -529,6 +529,25 @@ public abstract class FileSystem {
   }
 
   /**
+   * Creates ancestor-first directories, stopping at the first error. Returns the created prefix,
+   * or -1 when unsupported and no writes occurred. An exception may indicate partial completion.
+   */
+  public int createDirectoriesBatch(PathFragment root, List<PathFragment> paths)
+      throws IOException {
+    return -1;
+  }
+
+  /**
+   * Creates links independently and returns zero for each success or a nonzero error for each
+   * failure. Null means unsupported with no writes. An exception may indicate partial completion.
+   */
+  @Nullable
+  public int[] createSymlinksBatch(
+      PathFragment root, List<PathFragment> paths, List<PathFragment> targets) throws IOException {
+    return null;
+  }
+
+  /**
    * Returns true iff {@code path} denotes an existing regular or special file. See {@link
    * Path#isFile(Symlinks)} for specification.
    */

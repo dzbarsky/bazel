@@ -823,9 +823,10 @@ public final class RemoteOptions extends CommonRemoteOptions {
       documentationCategory = OptionDocumentationCategory.REMOTE,
       effectTags = {OptionEffectTag.EXECUTION},
       help =
-          "Unix socket endpoint (unix:/path) for optional batch stat and symlink RPCs. "
-              + "The ordinary output service retains all other responsibilities. The service must "
-              + "run in the build user's filesystem context. Unsupported operations run locally.")
+          "Unix socket endpoint (unix:/path) for optional batch RPCs, or ioctl for direct native"
+              + " creation. The ordinary output service retains all other responsibilities. The"
+              + " service must run in the build user's filesystem context. Unsupported operations"
+              + " run locally.")
   public String batchOutputService;
 
   /** Accepts zero to disable output-stat RPCs or a positive concurrency limit. */
@@ -842,11 +843,12 @@ public final class RemoteOptions extends CommonRemoteOptions {
       documentationCategory = OptionDocumentationCategory.REMOTE,
       effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
       help =
-          "Maximum number of concurrent output-stat shards with --experimental_batch_output_service. "
-              + "Each shard sends batches sequentially and checks their metadata locally. Higher "
-              + "values increase parallelism but may create smaller RPC batches. The limit is also "
-              + "capped at four shards per available processor. Zero (the default) uses individual "
-              + "local stats without disabling symlink RPCs.")
+          "Maximum number of concurrent output-stat shards with"
+              + " --experimental_batch_output_service. Each shard sends batches sequentially and"
+              + " checks their metadata locally. Higher values increase parallelism but may create"
+              + " smaller RPC batches. The limit is also capped at four shards per available"
+              + " processor. For the ioctl backend this option is ignored. Zero (the default) uses"
+              + " individual local stats without disabling symlink RPCs.")
   public int batchOutputServiceStatConcurrency;
 
   /** Accepts a nonnegative minimum number of entries for a batch RPC. */
@@ -865,7 +867,7 @@ public final class RemoteOptions extends CommonRemoteOptions {
       help =
           "Minimum number of missing symlinks in a tree to use the batch output service. "
               + "Smaller trees create their missing links locally before any symlink RPC is sent. "
-              + "Zero always uses RPC. Applies only with --experimental_batch_output_service; "
+              + "Zero always batches. Applies only with --experimental_batch_output_service; "
               + "does not affect output stat batching or the size of individual RPC requests.")
   public int batchOutputServiceSymlinkMinEntries;
 
@@ -876,9 +878,10 @@ public final class RemoteOptions extends CommonRemoteOptions {
       documentationCategory = OptionDocumentationCategory.REMOTE,
       effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
       help =
-          "Minimum number of missing directories in a runfiles subtree to use the batch output "
-              + "service. Smaller subtrees create directories locally. Zero always uses RPC; "
-              + "2147483647 disables directory RPCs. Requires --experimental_batch_output_service.")
+          "Minimum number of missing directories in a runfiles subtree to use the batch output"
+              + " service. Smaller subtrees create directories locally. Zero always batches;"
+              + " 2147483647 disables directory batching. Requires"
+              + " --experimental_batch_output_service.")
   public int batchOutputServiceMkdirMinEntries;
 
   @Option(
