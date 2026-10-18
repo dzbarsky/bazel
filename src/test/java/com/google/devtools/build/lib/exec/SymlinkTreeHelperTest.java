@@ -17,6 +17,10 @@ package com.google.devtools.build.lib.exec;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.devtools.build.lib.testutil.TestConstants.WORKSPACE_NAME;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact;
@@ -146,13 +150,19 @@ public final class SymlinkTreeHelperTest {
   }
 
   @Test
-  public void filesetChildReplacesConflictingParentLink() throws Exception {
+  public void filesetChildReplacesConflictingParentLink(@TestParameter boolean existing)
+      throws Exception {
     Path root = execRoot.getRelative("prefix.runfiles");
     Path target = execRoot.getChild("target");
     FileSystemUtils.writeContent(target, UTF_8, "preserved");
+    if (existing) {
+      root.createDirectoryAndParents();
+      root.getChild("parent").createSymbolicLink(target.asFragment());
+    }
+    BatchOperations batch = mock(BatchOperations.class);
     var helper =
         new SymlinkTreeHelper(
-            execRoot.getChild("manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME);
+            execRoot.getChild("manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME, batch);
     helper.createFilesetSymlinks(
         Map.of(
             PathFragment.create("parent"), target.asFragment(),
@@ -161,6 +171,7 @@ public final class SymlinkTreeHelperTest {
     assertThat(root.getChild("parent").isDirectory()).isTrue();
     assertThat(root.getRelative("parent/child").readSymbolicLink()).isEqualTo(target.asFragment());
     assertThat(FileSystemUtils.readContent(target, UTF_8)).isEqualTo("preserved");
+    verifyNoInteractions(batch);
   }
 
   @Test
@@ -183,14 +194,27 @@ public final class SymlinkTreeHelperTest {
           }
         };
     Path root = racingFs.getPath("/tree");
-    PathFragment target = PathFragment.create("../target");
+    Artifact target = ActionsTestUtil.createArtifact(outputRoot, "target");
+    BatchOperations batch = mock(BatchOperations.class);
+    doAnswer(
+            invocation -> {
+              Path directory = invocation.getArgument(0);
+              Map<PathFragment, PathFragment> links = invocation.getArgument(1);
+              for (var link : links.entrySet()) {
+                directory.getRelative(link.getKey()).createSymbolicLink(link.getValue());
+              }
+              return null;
+            })
+        .when(batch)
+        .createSymlinks(any(), any());
     var helper =
         new SymlinkTreeHelper(
-            racingFs.getPath("/manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME);
-    helper.createFilesetSymlinks(Map.of(PathFragment.create("raced/nested/link"), target));
+            racingFs.getPath("/manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME, batch);
+    helper.createRunfilesSymlinks(Map.of(PathFragment.create("raced/nested/link"), target));
 
     assertThat(root.getRelative("raced/obsolete").exists()).isFalse();
-    assertThat(root.getRelative("raced/nested/link").readSymbolicLink()).isEqualTo(target);
+    assertThat(root.getRelative("raced/nested/link").readSymbolicLink())
+        .isEqualTo(target.getPath().asFragment());
   }
 
   @Test
@@ -203,8 +227,11 @@ public final class SymlinkTreeHelperTest {
             PathFragment.create("a/new"), target,
             PathFragment.create("b/new"), target,
             PathFragment.create("c/d/e/new"), target);
-    var links = new HashMap<>(missing);
-    links.put(PathFragment.create("a/existing"), target);
+    Artifact artifact = ActionsTestUtil.createUnresolvedSymlinkArtifact(outputRoot, "link");
+    artifact.getPath().createSymbolicLink(target);
+    var links = new HashMap<PathFragment, Artifact>();
+    missing.keySet().forEach(path -> links.put(path, artifact));
+    links.put(PathFragment.create("a/existing"), artifact);
     links.put(PathFragment.create("b/empty"), null);
     root.getRelative("a").createDirectoryAndParents();
     root.getRelative("a/existing").createSymbolicLink(target);
@@ -233,7 +260,7 @@ public final class SymlinkTreeHelperTest {
         };
     var helper =
         new SymlinkTreeHelper(execRoot.getChild("manifest"), manifest, root, WORKSPACE_NAME, batch);
-    helper.createFilesetSymlinks(links);
+    helper.createRunfilesSymlinks(links);
     assertThat(calls.get()).isEqualTo(1);
     for (var link : missing.entrySet()) {
       assertThat(root.getRelative(link.getKey()).readSymbolicLink()).isEqualTo(link.getValue());

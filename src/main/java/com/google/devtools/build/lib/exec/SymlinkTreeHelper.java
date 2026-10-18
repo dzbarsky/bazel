@@ -94,7 +94,8 @@ public final class SymlinkTreeHelper {
   /** Creates a symlink tree for a fileset by making VFS calls. */
   public void createFilesetSymlinks(Map<PathFragment, PathFragment> symlinkMap)
       throws ExecException {
-    createSymlinks(symlinkMap, (path) -> path);
+    // Filesets can name both a link and a child beneath it. Preserve their native ordering.
+    createSymlinks(symlinkMap, (path) -> path, null);
   }
 
   /** Creates a symlink tree for a runfiles by making VFS calls. */
@@ -105,12 +106,16 @@ public final class SymlinkTreeHelper {
             artifact.isSymlink()
                 // Unresolved symlinks are created textually.
                 ? artifact.getPath().readSymbolicLink()
-                : artifact.getPath().asFragment());
+                : artifact.getPath().asFragment(),
+        batchOperations);
   }
 
   /** Creates a symlink tree. */
   private <T> void createSymlinks(
-      Map<PathFragment, T> symlinkMap, TargetPathFunction<T> targetPathFn) throws ExecException {
+      Map<PathFragment, T> symlinkMap,
+      TargetPathFunction<T> targetPathFn,
+      @Nullable BatchOperations batchOperations)
+      throws ExecException {
     // Our strategy is to minimize mutating file system operations as much as possible. Ideally, if
     // there is an existing symlink tree with the expected contents, we don't make any changes. Our
     // algorithm goes as follows:
@@ -144,12 +149,18 @@ public final class SymlinkTreeHelper {
     try (SilentCloseable c = Profiler.instance().profile("Create symlink tree")) {
       Directory<T> root = new Directory<>();
       try (SilentCloseable ignored = Profiler.instance().profile("Prepare symlink tree")) {
+        PathFragment previousParent = PathFragment.EMPTY_FRAGMENT;
+        Directory<T> parentDir = root;
         for (Map.Entry<PathFragment, T> entry : symlinkMap.entrySet()) {
           PathFragment path = entry.getKey();
           T value = entry.getValue();
           checkArgument(!path.isEmpty() && !path.isAbsolute(), path);
-          // This creates intermediate directory nodes as a side effect.
-          Directory<T> parentDir = root.walk(path.getParentDirectory());
+          // Consecutive runfiles usually share a parent; avoid reparsing its segments.
+          PathFragment parent = path.getParentDirectory();
+          if (!parent.equals(previousParent)) {
+            parentDir = root.walk(parent);
+            previousParent = parent;
+          }
           parentDir.addSymlink(path.getBaseName(), value);
         }
       }
@@ -325,9 +336,9 @@ public final class SymlinkTreeHelper {
       for (Map.Entry<String, Directory<T>> entry : directories.entrySet()) {
         Path child = at.getChild(entry.getKey());
         // A directory created by this call is empty: no stat or readdir is needed.
-        // Filesets may also name a conflicting link above; preserve its reconciliation.
+        // Only runfiles use batching; filesets retain their native prefix-conflict handling.
         // Reconcile if another creator installed the directory after the parent's listing.
-        if (!symlinks.containsKey(entry.getKey()) && child.createDirectory()) {
+        if (missing != null && child.createDirectory()) {
           entry.getValue().createMissingEntries(child, targetPathFn, treeRoot, missing);
         } else {
           entry.getValue().syncTreeRecursively(child, targetPathFn, treeRoot, missing);
