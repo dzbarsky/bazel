@@ -19,7 +19,6 @@ import com.google.common.collect.ImmutableClassToInstanceMap;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.skyframe.serialization.ObjectCodec.MemoizationEquality;
 import com.google.devtools.build.lib.skyframe.serialization.ObjectCodecRegistry.CodecDescriptor;
-import com.google.devtools.build.lib.skyframe.serialization.WriteStatuses.WriteStatus;
 import com.google.errorprone.annotations.ForOverride;
 import com.google.protobuf.CodedOutputStream;
 import java.io.IOException;
@@ -86,6 +85,11 @@ public abstract class SerializationContext implements LeafSerializationContext {
    * <p>This globally memoizes {@code child} by <em>reference</em>.
    *
    * <p>NOTE: This is only supported by {@link SharedValueSerializationContext}.
+   *
+   * <p><b>Warning:</b> The {@code codec}'s runtime <em>class</em> is used to salt the fingerprint
+   * to distinguish shared values that have identical serialized representations. Do not call this
+   * with a {@code codec} whose serialization or deserialization behavior depends on constructor
+   * parameters or instance state, as all instances of the same class share the same salt.
    *
    * @param child <em>non-null</em> object to be serialized
    * @param distinguisher an optional distinguisher see {@link

@@ -31,6 +31,7 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.profiler.PredicateBasedStatRecorder.RecorderAndPredicate;
 import com.google.devtools.build.lib.profiler.TaskData.ActionTaskData;
 import com.google.devtools.build.lib.runtime.BlazeService;
+import com.google.devtools.build.lib.skybridge.ScOnly;
 import com.google.devtools.common.options.OptionsProvider;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.sun.management.OperatingSystemMXBean;
@@ -55,13 +56,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
-import java.util.regex.Pattern;
-import java.util.zip.GZIPOutputStream;
 import javax.annotation.Nullable;
 
 /** Blaze internal profiler implementation. */
 @ThreadSafe
 @SuppressWarnings("GoodTime") // This code is very performance sensitive.
+@ScOnly
 public final class TraceProfilerServiceImpl implements TraceProfilerService {
   private static final int HISTOGRAM_BUCKETS = 20;
 
@@ -69,8 +69,10 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
 
   private static final ImmutableMap<String, Predicate<? super String>> DEFAULT_VFS_TYPE_HEURISTICS =
       ImmutableMap.of(
-          "blaze-out", Pattern.compile("/blaze-out/").asPredicate(),
-          "source", Predicates.<CharSequence>alwaysTrue());
+          "blaze-out",
+          (String path) -> path.contains("/blaze-out/"),
+          "source",
+          Predicates.<CharSequence>alwaysTrue());
 
   /**
    * Aggregator class that keeps track of the slowest tasks of the specified type.
@@ -97,7 +99,7 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
       Extrema<SlowTask> extrema = extremaAggregators[(int) (taskData.threadId % SHARDS)];
       synchronized (extrema) {
         extrema.aggregate(
-            new SlowTask(taskData.durationNanos, taskData.description, taskData.type));
+            new SlowTaskImpl(taskData.durationNanos, taskData.description, taskData.type));
       }
     }
 
@@ -206,8 +208,7 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
   // can't call stop itself. What to do?
   @Override
   public synchronized ImmutableList<StatRecorder> getTasksHistograms() {
-    Preconditions.checkState(isActive());
-    return ImmutableList.copyOf(tasksHistograms);
+    return isActive() ? ImmutableList.copyOf(tasksHistograms) : ImmutableList.of();
   }
 
   @Override
@@ -254,6 +255,7 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
       Clock clock,
       long execStartTimeNanos,
       boolean slimProfile,
+      long slimProfileSizeLimit,
       boolean includePrimaryOutput,
       boolean includeTargetLabel,
       boolean includeConfiguration,
@@ -281,19 +283,24 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
 
     JsonTraceFileWriter writer = null;
     if (stream != null && format != null) {
+      SlimProfileConfiguration slimProfileConfig =
+          slimProfile
+              ? (slimProfileSizeLimit > 0
+                  ? SlimProfileConfiguration.afterSize(slimProfileSizeLimit)
+                  : SlimProfileConfiguration.always())
+              : SlimProfileConfiguration.disabled();
+      long profileStartEpochMillis =
+          BlazeClock.createNanosToMillisSinceEpochConverter(clock)
+              .toEpochMillis(execStartTimeNanos);
       writer =
-          switch (format) {
-            case JSON_TRACE_FILE_FORMAT ->
-                new JsonTraceFileWriter(
-                    stream, execStartTimeNanos, slimProfile, outputBase, buildID);
-            case JSON_TRACE_FILE_COMPRESSED_FORMAT ->
-                new JsonTraceFileWriter(
-                    new GZIPOutputStream(stream),
-                    execStartTimeNanos,
-                    slimProfile,
-                    outputBase,
-                    buildID);
-          };
+          new JsonTraceFileWriter(
+              stream,
+              execStartTimeNanos,
+              profileStartEpochMillis,
+              slimProfileConfig,
+              outputBase,
+              buildID,
+              format);
       writer.start();
     }
     this.writerRef.set(writer);
@@ -328,14 +335,15 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
       double[] actionCountValues = actionCountTimeSeries.toDoubleArray(len);
       actionCountTimeSeriesRef.set(null);
       counterSeriesMap.put(
-          new CounterSeriesTask("action count", "action", /* color= */ null), actionCountValues);
+          new CounterSeriesTaskImpl("action count", "action", /* color= */ null),
+          actionCountValues);
     }
     TimeSeries actionCacheCountTimeSeries = actionCacheCountTimeSeriesRef.get();
     if (actionCacheCountTimeSeries != null) {
       double[] actionCacheCountValues = actionCacheCountTimeSeries.toDoubleArray(len);
       actionCacheCountTimeSeriesRef.set(null);
       counterSeriesMap.put(
-          new CounterSeriesTask("action cache count", "local action cache", /* color= */ null),
+          new CounterSeriesTaskImpl("action cache count", "local action cache", /* color= */ null),
           actionCacheCountValues);
     }
     if (!counterSeriesMap.isEmpty()) {
@@ -348,7 +356,7 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
       double[] localActionCountValues = localActionCountTimeSeries.toDoubleArray(len);
       localActionCountTimeSeriesRef.set(null);
       localCounterSeriesMap.put(
-          new CounterSeriesTask(
+          new CounterSeriesTaskImpl(
               "action count (local)", "local action", CounterSeriesTask.Color.DETAILED_MEMORY_DUMP),
           localActionCountValues);
     }
@@ -364,7 +372,7 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
         var timeSeries = entry.getValue();
         double[] values = timeSeries.toDoubleArray(len);
         inflightRpcCounterSeriesMap.put(
-            new CounterSeriesTask("Inflight RPCs - " + name, name, /* color= */ null), values);
+            new CounterSeriesTaskImpl("Inflight RPCs - " + name, name, /* color= */ null), values);
         logCounters(
             inflightRpcCounterSeriesMap, actionCountStartTime, ACTION_COUNT_BUCKET_DURATION);
       }
@@ -466,27 +474,27 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
    * @param description task description. May be stored until end of build.
    */
   private void logTask(long startTimeNanos, long duration, ProfilerTask type, String description) {
-    var lane = borrowLane();
-    try {
-      checkNotNull(description);
-      checkState(!description.isEmpty(), "No description -> not helpful");
-      if (duration < 0) {
-        // See note in Clock#nanoTime, which is used by Profiler#nanoTimeMaybe.
-        duration = 0;
-      }
+    checkNotNull(description);
+    checkState(!description.isEmpty(), "No description -> not helpful");
+    if (duration < 0) {
+      // See note in Clock#nanoTime, which is used by Profiler#nanoTimeMaybe.
+      duration = 0;
+    }
 
-      StatRecorder statRecorder = tasksHistograms[type.ordinal()];
-      if (collectTaskHistograms && statRecorder != null) {
-        statRecorder.addStat((int) Duration.ofNanos(duration).toMillis(), description);
-      }
+    StatRecorder statRecorder = tasksHistograms[type.ordinal()];
+    if (collectTaskHistograms && statRecorder != null) {
+      statRecorder.addStat((int) (duration / 1_000_000L), description);
+    }
 
-      if (isActive() && startTimeNanos >= 0 && isProfiling(type)) {
-        // Store instance fields as local variables so they are not nulled out from under us by
-        // #clear.
-        JsonTraceFileWriter currentWriter = writerRef.get();
-        if (wasTaskSlowEnoughToRecord(type, duration)) {
-          TaskData data = new TaskData(getLaneId(lane), startTimeNanos, type, description);
-          data.durationNanos = duration;
+    if (isActive() && startTimeNanos >= 0 && isProfiling(type)) {
+      // Store instance fields as local variables so they are not nulled out from under us by
+      // #clear.
+      JsonTraceFileWriter currentWriter = writerRef.get();
+      if (wasTaskSlowEnoughToRecord(type, duration)) {
+        var lane = borrowLane();
+        try {
+          TaskData data =
+              new TaskData(getLaneId(lane), startTimeNanos, duration, type, description);
           if (currentWriter != null) {
             currentWriter.enqueue(data);
           }
@@ -496,10 +504,63 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
           if (aggregator != null) {
             aggregator.add(data);
           }
+        } finally {
+          releaseLane(lane);
         }
       }
-    } finally {
-      releaseLane(lane);
+    }
+  }
+
+  private void logActionTask(
+      long startTimeNanos,
+      long duration,
+      ProfilerTask type,
+      String description,
+      String mnemonic,
+      @Nullable String primaryOutput,
+      @Nullable String targetLabel,
+      @Nullable String configuration) {
+    checkNotNull(description);
+    checkState(!description.isEmpty(), "No description -> not helpful");
+    if (duration < 0) {
+      // See note in Clock#nanoTime, which is used by Profiler#nanoTimeMaybe.
+      duration = 0;
+    }
+
+    StatRecorder statRecorder = tasksHistograms[type.ordinal()];
+    if (collectTaskHistograms && statRecorder != null) {
+      statRecorder.addStat((int) (duration / 1_000_000L), description);
+    }
+
+    if (isActive() && startTimeNanos >= 0 && isProfiling(type)) {
+      JsonTraceFileWriter currentWriter = writerRef.get();
+      if (wasTaskSlowEnoughToRecord(type, duration)) {
+        var lane = borrowLane();
+        try {
+          TaskData data =
+              new ActionTaskData(
+                  getLaneId(lane),
+                  startTimeNanos,
+                  duration,
+                  type,
+                  mnemonic,
+                  description,
+                  primaryOutput,
+                  targetLabel,
+                  configuration);
+          if (currentWriter != null) {
+            currentWriter.enqueue(data);
+          }
+
+          SlowestTaskAggregator aggregator = slowestTasks[type.ordinal()];
+
+          if (aggregator != null) {
+            aggregator.add(data);
+          }
+        } finally {
+          releaseLane(lane);
+        }
+      }
     }
   }
 
@@ -520,6 +581,27 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
   public void logSimpleTaskDuration(
       long startTimeNanos, Duration duration, ProfilerTask type, String description) {
     logTask(startTimeNanos, duration.toNanos(), type, description);
+  }
+
+  @Override
+  public void logActionTaskDuration(
+      long startTimeNanos,
+      Duration duration,
+      ProfilerTask type,
+      String description,
+      String mnemonic,
+      String primaryOutput,
+      String targetLabel,
+      String configuration) {
+    logActionTask(
+        startTimeNanos,
+        duration.toNanos(),
+        type,
+        description,
+        mnemonic,
+        includePrimaryOutput ? primaryOutput : null,
+        includeTargetLabel ? targetLabel : null,
+        includeConfiguration ? configuration : null);
   }
 
   @Override
@@ -599,33 +681,42 @@ public final class TraceProfilerServiceImpl implements TraceProfilerService {
 
   @Override
   public void completeTask(long startTimeNanos, ProfilerTask type, String description) {
-    var lane = borrowLane();
-    try {
-      completeTask(getLaneId(lane), startTimeNanos, type, description);
-    } finally {
-      releaseLane(lane);
-    }
+    completeTask(/* laneId= */ -1L, startTimeNanos, type, description);
   }
 
   private void completeTask(
       long laneId, long startTimeNanos, ProfilerTask type, String description) {
-    if (isActive()) {
-      long endTimeNanos = clock.nanoTime();
-      long duration = endTimeNanos - startTimeNanos;
-      if (wasTaskSlowEnoughToRecord(type, duration)) {
+    if (!isActive()) {
+      return;
+    }
+    long endTimeNanos = clock.nanoTime();
+    long duration = endTimeNanos - startTimeNanos;
+    if (wasTaskSlowEnoughToRecord(type, duration)) {
+      if (laneId >= 0) {
         recordTask(new TaskData(laneId, startTimeNanos, duration, type, description));
-      }
-
-      if (type == ProfilerTask.RPC) {
-        var inflightRpcTimeSerieMap = inflightRpcTimeSeriesMapRef.get();
-        if (inflightRpcTimeSerieMap != null) {
-          var timeSeries =
-              inflightRpcTimeSerieMap.computeIfAbsent(
-                  description,
-                  (unused) -> createTimeSeries(actionCountStartTime, ACTION_COUNT_BUCKET_DURATION));
-          timeSeries.addRange(Duration.ofNanos(startTimeNanos), Duration.ofNanos(endTimeNanos));
+      } else {
+        var lane = borrowLane();
+        try {
+          recordTask(new TaskData(getLaneId(lane), startTimeNanos, duration, type, description));
+        } finally {
+          releaseLane(lane);
         }
       }
+    }
+
+    if (type == ProfilerTask.RPC) {
+      recordRpcTimeSeries(startTimeNanos, endTimeNanos, description);
+    }
+  }
+
+  private void recordRpcTimeSeries(long startTimeNanos, long endTimeNanos, String description) {
+    var inflightRpcTimeSeriesMap = inflightRpcTimeSeriesMapRef.get();
+    if (inflightRpcTimeSeriesMap != null) {
+      var timeSeries =
+          inflightRpcTimeSeriesMap.computeIfAbsent(
+              description,
+              unused -> createTimeSeries(actionCountStartTime, ACTION_COUNT_BUCKET_DURATION));
+      timeSeries.addRange(Duration.ofNanos(startTimeNanos), Duration.ofNanos(endTimeNanos));
     }
   }
 

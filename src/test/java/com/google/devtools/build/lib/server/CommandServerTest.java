@@ -29,6 +29,8 @@ import com.google.devtools.build.lib.server.CommandProtos.CancelResponse;
 import com.google.devtools.build.lib.server.CommandProtos.EnvironmentVariable;
 import com.google.devtools.build.lib.server.CommandProtos.RunRequest;
 import com.google.devtools.build.lib.server.CommandProtos.RunResponse;
+import com.google.devtools.build.lib.server.CommandProtos.TerminalSizeRequest;
+import com.google.devtools.build.lib.server.CommandProtos.TerminalSizeResponse;
 import com.google.devtools.build.lib.server.CommandServerGrpc.CommandServerStub;
 import com.google.devtools.build.lib.server.FailureDetails.Command;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
@@ -60,6 +62,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -151,7 +154,7 @@ public final class CommandServerTest {
               InvocationPolicy invocationPolicy,
               List<String> args,
               OutErr outErr,
-              LockingMode lockingMode,
+              Duration blockForLockTimeout,
               UiVerbosity uiVerbosity,
               String clientDescription,
               long firstContactTimeMillis,
@@ -274,7 +277,7 @@ public final class CommandServerTest {
               InvocationPolicy invocationPolicy,
               List<String> args,
               OutErr outErr,
-              LockingMode lockingMode,
+              Duration blockForLockTimeout,
               UiVerbosity uiVerbosity,
               String clientDescription,
               long firstContactTimeMillis,
@@ -318,6 +321,75 @@ public final class CommandServerTest {
   }
 
   @Test
+  public void testCommandCanFinishAfterClosingClient() throws Exception {
+    // A command whose client went away retries interruptible steps as it terminates, reporting
+    // progress as it goes. Interrupting it again on every report keeps such a retry from ever
+    // converging, holding the command lock: https://github.com/bazelbuild/bazel/issues/30435
+    int maxAttempts = 100;
+    CountDownLatch done = new CountDownLatch(1);
+    AtomicInteger attempts = new AtomicInteger();
+    CommandDispatcher dispatcher =
+        new CommandDispatcher() {
+          @Override
+          public BlazeCommandResult exec(
+              InvocationPolicy invocationPolicy,
+              List<String> args,
+              OutErr outErr,
+              Duration blockForLockTimeout,
+              UiVerbosity uiVerbosity,
+              String clientDescription,
+              long firstContactTimeMillis,
+              Optional<List<Pair<String, String>>> startupOptionsTaggedWithBazelRc,
+              Supplier<ImmutableList<IdleTask.Result>> idleTaskResultsSupplier,
+              List<Any> commandExtensions,
+              CommandExtensionReporter commandExtensionReporter) {
+            synchronized (this) {
+              // The client is gone, hence the interrupt telling this command to terminate.
+              assertThrows(InterruptedException.class, this::wait);
+            }
+            OutputStream out = outErr.getOutputStream();
+            try {
+              while (attempts.incrementAndGet() < maxAttempts) {
+                out.write(new byte[1024]);
+                if (!Thread.interrupted()) {
+                  break; // the step went through, this command can return
+                }
+              }
+            } catch (IOException e) {
+              throw new IllegalStateException(e);
+            }
+            done.countDown();
+            return BlazeCommandResult.failureDetail(
+                FailureDetail.newBuilder()
+                    .setInterrupted(Interrupted.newBuilder().setCode(Code.INTERRUPTED_UNKNOWN))
+                    .build());
+          }
+        };
+
+    ServerAndStub serverAndStub = createServerAndStub(dispatcher);
+    CommandServer server = serverAndStub.server();
+    CommandServerStub stub = serverAndStub.stub();
+
+    stub.run(
+        createRequest("Foo"),
+        new StreamObserver<RunResponse>() {
+          @Override
+          public void onNext(RunResponse value) {
+            server.shutdownNow();
+          }
+
+          @Override
+          public void onError(Throwable t) {}
+
+          @Override
+          public void onCompleted() {}
+        });
+    server.awaitTermination();
+    done.await();
+    assertThat(attempts.get()).isLessThan(maxAttempts);
+  }
+
+  @Test
   public void testStream() throws Exception {
     CommandDispatcher dispatcher =
         new CommandDispatcher() {
@@ -326,7 +398,7 @@ public final class CommandServerTest {
               InvocationPolicy invocationPolicy,
               List<String> args,
               OutErr outErr,
-              LockingMode lockingMode,
+              Duration blockForLockTimeout,
               UiVerbosity uiVerbosity,
               String clientDescription,
               long firstContactTimeMillis,
@@ -477,7 +549,7 @@ public final class CommandServerTest {
               InvocationPolicy invocationPolicy,
               List<String> args,
               OutErr outErr,
-              LockingMode lockingMode,
+              Duration blockForLockTimeout,
               UiVerbosity uiVerbosity,
               String clientDescription,
               long firstContactTimeMillis,
@@ -542,7 +614,7 @@ public final class CommandServerTest {
               InvocationPolicy invocationPolicy,
               List<String> args,
               OutErr outErr,
-              LockingMode lockingMode,
+              Duration blockForLockTimeout,
               UiVerbosity uiVerbosity,
               String clientDescription,
               long firstContactTimeMillis,
@@ -621,6 +693,131 @@ public final class CommandServerTest {
         .isEqualTo(Code.INTERRUPTED);
   }
 
+  @Test
+  public void updateTerminalSize_updatesRunningCommandMonitor() throws Exception {
+    CountDownLatch execStarted = new CountDownLatch(1);
+    CountDownLatch allowListenerRegistration = new CountDownLatch(1);
+    CountDownLatch resizeSeen = new CountDownLatch(1);
+    AtomicInteger columnsSeen = new AtomicInteger();
+    AtomicInteger rowsSeen = new AtomicInteger();
+
+    CommandDispatcher dispatcher =
+        new CommandDispatcher() {
+          @Override
+          public BlazeCommandResult exec(
+              InvocationPolicy invocationPolicy,
+              List<String> args,
+              OutErr outErr,
+              Duration blockForLockTimeout,
+              UiVerbosity uiVerbosity,
+              String clientDescription,
+              long firstContactTimeMillis,
+              Optional<List<Pair<String, String>>> startupOptionsTaggedWithBazelRc,
+              Supplier<ImmutableList<IdleTask.Result>> idleTaskResultsSupplier,
+              List<Any> commandExtensions,
+              CommandExtensionReporter commandExtensionReporter) {
+            throw new AssertionError("exec overload without terminal size monitor called");
+          }
+
+          @Override
+          public BlazeCommandResult exec(
+              InvocationPolicy invocationPolicy,
+              List<String> args,
+              OutErr outErr,
+              Duration blockForLockTimeout,
+              UiVerbosity uiVerbosity,
+              String clientDescription,
+              long firstContactTimeMillis,
+              Optional<List<Pair<String, String>>> startupOptionsTaggedWithBazelRc,
+              Supplier<ImmutableList<IdleTask.Result>> idleTaskResultsSupplier,
+              List<Any> commandExtensions,
+              CommandExtensionReporter commandExtensionReporter,
+              TerminalSizeMonitor terminalSizeMonitor)
+              throws InterruptedException {
+            execStarted.countDown();
+            assertThat(allowListenerRegistration.await(WAIT_TIMEOUT_SECONDS, SECONDS)).isTrue();
+            terminalSizeMonitor.addListener(
+                (columns, rows) -> {
+                  columnsSeen.set(columns);
+                  rowsSeen.set(rows);
+                  resizeSeen.countDown();
+                });
+            assertThat(resizeSeen.await(WAIT_TIMEOUT_SECONDS, SECONDS)).isTrue();
+            return BlazeCommandResult.success();
+          }
+        };
+
+    ServerAndStub serverAndStub = createServerAndStub(dispatcher);
+    CommandServer server = serverAndStub.server();
+    CommandServerStub stub = serverAndStub.stub();
+
+    AtomicReference<String> commandId = new AtomicReference<>();
+    CountDownLatch gotCommandId = new CountDownLatch(1);
+    CountDownLatch commandDone = new CountDownLatch(1);
+    stub.run(
+        createRequest("Foo"),
+        new StreamObserver<RunResponse>() {
+          @Override
+          public void onNext(RunResponse value) {
+            if (commandId.compareAndSet(null, value.getCommandId())) {
+              gotCommandId.countDown();
+            }
+          }
+
+          @Override
+          public void onError(Throwable t) {
+            commandDone.countDown();
+          }
+
+          @Override
+          public void onCompleted() {
+            commandDone.countDown();
+          }
+        });
+
+    assertThat(gotCommandId.await(WAIT_TIMEOUT_SECONDS, SECONDS)).isTrue();
+    assertThat(execStarted.await(WAIT_TIMEOUT_SECONDS, SECONDS)).isTrue();
+
+    CountDownLatch terminalSizeRequestComplete = new CountDownLatch(1);
+    AtomicReference<TerminalSizeResponse> terminalSizeResponse = new AtomicReference<>();
+    TerminalSizeRequest terminalSizeRequest =
+        TerminalSizeRequest.newBuilder()
+            .setCookie(REQUEST_COOKIE)
+            .setCommandId(commandId.get())
+            .setColumns(47)
+            .setRows(12)
+            .build();
+    stub.updateTerminalSize(
+        terminalSizeRequest,
+        new StreamObserver<TerminalSizeResponse>() {
+          @Override
+          public void onNext(TerminalSizeResponse value) {
+            terminalSizeResponse.set(value);
+          }
+
+          @Override
+          public void onError(Throwable t) {
+            terminalSizeRequestComplete.countDown();
+          }
+
+          @Override
+          public void onCompleted() {
+            terminalSizeRequestComplete.countDown();
+          }
+        });
+
+    assertThat(terminalSizeRequestComplete.await(WAIT_TIMEOUT_SECONDS, SECONDS)).isTrue();
+    allowListenerRegistration.countDown();
+    assertThat(commandDone.await(WAIT_TIMEOUT_SECONDS, SECONDS)).isTrue();
+    server.shutdown();
+    server.awaitTermination();
+
+    assertThat(terminalSizeResponse.get()).isNotNull();
+    assertThat(terminalSizeResponse.get().getCookie()).isEqualTo(RESPONSE_COOKIE);
+    assertThat(columnsSeen.get()).isEqualTo(47);
+    assertThat(rowsSeen.get()).isEqualTo(12);
+  }
+
   /**
    * Ensure that if a command is marked as preemptible, running a second command interrupts the
    * first command.
@@ -637,7 +834,7 @@ public final class CommandServerTest {
               InvocationPolicy invocationPolicy,
               List<String> args,
               OutErr outErr,
-              LockingMode lockingMode,
+              Duration blockForLockTimeout,
               UiVerbosity uiVerbosity,
               String clientDescription,
               long firstContactTimeMillis,
@@ -736,7 +933,7 @@ public final class CommandServerTest {
               InvocationPolicy invocationPolicy,
               List<String> args,
               OutErr outErr,
-              LockingMode lockingMode,
+              Duration blockForLockTimeout,
               UiVerbosity uiVerbosity,
               String clientDescription,
               long firstContactTimeMillis,
@@ -841,7 +1038,7 @@ public final class CommandServerTest {
               InvocationPolicy invocationPolicy,
               List<String> args,
               OutErr outErr,
-              LockingMode lockingMode,
+              Duration blockForLockTimeout,
               UiVerbosity uiVerbosity,
               String clientDescription,
               long firstContactTimeMillis,
@@ -935,7 +1132,7 @@ public final class CommandServerTest {
         (invocationPolicy,
             args,
             outErr,
-            lockingMode,
+            blockForLockTimeout,
             uiVerbosity,
             clientDescription,
             firstContactTimeMillis,
@@ -1002,7 +1199,7 @@ public final class CommandServerTest {
     return (invocationPolicy,
         args,
         outErr,
-        lockingMode,
+        blockForLockTimeout,
         uiVerbosity,
         clientDescription,
         firstContactTimeMillis,

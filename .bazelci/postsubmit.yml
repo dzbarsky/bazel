@@ -43,8 +43,13 @@ tasks:
       - "//src:bazel_jdk_minimal"
       - "//src:test_repos"
       - "//..."
+    test_flags:
+      - "--config=ci-linux"
+    test_targets:
+      - "//src/test/shell/bazel:bazel_java_toolchain_head_tests"
     include_json_profile:
       - build
+      - test
   fedora39:
     shell_commands:
       - rm -rf $HOME/bazeltest
@@ -93,6 +98,8 @@ tasks:
     build_targets:
       - "//src:bazel"
       - "//src:bazel_jdk_minimal"
+      # Tagged as manual, cross-compiles Bazel for Windows.
+      - "//src:bazel_windows_llvm"
       - "//src:test_repos"
       - "//..."
     test_flags:
@@ -128,6 +135,9 @@ tasks:
       - mkdir $HOME/bazeltest
       - ln -sf $OUTPUT_BASE/external $HOME/bazeltest/external
       - if [ -n "${UPDATE_BAZEL_LOCK_FILE:-}" ]; then bazel mod deps --lockfile_mode=update; fi
+    environment:
+      ANDROID_HOME: ""
+      ANDROID_NDK_HOME: ""
     build_flags:
       - "--config=ci-macos"
     build_targets:
@@ -152,6 +162,8 @@ tasks:
       - "+//src/test/shell/bazel/apple/..."
       # Add back one bootstrap test for Intel Mac
       - "+//src/test/shell/bazel:bazel_bootstrap_distfile_test"
+      # Add back head java tools tests for Intel Mac
+      - "+//src/test/shell/bazel:bazel_java_toolchain_head_tests"
     include_json_profile:
       - build
       - test
@@ -198,7 +210,6 @@ tasks:
       - "--config=ci-windows"
     test_targets:
       - "//src:embedded_tools_size_test"
-      - "//src/main/starlark/tests/builtins_bzl/..."
       - "//src/test/cpp/..."
       - "//src/test/java/com/google/devtools/build/lib/..."
       - "//src/test/java/com/google/devtools/build/skyframe/..."
@@ -210,7 +221,7 @@ tasks:
       - "//src/tools/one_version/..."
       - "//src/tools/singlejar/..."
       - "//third_party/def_parser/..."
-      - "//tools/aquery_differ/..."
+      - "//scripts/aquery_differ/..."
       - "//tools/bash/..."
       - "//tools/build_defs/..."
       - "//tools/java/..."
@@ -220,7 +231,6 @@ tasks:
       # Re-enable the following tests on Windows:
       # https://github.com/bazelbuild/bazel/issues/4292
       - "-//src/test/shell/bazel/remote/..."
-      - "-//tools/python:pywrapper_test"
     include_json_profile:
       - build
       - test
@@ -261,14 +271,13 @@ tasks:
     test_targets:
       - "//scripts/..."
       - "//src/java_tools/..."
-      - "//src/main/starlark/tests/builtins_bzl/..."
       - "//src/test/..."
       - "//src/tools/execlog/..."
       - "//src/tools/one_version/..."
       - "//src/tools/singlejar/..."
       - "//src/tools/workspacelog/..."
       - "//third_party/ijar/..."
-      - "//tools/aquery_differ/..."
+      - "//scripts/aquery_differ/..."
       - "//tools/python/..."
       - "//tools/bash/..."
       - "//tools/test/..."

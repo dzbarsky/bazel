@@ -23,7 +23,12 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#ifdef _WIN32
+#include <io.h>
+#endif
+
 #include <algorithm>
+#include <cerrno>
 #include <cinttypes>
 #include <cstdint>
 #include <cstring>
@@ -276,7 +281,8 @@ int OutputJar::Doit() {
     const char* data_end = reinterpret_cast<const char*>(mapped_file.end());
     // TODO(asmundak): this isn't right, we should parse properties file.
     while (data < data_end) {
-      const char* next_data = strchr(static_cast<const char*>(data), '\n');
+      const char* next_data =
+          static_cast<const char*>(memchr(data, '\n', data_end - data));
       if (next_data) {
         ++next_data;
       } else {
@@ -590,7 +596,7 @@ bool OutputJar::AddJar(int jar_path_index) {
     //  local header
     //  file data
     //  data descriptor, if present.
-    off64_t copy_from = jar_entry->local_header_offset();
+    uint64_t copy_from = input_jar.LocalHeaderOffset(lh);
     size_t num_bytes = lh->size();
     if (jar_entry->no_size_in_local_header()) {
       const DDR* ddr = reinterpret_cast<const DDR*>(
@@ -603,7 +609,7 @@ bool OutputJar::AddJar(int jar_path_index) {
     } else {
       num_bytes += lh->compressed_file_size();
     }
-    off64_t local_header_offset = Position();
+    int64_t local_header_offset = Position();
 
     // When normalize_timestamps is set, entry's timestamp is to be set to
     // 01/01/2010 00:00:00 (or to 01/01/2010 00:00:02, if an entry is a .class
@@ -673,7 +679,7 @@ bool OutputJar::AddJar(int jar_path_index) {
   return input_jar.Close();
 }
 
-off64_t OutputJar::Position() {
+int64_t OutputJar::Position() {
   if (file_ == nullptr) {
     diag_err(1, "%s:%d: output file is not open", __FILE__, __LINE__);
   }
@@ -726,7 +732,7 @@ void OutputJar::WriteEntry(void* buffer) {
   }
 
   uint8_t* data = reinterpret_cast<uint8_t*>(entry);
-  off64_t output_position = Position();
+  int64_t output_position = Position();
   if (!WriteBytes(data, entry->data() + entry->in_zip_size() - data)) {
     diag_err(1, "%s:%d: write", __FILE__, __LINE__);
   }
@@ -774,6 +780,11 @@ void OutputJar::WriteEntry(void* buffer) {
       reinterpret_cast<ExtraField*>(const_cast<uint8_t*>(cdh->extra_fields()));
   uint16_t out_ef_length = 0;
   for (const ExtraField* ef = lh_ef_begin; ef < lh_ef_end; ef = ef->next()) {
+    if (ziph::byte_ptr(ef) + sizeof(ExtraField) > ziph::byte_ptr(lh_ef_end) ||
+        ziph::byte_ptr(ef) + ef->size() > ziph::byte_ptr(lh_ef_end)) {
+      diag_errx(1, "malformed extra field in LH for %.*s",
+                (int)entry->file_name_length(), entry->file_name());
+    }
     if (!ef->is_zip64()) {
       memcpy(cdh_extra_fields, ef, ef->size());
       cdh_extra_fields = reinterpret_cast<ExtraField*>(
@@ -854,7 +865,7 @@ void OutputJar::WriteDirEntry(std::string_view name,
 }
 
 // Create output Central Directory entry for the input jar entry.
-void OutputJar::AppendToDirectoryBuffer(const CDH* cdh, off64_t lh_pos,
+void OutputJar::AppendToDirectoryBuffer(const CDH* cdh, int64_t lh_pos,
                                         uint16_t normalized_time,
                                         bool fix_timestamp) {
   // While copying from the input CDH pointed to by 'cdh', we may need to drop
@@ -863,12 +874,21 @@ void OutputJar::AppendToDirectoryBuffer(const CDH* cdh, off64_t lh_pos,
   // position relative to 4G boundary changes.
   // The rest of the input CDH is copied.
 
-  // 1. Decide if we need to drop UnixTime.
-  size_t removed_unix_time_field_size = 0;
-  if (fix_timestamp) {
-    auto unix_time_field = cdh->unix_time_extra_field();
-    if (unix_time_field != nullptr) {
-      removed_unix_time_field_size = unix_time_field->size();
+  // 1. Validate extra fields and calculate the size of extra fields to keep
+  // (all extra fields except Zip64 and, if fix_timestamp is set, UnixTime).
+  const uint16_t ef_size = cdh->extra_fields_length();
+  auto ef_begin = reinterpret_cast<const ExtraField*>(cdh->extra_fields());
+  auto ef_end =
+      reinterpret_cast<const ExtraField*>(ziph::byte_ptr(ef_begin) + ef_size);
+  uint32_t kept_ef_size = 0;
+  for (const ExtraField* ef = ef_begin; ef < ef_end; ef = ef->next()) {
+    if (ziph::byte_ptr(ef) + sizeof(ExtraField) > ziph::byte_ptr(ef_end) ||
+        ziph::byte_ptr(ef) + ef->size() > ziph::byte_ptr(ef_end)) {
+      diag_errx(1, "malformed extra field in CDH for %.*s",
+                (int)cdh->file_name_length(), cdh->file_name());
+    }
+    if (!((fix_timestamp && ef->is_unix_time()) || ef->is_zip64())) {
+      kept_ef_size += ef->size();
     }
   }
 
@@ -893,22 +913,19 @@ void OutputJar::AppendToDirectoryBuffer(const CDH* cdh, off64_t lh_pos,
   } else {
     out_zip64_attr_count = lh_pos_needs64 ? 1 : 0;
   }
-  const uint16_t zip64_size = Zip64ExtraField::space_needed(zip64_attr_count);
-  const uint16_t out_zip64_size =
+  const uint32_t out_zip64_size =
       Zip64ExtraField::space_needed(out_zip64_attr_count);
 
   // Allocate output CDH and copy everything but extra fields.
-  const uint16_t ef_size = cdh->extra_fields_length();
-  const uint16_t out_ef_size =
-      (ef_size + out_zip64_size) - (removed_unix_time_field_size + zip64_size);
+  const uint32_t out_ef_size = kept_ef_size + out_zip64_size;
+  if (out_ef_size > UINT16_MAX) {
+    diag_errx(1, "extra fields size %u exceeds 64KB in CDH for %.*s",
+              out_ef_size, (int)cdh->file_name_length(), cdh->file_name());
+  }
 
   const size_t out_cdh_size = cdh->size() + out_ef_size - ef_size;
   CDH* out_cdh = reinterpret_cast<CDH*>(ReserveCdr(out_cdh_size));
 
-  // Calculate ExtraFields boundaries in the input and output entries.
-  auto ef_begin = reinterpret_cast<const ExtraField*>(cdh->extra_fields());
-  auto ef_end =
-      reinterpret_cast<const ExtraField*>(ziph::byte_ptr(ef_begin) + ef_size);
   // Copy [cdh..ef_begin) -> [out_cdh..out_ef_begin)
   memcpy(out_cdh, cdh, ziph::byte_ptr(ef_begin) - ziph::byte_ptr(cdh));
 
@@ -1002,7 +1019,7 @@ bool OutputJar::Close() {
   WriteEntry(
       log4j2_plugin_dat_combiner_.OutputEntry(options_->force_compression));
   // TODO(asmundak): handle manifest;
-  off64_t output_position = Position();
+  int64_t output_position = Position();
   bool write_zip64_ecd = output_position >= 0xFFFFFFFF || entries_ >= 0xFFFF ||
                          cen_size_ >= 0xFFFFFFFF;
 
@@ -1058,6 +1075,19 @@ bool OutputJar::Close() {
     if (ftruncate(fileno(file_), outpos_) != 0) {
       diag_err(1, "ftruncate failed");
     }
+  }
+#endif
+#ifdef _WIN32
+  // fclose() flushes the CRT buffer to the OS but does not force NTFS to
+  // update the directory entry's EOF. Without that, a stat() by another
+  // process shortly after we exit can observe a stale, undersized length.
+  // Flush the stdio buffer first: _commit() operates on the fd and cannot
+  // see bytes still held in the FILE* buffer without fflush().
+  if (fflush(file_) != 0) {
+    diag_err(1, "fflush failed");
+  }
+  if (_commit(_fileno(file_)) != 0) {
+    diag_err(1, "_commit failed");
   }
 #endif
   if (fclose(file_)) {
@@ -1138,12 +1168,12 @@ ssize_t OutputJar::CopyAppendData(int in_fd, size_t count) {
     if (written < 0) {
       return written;
     } else if (written == 0) {
-      outpos_ += static_cast<off64_t>(count - to_write);
+      outpos_ += static_cast<int64_t>(count - to_write);
       return static_cast<ssize_t>(count - to_write);
     }
     to_write -= static_cast<size_t>(written);
   }
-  outpos_ += static_cast<off64_t>(count);
+  outpos_ += static_cast<int64_t>(count);
   return static_cast<ssize_t>(count);
 #endif
 
@@ -1211,10 +1241,10 @@ size_t OutputJar::AppendFile(Options* options, const char* const file_path) {
   return statbuf.st_size;
 }
 
-off64_t OutputJar::PageAlignedAppendFile(const std::string& file_path,
+int64_t OutputJar::PageAlignedAppendFile(const std::string& file_path,
                                          size_t* file_size) {
   // Align the file start offset at page boundary.
-  off64_t cur_offset = Position();
+  int64_t cur_offset = Position();
   size_t pagesize;
 #ifdef _WIN32
   SYSTEM_INFO si;
@@ -1223,7 +1253,7 @@ off64_t OutputJar::PageAlignedAppendFile(const std::string& file_path,
 #else
   pagesize = sysconf(_SC_PAGESIZE);
 #endif
-  off64_t aligned_offset = (cur_offset + (pagesize - 1)) & ~(pagesize - 1);
+  int64_t aligned_offset = (cur_offset + (pagesize - 1)) & ~(pagesize - 1);
   size_t gap = aligned_offset - cur_offset;
   size_t written;
   if (gap > 0) {
@@ -1250,7 +1280,7 @@ void OutputJar::AppendPageAlignedFile(
   // Align the shared archive start offset at page alignment, which is
   // required by mmap.
   size_t file_size;
-  off64_t aligned_offset = OutputJar::PageAlignedAppendFile(file, &file_size);
+  int64_t aligned_offset = OutputJar::PageAlignedAppendFile(file, &file_size);
 
   // Write the start offset of the copied content as a manifest attribute.
   char offset_manifest_attr[50];

@@ -21,9 +21,11 @@ import build.bazel.remote.execution.v2.Action;
 import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.DigestFunction;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.hash.HashCode;
 import com.google.common.hash.HashFunction;
+import com.google.common.hash.Hasher;
 import com.google.common.io.BaseEncoding;
 import com.google.devtools.build.lib.remote.common.ActionKey;
 import com.google.devtools.build.lib.util.DeterministicWriter;
@@ -36,14 +38,16 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Message;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.List;
 
 /** Utility methods to work with {@link Digest}. */
 public class DigestUtil {
   public static final Comparator<Digest> DIGEST_COMPARATOR =
       comparing(Digest::getHashBytes, ByteString.unsignedLexicographicalComparator())
-          .thenComparing(Digest::getSizeBytes);
+          .thenComparingLong(Digest::getSizeBytes);
 
   private final XattrProvider xattrProvider;
   private final DigestHashFunction hashFn;
@@ -73,7 +77,7 @@ public class DigestUtil {
   }
 
   public Digest compute(byte[] blob) {
-    return buildDigest(hashFn.getHashFunction().hashBytes(blob).toString(), blob.length);
+    return buildDigest(hashFn.getHashFunction().hashBytes(blob).asBytes(), blob.length);
   }
 
   /**
@@ -85,26 +89,23 @@ public class DigestUtil {
    * @param length the number of bytes to hash
    */
   public Digest compute(byte[] data, int offset, int length) {
-    return buildDigest(hashFn.getHashFunction().hashBytes(data, offset, length).toString(), length);
+    return buildDigest(hashFn.getHashFunction().hashBytes(data, offset, length).asBytes(), length);
   }
 
-  /**
-   * Computes a digest for a file.
-   *
-   * <p>Prefer calling {@link #compute(Path, FileStatus)} when a recently obtained {@link
-   * FileStatus} is available.
-   *
-   * @param path the file path
-   */
-  public Digest compute(Path path) throws IOException {
-    return compute(path, path.stat());
+  /** Computes a digest of the given {@link ByteString} without copying its contents. */
+  public Digest compute(ByteString blob) {
+    Hasher hasher = hashFn.getHashFunction().newHasher();
+    for (ByteBuffer buffer : blob.asReadOnlyByteBufferList()) {
+      hasher.putBytes(buffer);
+    }
+    return buildDigest(hasher.hash().asBytes(), blob.size());
   }
 
   /**
    * Computes a digest for a file.
    *
    * @param path the file path
-   * @param status a recently obtained file status, if available
+   * @param status a recently obtained file status
    */
   public Digest compute(Path path, FileStatus status) throws IOException {
     return buildDigest(
@@ -164,8 +165,13 @@ public class DigestUtil {
     return hashFn.getHashFunction().hashBytes(data).asBytes();
   }
 
+  /** Builds a {@link Digest} from a binary hash. */
   public static Digest buildDigest(byte[] hash, long size) {
-    return buildDigest(HashCode.fromBytes(hash).toString(), size);
+    Preconditions.checkArgument(hash.length > 0, "A hash must contain at least 1 byte.");
+    return Digest.newBuilder()
+        .setHashBytes(DigestUtils.toHexByteString(hash))
+        .setSizeBytes(size)
+        .build();
   }
 
   public static Digest buildDigest(String hexHash, long size) {
@@ -185,9 +191,9 @@ public class DigestUtil {
   }
 
   public static Digest fromString(String digest) {
-    String[] parts = digest.split("/", /* limit= */ -1);
-    Preconditions.checkArgument(parts.length == 2, "Invalid digest format: %s", digest);
-    return buildDigest(parts[0], Long.parseLong(parts[1]));
+    List<String> parts = Splitter.on('/').splitToList(digest);
+    Preconditions.checkArgument(parts.size() == 2, "Invalid digest format: %s", digest);
+    return buildDigest(parts.get(0), Long.parseLong(parts.get(1)));
   }
 
   public static byte[] toBinaryDigest(Digest digest) {

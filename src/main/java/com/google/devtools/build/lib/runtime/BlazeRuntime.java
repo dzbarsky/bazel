@@ -45,10 +45,14 @@ import com.google.devtools.build.lib.bugreport.Crash;
 import com.google.devtools.build.lib.bugreport.CrashContext;
 import com.google.devtools.build.lib.buildeventstream.BuildEventArtifactUploader;
 import com.google.devtools.build.lib.buildeventstream.BuildEventProtocolOptions;
+import com.google.devtools.build.lib.buildtool.BuildRequestOptions;
 import com.google.devtools.build.lib.buildtool.CommandPrecompleteEvent;
+import com.google.devtools.build.lib.buildtool.OutputDirectoryLinksUtils;
 import com.google.devtools.build.lib.buildtool.buildevent.ProfilerStartedEvent;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.clock.Clock;
+import com.google.devtools.build.lib.cmdline.LabelNameDeduper;
+import com.google.devtools.build.lib.collect.nestedset.NestedSetInterner;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.OutputFilter;
@@ -71,7 +75,6 @@ import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunctio
 import com.google.devtools.build.lib.query2.query.output.OutputFormatter;
 import com.google.devtools.build.lib.query2.query.output.OutputFormatters;
 import com.google.devtools.build.lib.runtime.BlazeModule.ModuleFileSystem;
-import com.google.devtools.build.lib.runtime.CommandDispatcher.LockingMode;
 import com.google.devtools.build.lib.runtime.CommandDispatcher.UiVerbosity;
 import com.google.devtools.build.lib.runtime.InstrumentationOutputFactory.DestinationRelativeTo;
 import com.google.devtools.build.lib.runtime.proto.InvocationPolicyOuterClass.InvocationPolicy;
@@ -90,6 +93,7 @@ import com.google.devtools.build.lib.server.InstallBaseGarbageCollectorIdleTask;
 import com.google.devtools.build.lib.server.PidFileWatcher;
 import com.google.devtools.build.lib.server.ShutdownHooks;
 import com.google.devtools.build.lib.server.signal.InterruptSignalHandler;
+import com.google.devtools.build.lib.shell.CommandException;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.CustomExitCodePublisher;
 import com.google.devtools.build.lib.util.CustomFailureDetailPublisher;
@@ -100,6 +104,7 @@ import com.google.devtools.build.lib.util.FileSystemLock;
 import com.google.devtools.build.lib.util.FileSystemLock.LockMode;
 import com.google.devtools.build.lib.util.InterruptedFailureDetails;
 import com.google.devtools.build.lib.util.LoggingUtil;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.SerializedAbruptExitException;
 import com.google.devtools.build.lib.util.StringEncoding;
@@ -125,7 +130,10 @@ import com.google.devtools.common.options.OptionsProvider;
 import com.google.devtools.common.options.TriState;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.protobuf.ByteString;
+import java.io.Closeable;
 import java.io.File;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -149,6 +157,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.logging.Handler;
+import java.util.logging.LogManager;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import javax.annotation.Nullable;
@@ -166,6 +175,7 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
   private final FileSystem fileSystem;
+  private final UUID instanceId;
   private final ImmutableList<BlazeModule> blazeModules;
   private final ImmutableList<BlazeService> blazeServices;
   private final Map<String, BlazeCommand> commandMap = new LinkedHashMap<>();
@@ -212,8 +222,12 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
 
   private final CgroupsInfo cgroupsInfo;
 
+  private final boolean deleteOutputBaseOnShutdown;
+  @Nullable private volatile String lastSymlinkPrefix = null;
+
   private BlazeRuntime(
       FileSystem fileSystem,
+      UUID instanceId,
       QueryEnvironmentFactory queryEnvironmentFactory,
       ImmutableList<QueryFunction> queryFunctions,
       ImmutableList<OutputFormatter> queryOutputFormatters,
@@ -236,9 +250,11 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
       BuildEventArtifactUploaderFactoryMap buildEventArtifactUploaderFactoryMap,
       RepositoryRemoteHelpersFactory repositoryRemoteHelpersFactory,
       InstrumentationOutputFactory instrumentationOutputFactory,
-      FileSystemLock installBaseLock) {
+      FileSystemLock installBaseLock,
+      boolean deleteOutputBaseOnShutdown) {
     // Server state
     this.fileSystem = fileSystem;
+    this.instanceId = instanceId;
     this.blazeModules = blazeModules;
     this.blazeServices = blazeServices;
     overrideCommands(commands);
@@ -267,6 +283,7 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
     this.repositoryRemoteHelpersFactory = repositoryRemoteHelpersFactory;
     this.instrumentationOutputFactory = instrumentationOutputFactory;
     this.installBaseLock = installBaseLock;
+    this.deleteOutputBaseOnShutdown = deleteOutputBaseOnShutdown;
     this.cgroupsInfo = VirtualCgroup.getInstance().cgroupsInfo();
   }
 
@@ -444,7 +461,8 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
       }
       ImmutableSet<ProfilerTask> profiledTasks = profiledTasksBuilder.build();
       if (!profiledTasks.isEmpty()) {
-        if (commandOptions.getSlimProfile() && commandOptions.getIncludePrimaryOutput()) {
+        if (commandOptions.getSlimProfile().isEnabled()
+            && commandOptions.getIncludePrimaryOutput()) {
           eventHandler.handle(
               Event.warn(
                   "Enabling both --slim_profile and"
@@ -474,6 +492,13 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
                 .getCollectPressureStallIndicators(),
             /* collectSkyframeCounts= */ commandOptions.getCollectSkyframeCounts());
 
+        // Instead of logEvent() we're calling the low level function to pass the timings we took in
+        // the launcher. We're setting the INIT phase marker so that it follows immediately the
+        // LAUNCH phase.
+        long startupTimeNanos = commandOptions.getStartupTime() * 1000000L;
+        long waitTimeNanos = waitTimeInMs * 1000000L;
+        long clientStartTimeNanos = execStartTimeNanos - startupTimeNanos - waitTimeNanos;
+
         // TODO(b/457644247): Encapsulate the start params into a config object.
         Profiler.instance()
             .start(
@@ -484,19 +509,13 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
                 env.getCommandId(),
                 recordFullProfilerData,
                 clock,
-                execStartTimeNanos,
-                /* slimProfile= */ commandOptions.getSlimProfile(),
+                clientStartTimeNanos,
+                /* slimProfile= */ commandOptions.getSlimProfile().isEnabled(),
+                /* slimProfileSizeLimit= */ commandOptions.getSlimProfile().getSizeLimit(),
                 /* includePrimaryOutput= */ commandOptions.getIncludePrimaryOutput(),
                 /* includeTargetLabel= */ commandOptions.getProfileIncludeTargetLabel(),
                 /* includeConfiguration= */ commandOptions.getProfileIncludeTargetConfiguration(),
                 /* collectTaskHistograms= */ commandOptions.getAlwaysProfileSlowOperations());
-
-        // Instead of logEvent() we're calling the low level function to pass the timings we took in
-        // the launcher. We're setting the INIT phase marker so that it follows immediately the
-        // LAUNCH phase.
-        long startupTimeNanos = commandOptions.getStartupTime() * 1000000L;
-        long waitTimeNanos = waitTimeInMs * 1000000L;
-        long clientStartTimeNanos = execStartTimeNanos - startupTimeNanos - waitTimeNanos;
         Profiler.instance()
             .logSimpleTaskDuration(
                 clientStartTimeNanos,
@@ -543,6 +562,14 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
 
   public FileSystem getFileSystem() {
     return fileSystem;
+  }
+
+  /**
+   * Returns the ID of this Bazel server instance. It is stable for the lifetime of the server and
+   * changes when the server restarts.
+   */
+  public UUID getInstanceId() {
+    return instanceId;
   }
 
   public BlazeWorkspace getWorkspace() {
@@ -653,6 +680,13 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
    */
   void beforeCommand(CommandEnvironment env, CommonCommandOptions options) {
     this.env = env;
+    BuildRequestOptions buildRequestOptions =
+        env.getOptions().getOptions(BuildRequestOptions.class);
+    if (buildRequestOptions != null) {
+      this.lastSymlinkPrefix = buildRequestOptions.getSymlinkPrefix(productName);
+    } else if (this.lastSymlinkPrefix == null) {
+      this.lastSymlinkPrefix = productName + "-";
+    }
     if (options.getMemoryProfilePath() != null) {
       Path memoryProfilePath =
           env.getWorkingDirectory().getRelative(options.getMemoryProfilePath());
@@ -830,7 +864,10 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
     if (otherThreadWonExitCode != null) {
       finalCommandResult = BlazeCommandResult.detailedExitCode(otherThreadWonExitCode);
     }
-    env.getBlazeWorkspace().clearEventBus();
+    env.getSkyframeExecutor().setEventBus(null);
+    env.getSkyframeExecutor().setOutputService(null);
+    NestedSetInterner.clear();
+    LabelNameDeduper.clear();
 
     // Some module's commandComplete() relies on the stoppage of profiler. And it is impossible the
     // profiler is needed after all `BlazeModule.afterCommand`s are executed.
@@ -947,7 +984,7 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
     }
     logger.atInfo().log(
         "Starting Bazel server with pid %d, args %s",
-        ProcessHandle.current().pid(), Arrays.toString(args));
+        ProcessHandle.current().pid(), SafeRequestLogging.redactArguments(Arrays.asList(args)));
     try {
       // Run Blaze in server mode.
       exit(
@@ -1119,7 +1156,8 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
         splitStartupOptions(Iterables.concat(blazeModules, blazeServices), args);
     logger.atInfo().log(
         "Running Bazel in batch mode with pid %d, startup args %s",
-        ProcessHandle.current().pid(), commandLineOptions.getStartupArgs());
+        ProcessHandle.current().pid(),
+        SafeRequestLogging.redactArguments(commandLineOptions.getStartupArgs()));
 
     BlazeRuntime runtime;
     InvocationPolicy policy;
@@ -1143,6 +1181,10 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
       return e.getExitCode().getNumericExitCode();
     }
 
+    if (runtime.deleteOutputBaseOnShutdown) {
+      ShutdownHooks.createAndRegister().runLastAtExit(runtime::deleteOutputBase);
+    }
+
     ImmutableList.Builder<Pair<String, String>> startupOptionsFromCommandLine =
         ImmutableList.builder();
     for (String option : commandLineOptions.getStartupArgs()) {
@@ -1161,7 +1203,7 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
               policy,
               commandLineOptions.getOtherArgs(),
               OutErr.SYSTEM_OUT_ERR,
-              LockingMode.ERROR_OUT,
+              Duration.ZERO,
               startupOptions.getQuiet() ? UiVerbosity.QUIET : UiVerbosity.NORMAL,
               "batch client",
               runtime.clock.currentTimeMillis(),
@@ -1260,6 +1302,9 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
 
       ShutdownHooks shutdownHooks = ShutdownHooks.createAndRegister();
       shutdownHooks.cleanupPidFile(pidFile, pidFileWatcher);
+      if (runtime.deleteOutputBaseOnShutdown) {
+        shutdownHooks.runLastAtExit(runtime::deleteOutputBase);
+      }
 
       GrpcCommandServerService grpcCommandServerService =
           Preconditions.checkNotNull(runtime.getBlazeService(GrpcCommandServerService.class));
@@ -1800,9 +1845,15 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
         queryRuntimeHelperFactory = QueryRuntimeHelper.StdoutQueryRuntimeHelperFactory.INSTANCE;
       }
 
+      BlazeServerStartupOptions serverStartupOptions =
+          startupOptionsProvider.getOptions(BlazeServerStartupOptions.class);
+      boolean deleteOutputBaseOnShutdown =
+          serverStartupOptions != null && serverStartupOptions.getDeleteOutputBaseOnShutdown();
+
       BlazeRuntime runtime =
           new BlazeRuntime(
               fileSystem,
+              instanceId,
               serverBuilder.getQueryEnvironmentFactory(),
               serverBuilder.getQueryFunctions(),
               serverBuilder.getQueryOutputFormatters(),
@@ -1825,7 +1876,8 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
               serverBuilder.getBuildEventArtifactUploaderMap(),
               serverBuilder.getRepositoryHelpersFactory(),
               serverBuilder.createInstrumentationOutputFactory(),
-              installBaseLock);
+              installBaseLock,
+              deleteOutputBaseOnShutdown);
       BugReport.setRuntime(runtime);
       return runtime;
     }
@@ -2011,5 +2063,125 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
 
   private static String internalBytesToPlatformString(ByteString bytes) {
     return StringEncoding.internalToPlatform(bytes.toString(ISO_8859_1));
+  }
+
+  @VisibleForTesting
+  void deleteOutputBase() {
+    if (workspace == null) {
+      return;
+    }
+    Path outputBase = workspace.getDirectories().getOutputBase();
+    Path parentDir = outputBase.getParentDirectory();
+    if (parentDir == null) {
+      logger.atSevere().log(
+          "Output base %s has no parent directory (is root); refusing to delete.", outputBase);
+      return;
+    }
+
+    logger.atInfo().log("Starting deletion of output base on shutdown: %s", outputBase);
+
+    // 1. Remove workspace convenience symlinks (blaze-bin, blaze-out, etc.).
+    String symlinkPrefix = lastSymlinkPrefix;
+    Path workspaceDir = workspace.getWorkspace();
+    if (symlinkPrefix != null && workspaceDir != null) {
+      OutputDirectoryLinksUtils.removeOutputDirectoryLinks(
+          ruleClassProvider.getSymlinkDefinitions(),
+          workspaceDir,
+          event -> logger.atWarning().log("%s", event.getMessage()),
+          symlinkPrefix);
+    }
+
+    boolean isWindows = OS.getCurrent() == OS.WINDOWS;
+    if (isWindows && !TestType.isInTest()) {
+      closeOpenOutputBaseHandles();
+    }
+
+    // 2. Atomic rename and platform-specific deletion
+    Path tempPath = null;
+    try {
+      tempPath = AsyncDirectoryCleaner.moveToTempDirectory(outputBase);
+    } catch (IOException e) {
+      // Occurs if output_base is a mount point (EBUSY) or across filesystems (EXDEV)
+      logger.atWarning().withCause(e).log(
+          "Atomic rename failed for output base %s. Falling back to in-place deletion.",
+          outputBase);
+    }
+
+    boolean renamed = tempPath != null;
+    Path targetToDelete = renamed ? tempPath : outputBase;
+
+    // 3. Deletion dispatch: Daemonize (Linux/macOS) vs Synchronous fallback (Windows / mount
+    // points)
+    if (renamed && !isWindows) {
+      Path daemonize =
+          workspace.getBinTools() != null
+              ? workspace.getBinTools().getEmbeddedPath("daemonize")
+              : null;
+      boolean daemonizeExists = false;
+      try {
+        daemonizeExists = daemonize != null && daemonize.exists();
+      } catch (IOException e) {
+        logger.atWarning().withCause(e).log("Failed checking for daemonize binary");
+      }
+      if (daemonizeExists) {
+        try {
+          AsyncDirectoryCleaner.spawnDaemonizedDeletion(
+              daemonize, tempPath.getParentDirectory(), tempPath.getBaseName(), System.getenv());
+          return;
+        } catch (CommandException e) {
+          logger.atWarning().withCause(e).log(
+              "Failed to spawn daemonized deletion, falling back to sync");
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          logger.atWarning().withCause(e).log(
+              "Interrupted while spawning daemonized deletion, falling back to sync");
+        }
+      }
+    }
+
+    // Fallback: Synchronous deletion
+    try {
+      targetToDelete.deleteTreesBelow();
+      try {
+        targetToDelete.delete();
+      } catch (IOException e) {
+        logger.atWarning().withCause(e).log(
+            "Failed to delete output base root directory %s", targetToDelete);
+      }
+    } catch (IOException e) {
+      logger.atSevere().withCause(e).log("Failed to synchronously delete %s", targetToDelete);
+    }
+  }
+
+  private static void closeOpenOutputBaseHandles() {
+    try {
+      LogManager.getLogManager().reset();
+    } catch (RuntimeException e) {
+      // Ignored.
+    }
+    try {
+      if (FileDescriptor.out.valid()) {
+        new FileOutputStream(FileDescriptor.out).close();
+      }
+    } catch (IOException e) {
+      // Ignored.
+    }
+    try {
+      if (FileDescriptor.err.valid()) {
+        new FileOutputStream(FileDescriptor.err).close();
+      }
+    } catch (IOException e) {
+      // Ignored.
+    }
+    try {
+      ((Closeable) System.class.getField("out").get(null)).close();
+    } catch (Exception e) {
+      // Ignored.
+    }
+    try {
+      ((Closeable) System.class.getField("err").get(null)).close();
+    } catch (Exception e) {
+      // Ignored.
+    }
   }
 }

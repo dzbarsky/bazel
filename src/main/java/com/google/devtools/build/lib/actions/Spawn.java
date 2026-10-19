@@ -21,6 +21,7 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.util.DescribableExecutionUnit;
 import java.util.Collection;
+import java.util.HashMap;
 import javax.annotation.Nullable;
 
 /**
@@ -53,6 +54,38 @@ public interface Spawn extends DescribableExecutionUnit {
   /** Returns the command (the first element) and its arguments. */
   @Override
   ImmutableList<String> getArguments();
+
+  /**
+   * Returns the command (the first element) and its arguments, replacing param file references with
+   * the respective param file contents.
+   */
+  @Override
+  default ImmutableList<String> getArgumentsWithExpandedParamFiles() {
+    HashMap<String, ParamFileActionInput> paramFileMap = new HashMap<>();
+    for (ActionInput input : getInputFiles().flatten()) {
+      if (input instanceof ParamFileActionInput paramFileActionInput) {
+        String paramFileArg = paramFileActionInput.getParamFileArg();
+        if (paramFileArg != null) {
+          paramFileMap.put(paramFileActionInput.getParamFileArg(), paramFileActionInput);
+        }
+      }
+    }
+
+    if (paramFileMap.isEmpty()) {
+      return getArguments();
+    }
+
+    ImmutableList.Builder<String> expandedArgs = ImmutableList.builder();
+    for (String arg : getArguments()) {
+      ParamFileActionInput paramFile = paramFileMap.get(arg);
+      if (paramFile != null) {
+        expandedArgs.addAll(paramFile.getArguments());
+      } else {
+        expandedArgs.add(arg);
+      }
+    }
+    return expandedArgs.build();
+  }
 
   /**
    * Returns the initial environment of the process. If null, the environment is inherited from the
@@ -95,6 +128,15 @@ public interface Spawn extends DescribableExecutionUnit {
    * so it can be cached.
    */
   Collection<? extends ActionInput> getOutputFiles();
+
+  /**
+   * Returns the output that captures this spawn's standard output stream, or {@code null} if the
+   * standard output is not captured.
+   */
+  @Nullable
+  default Artifact getStdout() {
+    return null;
+  }
 
   /**
    * Returns the output files that should be considered to be "generated" by this spawn for purposes

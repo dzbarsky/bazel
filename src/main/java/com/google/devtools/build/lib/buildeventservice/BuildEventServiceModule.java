@@ -37,7 +37,7 @@ import com.google.devtools.build.lib.authandtls.AuthAndTLSOptions;
 import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.buildeventservice.BuildEventServiceOptions.BesUploadMode;
 import com.google.devtools.build.lib.buildeventservice.client.BuildEventServiceClient;
-import com.google.devtools.build.lib.buildeventservice.client.BuildEventServiceClient.CommandContext;
+import com.google.devtools.build.lib.buildeventservice.client.CommandContext;
 import com.google.devtools.build.lib.buildeventstream.AnnounceBuildEventTransportsEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEventArtifactUploader;
 import com.google.devtools.build.lib.buildeventstream.BuildEventProtocolOptions;
@@ -59,6 +59,7 @@ import com.google.devtools.build.lib.network.ConnectivityStatus.Status;
 import com.google.devtools.build.lib.network.ConnectivityStatusProvider;
 import com.google.devtools.build.lib.profiler.AutoProfiler;
 import com.google.devtools.build.lib.profiler.GoogleAutoProfilerUtils;
+import com.google.devtools.build.lib.profiler.MemoryProfiler;
 import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.BuildEventArtifactUploaderFactory;
 import com.google.devtools.build.lib.runtime.BuildEventStreamer;
@@ -75,6 +76,7 @@ import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.ExitCode;
+import com.google.devtools.build.lib.util.io.AnsiTerminal;
 import com.google.devtools.build.lib.util.io.AnsiTerminal.Color;
 import com.google.devtools.build.lib.util.io.OutErr;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -92,6 +94,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
@@ -121,6 +124,7 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
   private AuthAndTLSOptions authTlsOptions;
   private BuildEventStreamOptions besStreamOptions;
   private boolean uiUsesColor;
+  private boolean uiUsesHyperlinks;
   private boolean isRunsPerTestOverTheLimit;
   private BuildEventArtifactUploaderFactory uploaderFactoryToCleanup;
 
@@ -151,6 +155,7 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
   @Nullable private ImmutableSet<BuildEventTransport> bepTransports;
   @Nullable private String buildRequestId;
   @Nullable private String invocationId;
+  @Nullable private String prevInvocationId;
   @Nullable private Reporter reporter;
   @Nullable private BuildEventStreamer streamer;
   @Nullable private ConnectivityStatusProvider connectivityProvider;
@@ -239,6 +244,13 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
       return;
     }
 
+    String prevInvocationIdMsg;
+    if (prevInvocationId != null) {
+      prevInvocationIdMsg = "(ID: " + prevInvocationId + ")";
+    } else {
+      prevInvocationIdMsg = "";
+    }
+
     ConnectivityStatus status = connectivityProvider.getStatus(CONNECTIVITY_CACHE_KEY);
     if (status.status != ConnectivityStatus.Status.OK) {
       reporter.handle(
@@ -298,11 +310,12 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
       long waitedMillis = stopwatch.elapsed().toMillis();
       String msg =
           String.format(
-              "The background upload of the Build Event Protocol for the previous invocation "
+              "The background upload of the Build Event Protocol for the previous invocation %s "
                   + "failed to complete in %d.%03d seconds. "
                   + "Cancelling and starting a new invocation...",
-              waitedMillis / 1000, waitedMillis % 1000);
+              prevInvocationIdMsg, waitedMillis / 1000, waitedMillis % 1000);
       reporter.handle(Event.warn(msg));
+      reporter.post(new PrevInvocationBesUploadReportFailedEvent(true, prevInvocationId));
       logger.atWarning().withCause(exception).log("%s", msg);
       cancelCloseFutures = closeFuturesWithTimeoutsMap;
     } catch (ExecutionException e) {
@@ -311,18 +324,21 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
       // times out.
       if (isTimeoutException(e)) {
         msg =
-            "The background upload of the Build Event Protocol for the previous invocation "
-                + "failed due to a network timeout. Ignoring the failure and starting a new "
-                + "invocation...";
+            String.format(
+                "The background upload of the Build Event Protocol for the previous invocation %s "
+                    + "failed due to a network timeout. Ignoring the failure and starting a new "
+                    + "invocation...",
+                prevInvocationIdMsg);
       } else {
         msg =
             String.format(
-                "The background upload of the Build Event Protocol for the previous invocation "
+                "The background upload of the Build Event Protocol for the previous invocation %s "
                     + "failed with the following exception: '%s'. "
                     + "Ignoring the failure and starting a new invocation...",
-                e.getMessage());
+                prevInvocationIdMsg, e.getMessage());
       }
       reporter.handle(Event.warn(msg));
+      reporter.post(new PrevInvocationBesUploadReportFailedEvent(true, prevInvocationId));
       logger.atWarning().withCause(e).log("%s", msg);
       cancelCloseFutures = closeFuturesWithTimeoutsMap;
     } finally {
@@ -335,6 +351,7 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
 
   @Override
   public void beforeCommand(CommandEnvironment cmdEnv) throws AbruptExitException {
+    this.prevInvocationId = this.invocationId;
     this.invocationId = cmdEnv.getCommandId().toString();
     this.buildRequestId = cmdEnv.getBuildRequestId();
     this.reporter = cmdEnv.getReporter();
@@ -359,8 +376,9 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
                     (perLabelOptions) ->
                         Integer.parseInt(Iterables.getOnlyElement(perLabelOptions.getOptions()))
                             > RUNS_PER_TEST_LIMIT);
-    this.uiUsesColor =
-        Preconditions.checkNotNull(parsingResult.getOptions(UiOptions.class)).useColor();
+    UiOptions uiOptions = Preconditions.checkNotNull(parsingResult.getOptions(UiOptions.class));
+    this.uiUsesColor = uiOptions.useColor();
+    this.uiUsesHyperlinks = uiOptions.useHyperlinks();
 
     ConnectivityStatus status = connectivityProvider.getStatus(CONNECTIVITY_CACHE_KEY);
     String buildEventUploadStrategy =
@@ -375,7 +393,7 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
     // allow completing previous runs using BES, for example:
     //   bazel build (..run with async BES..)
     //   bazel info <-- Doesn't run with BES unless we wait before checking {@code allowedCommands}.
-    boolean commandIsShutdown = "shutdown".equals(cmdEnv.getCommandName());
+    boolean commandIsShutdown = Objects.equals(cmdEnv.getCommandName(), "shutdown");
     waitForPreviousInvocation(commandIsShutdown);
     if (commandIsShutdown && uploaderFactoryToCleanup != null) {
       uploaderFactoryToCleanup.shutdown();
@@ -435,6 +453,24 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
 
     cmdEnv.getEventBus().register(streamer);
     registerOutAndErrOutputStreams();
+
+    if (besOptions.getExperimentalMemoryProfileAwaitBesQuiescence()
+        && parsingResult.getOptions(CommonCommandOptions.class).getMemoryProfilePath() != null) {
+      Duration besTimeout = besOptions.getBesTimeout();
+      MemoryProfiler.instance()
+          .setQuiescenceAwaiter(
+              () -> {
+                try {
+                  if (besTimeout.isPositive()) {
+                    streamer.getQuiescenceFuture().get(besTimeout.toMillis(), MILLISECONDS);
+                  } else {
+                    streamer.getQuiescenceFuture().get();
+                  }
+                } catch (ExecutionException | TimeoutException ignored) {
+                  // Failure or timeout in event transport shouldn't abort memory profiling.
+                }
+              });
+    }
 
     // This event should probably be posted in a more general place (e.g. {@link BuildTool};
     // however, so far the BES module is the only module that requires extra work after the build
@@ -691,28 +727,32 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
   public void commandComplete() {
     this.outErr = null;
     this.bepTransports = null;
-    this.invocationId = null;
     this.buildRequestId = null;
     this.reporter = null;
     this.streamer = null;
     this.buildEventOutputStreamFactory = null;
+    MemoryProfiler.instance().resetQuiescenceAwaiter();
   }
 
   private void constructAndMaybeReportInvocationIdUrl() {
     if (!getInvocationIdPrefix().isEmpty()) {
-      StringBuilder msg = new StringBuilder();
-      msg.append("Streaming build results to: ");
-      if (uiUsesColor) {
-        msg.append(new String(Color.CYAN.getEscapeSeq(), StandardCharsets.US_ASCII));
-      }
-      msg.append(getInvocationIdPrefix());
-      msg.append(invocationId);
-      if (uiUsesColor) {
-        msg.append(new String(Color.DEFAULT.getEscapeSeq(), StandardCharsets.US_ASCII));
-      }
-
-      reporter.handle(Event.info(msg.toString()));
+      String url = getInvocationIdPrefix() + invocationId;
+      reporter.handle(
+          Event.info(
+              "Streaming build results to: "
+                  + formatUrlForTerminal(url, uiUsesColor, uiUsesHyperlinks)));
     }
+  }
+
+  private static String formatUrlForTerminal(String url, boolean useColor, boolean useHyperlinks) {
+    String text = useHyperlinks ? AnsiTerminal.hyperlink(url, url) : url;
+    if (!useColor) {
+      return text;
+    }
+
+    return new String(Color.CYAN.getEscapeSeq(), StandardCharsets.US_ASCII)
+        + text
+        + new String(Color.DEFAULT.getEscapeSeq(), StandardCharsets.US_ASCII);
   }
 
   private void constructAndMaybeReportBuildRequestIdUrl() {
@@ -786,7 +826,7 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
     }
 
     CommandContext commandContext =
-        CommandContext.builder()
+        CommandContextImpl.builder()
             .setBuildId(buildRequestId)
             .setInvocationId(invocationId)
             .setAttemptNumber(cmdEnv.getAttemptNumber())
@@ -795,6 +835,7 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
                     cmdEnv.getCommandName(),
                     besOptions,
                     cmdEnv.getRuntime().getStartupOptionsProvider()))
+            .setStreamMetadata(getStreamMetadata(cmdEnv))
             .setProjectId(besOptions.getInstanceName())
             .setCheckPrecedingLifecycleEvents(besOptions.getBesCheckPrecedingLifecycleEvents())
             .build();
@@ -962,6 +1003,11 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
       String commandName,
       OptionsT besOptions,
       @Nullable OptionsParsingResult startupOptionsProvider);
+
+  /** Returns arbitrary metadata to be sent to the Build Event Service upon stream creation. */
+  protected List<byte[]> getStreamMetadata(CommandEnvironment cmdEnv) {
+    return ImmutableList.of();
+  }
 
   /** Returns the prefix used when printing the invocation ID in the command line. */
   protected abstract String getInvocationIdPrefix();

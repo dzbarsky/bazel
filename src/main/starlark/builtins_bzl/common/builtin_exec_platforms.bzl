@@ -19,11 +19,29 @@ See https://github.com/bazelbuild/bazel/discussions/19213.
 # TODO: Remove when get_current_os_name is no longer needed
 load("@_builtins//:common/python/py_internal.bzl", "py_internal")
 
+type _Setting = dict[str, Any]
+
+type _FragmentCustomLogic = Callable[[_Setting], _Setting]
+
+type _Fragment = struct[{
+    "inputs": list[str],
+    "outputs": list[str],
+    "propagate": list[str],
+    "custom_logic": _FragmentCustomLogic,
+}]
+
+# Read-only view of a fragments map.
+type _Fragments = Mapping[str, _Fragment]
+
 # The fragments that make up Bazel's exec transition. The fragment() calls in
 # this file fill out this map.
-bazel_fragments = {}
+bazel_fragments: dict[str, _Fragment] = {}
 
-def fragment(propagate = [], inputs = [], outputs = [], func = lambda setting: {}):
+def fragment(
+        propagate: list[str] = [],
+        inputs: list[str] = [],
+        outputs: list[str] = [],
+        func: _FragmentCustomLogic = lambda setting: {}) -> _Fragment:
     """Adds exec transition logic for a group of related flags.
 
     Args:
@@ -42,7 +60,15 @@ def fragment(propagate = [], inputs = [], outputs = [], func = lambda setting: {
         custom_logic = func,
     )
 
-def exec_transition(fragments):
+type _ExecTransitionImpl = Callable[[_Setting, Any], _Setting]
+
+type _ExecTransition = struct[{
+    "implementation": _ExecTransitionImpl,
+    "inputs": list[str],
+    "outputs": list[str],
+}]
+
+def exec_transition(fragments: _Fragments) -> _ExecTransition:
     """Returns the data for creating an exec transition from a set of fragments.
 
     Ideally this would create and return the transition itself. Instead, callers
@@ -72,17 +98,18 @@ def exec_transition(fragments):
         outputs = inputs_and_outputs.outputs,
     )
 
-def _get_inputs_and_outputs(fragments):
+def _get_inputs_and_outputs(fragments: _Fragments) -> struct[{"inputs": list[str], "outputs": list[str]}]:
     """Returns the (inputs, outputs) for a collection of fragments.
     """
     inputs = []
     outputs = ["//command_line_option:experimental_action_listener"]
-    for fragment in fragments.values():
+    for name in fragments:
+        fragment = fragments[name]
         inputs.extend(fragment.inputs)
         outputs.extend(fragment.outputs)
     return struct(inputs = inputs, outputs = outputs)
 
-def _exec_transition_impl(fragments):
+def _exec_transition_impl(fragments: _Fragments) -> _ExecTransitionImpl:
     """Returns an exec transition impl function from a set of fragments.
 
     Args:
@@ -91,9 +118,10 @@ def _exec_transition_impl(fragments):
     """
 
     # buildifier: disable=unused-variable
-    def _impl(settings, attr):
-        ans = {}
-        for fragment in fragments.values():
+    def _impl(settings: dict[str, Any], attr: struct) -> dict[str, Any]:
+        ans: dict[str, Any] = {}
+        for name in fragments:
+            fragment = fragments[name]
             for option in fragment.propagate:
                 ans[option] = settings[option]
             ans.update(fragment.custom_logic(settings))
@@ -116,10 +144,7 @@ bazel_fragments["AndroidConfiguration.Options"] = fragment(
         "//command_line_option:desugar_for_android",
         "//command_line_option:desugar_java8_libs",
         "//command_line_option:experimental_incremental_dexing_after_proguard",
-        "//command_line_option:dexopts_supported_in_incremental_dexing",
-        "//command_line_option:dexopts_supported_in_dexmerger",
         "//command_line_option:dexopts_supported_in_dexsharder",
-        "//command_line_option:android_manifest_merger",
         "//command_line_option:android_manifest_merger_order",
         "//command_line_option:internal_persistent_busybox_tools",
         "//command_line_option:internal_persistent_multiplex_busybox_tools",
@@ -130,8 +155,6 @@ bazel_fragments["AndroidConfiguration.Options"] = fragment(
         "//command_line_option:experimental_android_resource_path_shortening",
         "//command_line_option:experimental_android_resource_shrinking",
         "//command_line_option:experimental_get_android_java_resources_from_optimized_jar",
-        "//command_line_option:experimental_persistent_aar_extractor",
-        "//command_line_option:experimental_remove_r_classes_from_instrumentation_test_jar",
         "//command_line_option:incompatible_remove_ctx_android_fragment",
     ],
     outputs = [
@@ -181,7 +204,7 @@ bazel_fragments["ConfigFeatureFlagOptions"] = fragment(
     },
 )
 
-def _core_options(settings):
+def _core_options(settings: _Setting) -> _Setting:
     return {
         "//command_line_option:compilation_mode": settings["//command_line_option:host_compilation_mode"],
         "//command_line_option:is exec configuration": True,
@@ -198,9 +221,7 @@ bazel_fragments["CoreOptions"] = fragment(
         "//command_line_option:enable_runfiles",
         "//command_line_option:enforce_constraints",
         "//command_line_option:incompatible_merge_genfiles_directory",
-        "//command_line_option:experimental_platform_in_output_dir",
         "//command_line_option:host_cpu",
-        "//command_line_option:incompatible_modify_execution_info_additive",
         "//command_line_option:include_config_fragments_provider",
         "//command_line_option:experimental_debug_selects_always_succeed",
         "//command_line_option:incompatible_check_testonly_for_output_files",
@@ -232,6 +253,7 @@ bazel_fragments["CoreOptions"] = fragment(
         "//command_line_option:incompatible_filegroup_runfiles_for_data",
         "//command_line_option:incompatible_bep_cpu_from_platform",
         "//command_line_option:incompatible_limit_platforms_in_output_dir_to",
+        "//command_line_option:incompatible_prefer_depending_configuration_runfiles",
     ],
     inputs = ["//command_line_option:features"],
     outputs = [
@@ -253,25 +275,16 @@ bazel_fragments["CppOptions"] = fragment(
         "//command_line_option:objc_use_dotd_pruning",
         "//command_line_option:host_copt",
         "//command_line_option:host_conlyopt",
-        "//command_line_option:host_compiler",
         "//command_line_option:host_cxxopt",
         "//command_line_option:host_per_file_copt",
         "//command_line_option:host_grte_top",
         "//command_line_option:host_linkopt",
         "//command_line_option:experimental_link_static_libraries_once",
-        "//command_line_option:experimental_cc_implementation_deps",
         "//command_line_option:experimental_cpp_modules",
         "//command_line_option:start_end_lib",
         "//command_line_option:experimental_inmemory_dotd_files",
-        "//command_line_option:incompatible_disable_legacy_cc_provider",
-        "//command_line_option:incompatible_enable_cc_toolchain_resolution",
         "//command_line_option:incompatible_remove_legacy_whole_archive",
         "//command_line_option:incompatible_dont_enable_host_nonhost_crosstool_features",
-        "//command_line_option:incompatible_require_ctx_in_configure_features",
-        "//command_line_option:incompatible_make_thinlto_command_lines_standalone",
-        "//command_line_option:incompatible_use_specific_tool_files",
-        "//command_line_option:incompatible_disable_nocopts",
-        "//command_line_option:incompatible_validate_top_level_header_inclusions",
         "//command_line_option:strict_system_includes",
         "//command_line_option:experimental_use_cpp_compile_action_args_params_file",
         "//command_line_option:cc_include_scanning",
@@ -284,7 +297,6 @@ bazel_fragments["CppOptions"] = fragment(
         "//command_line_option:experimental_use_llvm_covmap",
     ],
     outputs = [
-        "//command_line_option:compiler",
         "//command_line_option:grte_top",
         "//command_line_option:copt",
         "//command_line_option:cxxopt",
@@ -294,7 +306,6 @@ bazel_fragments["CppOptions"] = fragment(
         "//command_line_option:strip",
     ],
     func = lambda settings: {
-        "//command_line_option:compiler": settings["//command_line_option:host_compiler"],
         "//command_line_option:grte_top": settings["//command_line_option:host_grte_top"],
         # TODO: Properly fix https://github.com/bazelbuild/bazel/issues/24545 with features.
         "//command_line_option:copt": settings["//command_line_option:host_copt"] + ([] if py_internal.get_current_os_name() == "windows" else ["-g0"]),
@@ -306,8 +317,8 @@ bazel_fragments["CppOptions"] = fragment(
     },
 )
 
-def _java_options(settings):
-    ans = {}
+def _java_options(settings: _Setting) -> _Setting:
+    ans: dict[str, Any] = {}
     if settings["//command_line_option:host_jvmopt"] == []:
         ans["//command_line_option:jvmopt"] = ["-XX:ErrorFile=/dev/stderr"]
     else:
@@ -329,7 +340,6 @@ bazel_fragments["JavaOptions"] = fragment(
         "//command_line_option:experimental_fix_deps_tool",
         "//command_line_option:experimental_one_version_enforcement",
         "//command_line_option:one_version_enforcement_on_java_tests",
-        "//command_line_option:experimental_add_test_support_to_compile_time_deps",
         "//command_line_option:java_runtime_version",
         "//command_line_option:java_language_version",
         "//command_line_option:bytecode_optimizers",
@@ -344,10 +354,8 @@ bazel_fragments["JavaOptions"] = fragment(
         "//command_line_option:tool_java_language_version",
         "//command_line_option:experimental_turbine_annotation_processing",
         "//command_line_option:experimental_turbine_cpu_reservation",
-        "//command_line_option:incompatible_multi_release_deploy_jars",
         "//command_line_option:incompatible_disallow_java_import_exports",
         "//command_line_option:experimental_enable_jspecify",
-        "//command_line_option:experimental_java_test_auto_create_deploy_jar",
         "//command_line_option:experimental_run_android_lint_on_java_rules",
     ],
     outputs = [

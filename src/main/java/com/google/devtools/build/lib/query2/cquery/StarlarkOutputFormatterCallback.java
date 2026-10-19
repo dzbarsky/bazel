@@ -35,6 +35,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Map;
 import net.starlark.java.annot.Param;
+import net.starlark.java.annot.StarlarkLibrary;
 import net.starlark.java.annot.StarlarkMethod;
 import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.EvalException;
@@ -55,6 +56,7 @@ import net.starlark.java.syntax.SyntaxError;
  * of the Starlark expression specified by {@code --expr}.
  */
 public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
+  @StarlarkLibrary
   private class CqueryDialectGlobals {
     @StarlarkMethod(
         name = "build_options",
@@ -181,7 +183,7 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
       Module module = Module.withPredeclared(starlarkSemantics, env.buildOrThrow());
 
       StarlarkThread thread = StarlarkThread.createTransient(mu, starlarkSemantics);
-      Starlark.execFile(input, FileOptions.DEFAULT, module, thread);
+      Starlark.execFile(input, module, thread);
       Object formatFn = module.getGlobal("format");
       if (formatFn == null) {
         throw new QueryException(

@@ -27,7 +27,6 @@ import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.analysis.config.PerLabelOptions;
 import com.google.devtools.build.lib.analysis.config.RequiresOptions;
 import com.google.devtools.build.lib.analysis.config.RunUnder;
-import com.google.devtools.build.lib.analysis.test.CoverageConfiguration.CoverageOptions;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestOptions.CancelConcurrentTests;
 import com.google.devtools.build.lib.analysis.test.TestShardingStrategy.ShardingStrategyConverter;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -64,20 +63,18 @@ public class TestConfiguration extends Fragment {
         // LINT.IfChange
         Class<? extends FragmentOptions> affectedOptionsClass =
             changedOption.getDeclaringClass(FragmentOptions.class);
-        if (!affectedOptionsClass.equals(TestOptions.class)
-            && !affectedOptionsClass.equals(CoverageOptions.class)) {
-          // options outside of TestOptions always prompt invalidation, except for --run_under.
-          if (affectedOptionsClass.equals(CoreOptions.class)
-              && changedOption.getOptionName().equals("run_under")) {
-            return !Objects.equals(
-                RunUnder.trimForNonTestConfiguration((RunUnder) oldValue),
-                RunUnder.trimForNonTestConfiguration((RunUnder) newValue));
-          }
-          return true;
+        if (affectedOptionsClass.equals(TestOptions.class)) {
+          // other options in TestOptions require invalidation when --trim_test_configuration is off
+          return !options.get(TestOptions.class).getTrimTestConfiguration();
         }
+        if (affectedOptionsClass.equals(CoreOptions.class)
+            && changedOption.getOptionName().equals("run_under")) {
+          return !Objects.equals(
+              RunUnder.trimForNonTestConfiguration((RunUnder) oldValue),
+              RunUnder.trimForNonTestConfiguration((RunUnder) newValue));
+        }
+        return true;
         // LINT.ThenChange(TestTrimmingLogic.java)
-        // other options in TestOptions require invalidation when --trim_test_configuration is off
-        return !options.get(TestOptions.class).getTrimTestConfiguration();
       };
 
   /** Command-line options. */
@@ -186,16 +183,6 @@ public class TestConfiguration extends Fragment {
             `external`. If set to `no`, Bazel does not cache any test results.
             """)
     public abstract TriState getCacheTestResults();
-
-    @Deprecated
-    @Option(
-        name = "test_result_expiration",
-        defaultValue = "-1", // No expiration by default.
-        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-        effectTags = {OptionEffectTag.UNKNOWN},
-        metadataTags = {OptionMetadataTag.DEPRECATED},
-        help = "This option is deprecated and has no effect.")
-    public abstract int getTestResultExpiration();
 
     @Option(
         name = "trim_test_configuration",
@@ -346,7 +333,7 @@ public class TestConfiguration extends Fragment {
 
     @Option(
         name = "experimental_fetch_all_coverage_outputs",
-        defaultValue = "false",
+        defaultValue = FlagConstants.DEFAULT_EXPERIMENTAL_FETCH_ALL_COVERAGE_OUTPUTS,
         documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
         effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.LOADING_AND_ANALYSIS},
         metadataTags = {OptionMetadataTag.EXPERIMENTAL},
@@ -370,7 +357,7 @@ public class TestConfiguration extends Fragment {
 
     @Option(
         name = "experimental_split_coverage_postprocessing",
-        defaultValue = "false",
+        defaultValue = FlagConstants.DEFAULT_EXPERIMENTAL_SPLIT_COVERAGE_POSTPROCESSING,
         documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
         effectTags = {OptionEffectTag.EXECUTION},
         metadataTags = {OptionMetadataTag.EXPERIMENTAL},

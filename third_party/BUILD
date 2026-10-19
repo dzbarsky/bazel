@@ -1,7 +1,9 @@
-load("@rules_java//java:defs.bzl", "java_binary", "java_import", "java_library", "java_plugin")
+load("@rules_java//java:defs.bzl", "java_import", "java_library", "java_plugin")
 load("@rules_license//rules:license.bzl", "license")
 load("//src/tools/bzlmod:utils.bzl", "get_repo_root")
+load("//tools/build_defs/proguard:proguard.bzl", "proguard_jar")
 load("//tools/distributions:distribution_rules.bzl", "distrib_jar_filegroup", "distrib_java_import")
+load(":filter_zip.bzl", "filter_zip")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -11,24 +13,71 @@ filegroup(
     name = "srcs",
     srcs = glob(["**"]) + [
         "//third_party/allocation_instrumenter:srcs",
+        "//third_party/brotli/java/org/brotli/dec:srcs",
         "//third_party/chicory:srcs",
         "//third_party/def_parser:srcs",
+        "//third_party/google/bytestream:srcs",
+        "//third_party/google/devtools/build/v1:srcs",
+        "//third_party/google/longrunning:srcs",
+        "//third_party/google/protobuf:srcs",
+        "//third_party/google/rpc:srcs",
         "//third_party/googleapis:srcs",
         "//third_party/grpc:srcs",
         "//third_party/grpc-java:srcs",
         "//third_party/ijar:srcs",
         "//third_party/jarjar:srcs",
+        "//third_party/java/allocation_instrumenter:srcs",
+        "//third_party/java/apache_commons_compress:srcs",
+        "//third_party/java/apache_commons_lang3:srcs",
+        "//third_party/java/asm:srcs",
+        "//third_party/java/async_profiler:srcs",
+        "//third_party/java/auth_kit:srcs",
+        "//third_party/java/auto:srcs",
+        "//third_party/java/auto_value_gson:srcs",
+        "//third_party/java/caffeine:srcs",
+        "//third_party/java/checker_framework_annotations:srcs",
+        "//third_party/java/commonmark:srcs",
+        "//third_party/java/compile_testing:srcs",
+        "//third_party/java/error_prone:srcs",
+        "//third_party/java/fastutil:srcs",
+        "//third_party/java/flogger:srcs",
+        "//third_party/java/grpc:srcs",
+        "//third_party/java/gson:srcs",
+        "//third_party/java/guava:srcs",
         "//third_party/java/jacoco:srcs",
+        "//third_party/java/jakarta_commons_lang/v2_6:srcs",
+        "//third_party/java/jakarta_velocity:srcs",
+        "//third_party/java/jarjar:srcs",
+        "//third_party/java/java_diff_utils:srcs",
         "//third_party/java/javapoet:srcs",
         "//third_party/java/jcommander:srcs",
+        "//third_party/java/jimfs:srcs",
+        "//third_party/java/jmh:srcs",
+        "//third_party/java/jol:srcs",
+        "//third_party/java/jspecify_annotations:srcs",
+        "//third_party/java/jsr250_annotations:srcs",
+        "//third_party/java/jsr305_annotations:srcs",
+        "//third_party/java/jsr330_inject:srcs",
+        "//third_party/java/junit:srcs",
+        "//third_party/java/mockito:srcs",
+        "//third_party/java/netty4:srcs",
+        "//third_party/java/netty_tcnative:srcs",
         "//third_party/java/proguard:srcs",
+        "//third_party/java/protobuf:srcs",
+        "//third_party/java/protobuf/util:srcs",
+        "//third_party/java/roaringbitmap:srcs",
+        "//third_party/java/rxjava3:srcs",
+        "//third_party/java/snakeyaml:srcs",
+        "//third_party/java/testparameterinjector:srcs",
+        "//third_party/java/truth:srcs",
+        "//third_party/java/truth/extensions:srcs",
+        "//third_party/java/turbine:srcs",
+        "//third_party/java/xz:srcs",
+        "//third_party/java/zstd_jni:srcs",
         "//third_party/pprof:srcs",
         "//third_party/protobuf:srcs",
         "//third_party/py/abseil:srcs",
-        "//third_party/py/concurrent:srcs",
-        "//third_party/py/dataclasses:srcs",
         "//third_party/py/frozendict:srcs",
-        "//third_party/py/mock:srcs",
     ],
 )
 
@@ -317,50 +366,19 @@ alias(
 # When using new classes from this dependency, make sure to update fastutil.proguard.
 java_import(
     name = "fastutil",
-    jars = [":fastutil_stripped_jar"],
+    jars = [":fastutil-stripped.jar"],
 )
 
-genrule(
-    name = "fastutil_stripped_jar",
+proguard_jar(
+    name = "fastutil_proguard",
     srcs = [
         "@maven//:it_unimi_dsi_fastutil_file",
+    ],
+    out = "fastutil-stripped.jar",
+    proguard_spec = "fastutil.proguard",
+    deps = [
         "@rules_java//toolchains:platformclasspath_nostrip",
     ],
-    outs = ["fastutil-stripped.jar"],
-    # ProGuard output is silenced below because it prints
-    # ...
-    # Caused by: java.net.UnknownHostException: bk-docker-3gmr: Temporary failure in name resolution
-    # ...
-    # when running in the Bazel sandbox, which throws off bazel_determinism_test.
-    cmd = """
-    $(location :proguard_bin) \
-        -injars $(execpath @maven//:it_unimi_dsi_fastutil_file) \
-        -outjars $@ \
-        -libraryjars $(execpath @rules_java//toolchains:platformclasspath_nostrip) \
-        @$(location //tools:fastutil.proguard) > /dev/null
-    # Null out the file times stored in the jar to make the output reproducible.
-    TMPDIR=$$(mktemp -d)
-    trap 'rm -rf $$TMPDIR' EXIT
-    unzip -q $@ -d $$TMPDIR
-    rm $@
-    find $$TMPDIR -type f -print0 | xargs -0 touch -t 198001010000.00
-    OUTPUT="$$(pwd)/$@"
-    (cd $$TMPDIR && find . -type f | LC_ALL=C sort | zip -qDX0r@ "$$OUTPUT")
-    """,
-    tools = [
-        ":proguard_bin",
-        "//tools:fastutil.proguard",
-    ],
-)
-
-java_binary(
-    name = "proguard_bin",
-    jvm_flags = [
-        # Prevent ProGuard from calling out to the internet through log4j.
-        "-Dlog4j.rootLogger=OFF",
-    ],
-    main_class = "proguard.ProGuard",
-    runtime_deps = ["@maven//:com_guardsquare_proguard_base"],
 )
 
 java_library(
@@ -425,6 +443,7 @@ java_library(
         ":error_prone_annotations",
         ":jcip_annotations",
         ":jsr305",
+        "@maven//:com_google_guava_failureaccess",
         "@maven//:com_google_guava_guava",
     ],
 )
@@ -522,40 +541,75 @@ alias(
 )
 
 UNNECESSARY_DYNAMIC_LIBRARIES = select({
-    "//src/conditions:windows": "*.so *.jnilib",
-    "//src/conditions:darwin": "*.so *.dll *.pyd",
-    "//src/conditions:linux_x86_64": "*.jnilib *.dll *.pyd",
-    "//src/conditions:linux_s390x": "*.jnilib *.dll *.pyd",
+    "//src/conditions:windows": [
+        "*.so",
+        "*.jnilib",
+    ],
+    "//src/conditions:darwin": [
+        "*.so",
+        "*.dll",
+        "*.pyd",
+    ],
+    "//src/conditions:linux_x86_64": [
+        "*.jnilib",
+        "*.dll",
+        "*.pyd",
+    ],
+    "//src/conditions:linux_s390x": [
+        "*.jnilib",
+        "*.dll",
+        "*.pyd",
+    ],
     # The .so file is an x86/s390x one, so we can just remove it if the CPU is not x86/s390x
-    "//src/conditions:arm": "*.so *.jnilib *.dll *.pyd",
-    "//src/conditions:linux_aarch64": "*.so *.jnilib *.dll *.pyd",
-    "//src/conditions:linux_ppc": "*.so *.jnilib *.dll *.pyd",
-    "//src/conditions:freebsd": "*.so *.jnilib *.dll *.pyd",
-    "//src/conditions:openbsd": "*.so *.jnilib *.dll *.pyd",
+    "//src/conditions:arm": [
+        "*.so",
+        "*.jnilib",
+        "*.dll",
+        "*.pyd",
+    ],
+    "//src/conditions:linux_aarch64": [
+        "*.so",
+        "*.jnilib",
+        "*.dll",
+        "*.pyd",
+    ],
+    "//src/conditions:linux_ppc": [
+        "*.so",
+        "*.jnilib",
+        "*.dll",
+        "*.pyd",
+    ],
+    "//src/conditions:freebsd": [
+        "*.so",
+        "*.jnilib",
+        "*.dll",
+        "*.pyd",
+    ],
+    "//src/conditions:openbsd": [
+        "*.so",
+        "*.jnilib",
+        "*.dll",
+        "*.pyd",
+    ],
     # Default is to play it safe -- better have a big binary than a slow binary
-    #   The empty string means nothing is to be removed from the library;
-    #   the rule command tests for the empty string explictly to avoid
-    #   zip erroring when it finds nothing to remove.
-    "//conditions:default": "",
+    "//conditions:default": [],
 })
 
 # Remove native libraries that are for a platform different from the one we are
 # building Bazel for.
-genrule(
+filter_zip(
     name = "filter_netty_dynamic_libs",
-    srcs = select({
-        "//src/conditions:darwin_arm64": ["@maven//:io_netty_netty_tcnative_boringssl_static_osx_aarch_64_file"],
-        "//src/conditions:darwin_x86_64": ["@maven//:io_netty_netty_tcnative_boringssl_static_osx_x86_64_file"],
-        "//src/conditions:linux_aarch64": ["@maven//:io_netty_netty_tcnative_boringssl_static_linux_aarch_64_file"],
-        "//src/conditions:linux_x86_64": ["@maven//:io_netty_netty_tcnative_boringssl_static_linux_x86_64_file"],
-        "//src/conditions:windows": ["@maven//:io_netty_netty_tcnative_boringssl_static_windows_x86_64_file"],
-        "//conditions:default": [],
+    src = select({
+        "//src/conditions:darwin_arm64": "@maven//:io_netty_netty_tcnative_boringssl_static_osx_aarch_64_file",
+        "//src/conditions:darwin_x86_64": "@maven//:io_netty_netty_tcnative_boringssl_static_osx_x86_64_file",
+        "//src/conditions:linux_aarch64": "@maven//:io_netty_netty_tcnative_boringssl_static_linux_aarch_64_file",
+        "//src/conditions:linux_x86_64": "@maven//:io_netty_netty_tcnative_boringssl_static_linux_x86_64_file",
+        "//src/conditions:windows": "@maven//:io_netty_netty_tcnative_boringssl_static_windows_x86_64_file",
+        "//conditions:default": "@maven//:io_netty_netty_tcnative_boringssl_static_linux_x86_64_file",
     }),
-    outs = ["netty_tcnative/netty-tcnative-filtered.jar"],
-    cmd = "cp $< $@ && " +
-          # Make sure we can write the output file, even if the input isn't writable.
-          "chmod +w $@ && " +
-          "zip -qd $@ */license/* " + UNNECESSARY_DYNAMIC_LIBRARIES,
+    out = "netty_tcnative/netty-tcnative-filtered.jar",
+    exclude_patterns = ["*/license/*"] + UNNECESSARY_DYNAMIC_LIBRARIES,
+    zipper = "//third_party/ijar:zipper",
 )
 
 distrib_java_import(

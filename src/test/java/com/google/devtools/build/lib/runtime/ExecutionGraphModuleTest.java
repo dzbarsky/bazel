@@ -42,6 +42,7 @@ import com.google.devtools.build.lib.actions.ArtifactRoot;
 import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
 import com.google.devtools.build.lib.actions.DiscoveredInputsEvent;
 import com.google.devtools.build.lib.actions.ExecutionGraph;
+import com.google.devtools.build.lib.actions.OutputMetadataStore;
 import com.google.devtools.build.lib.actions.ResourceSet;
 import com.google.devtools.build.lib.actions.SimpleSpawn;
 import com.google.devtools.build.lib.actions.Spawn;
@@ -49,16 +50,15 @@ import com.google.devtools.build.lib.actions.SpawnExecutedEvent;
 import com.google.devtools.build.lib.actions.SpawnMetrics;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
-import com.google.devtools.build.lib.actions.cache.OutputMetadataStore;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil.MockAction;
 import com.google.devtools.build.lib.bugreport.BugReporter;
 import com.google.devtools.build.lib.buildtool.BuildResult;
 import com.google.devtools.build.lib.buildtool.BuildResult.BuildToolLogCollection;
 import com.google.devtools.build.lib.buildtool.buildevent.BuildCompleteEvent;
-import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
+import com.google.devtools.build.lib.compress.CompressionServiceImpl;
 import com.google.devtools.build.lib.exec.util.FakeActionInputFileCache;
 import com.google.devtools.build.lib.exec.util.FakeOwner;
 import com.google.devtools.build.lib.exec.util.SpawnBuilder;
@@ -84,7 +84,6 @@ import javax.annotation.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
 
 /** Unit tests for {@link ExecutionGraphModule}. */
 @RunWith(TestParameterInjector.class)
@@ -100,8 +99,9 @@ public final class ExecutionGraphModuleTest extends FoundationTestCase {
   private ArtifactRoot artifactRoot;
 
   @Before
-  public void initializeRoots() {
+  public void setUp() {
     artifactRoot = ArtifactRoot.asDerivedRoot(scratch.resolve("/"), RootType.OUTPUT, "output");
+    module.resetNanosToMillis();
   }
 
   private static ImmutableList<ExecutionGraph.Node> parse(ByteArrayOutputStream buffer)
@@ -504,6 +504,7 @@ public final class ExecutionGraphModuleTest extends FoundationTestCase {
       @TestParameter FailingOutputStreamFactory failingOutputStream) {
     ActionDumpWriter writer =
         new ActionDumpWriter(
+            new CompressionServiceImpl(),
             BugReporter.defaultInstance(),
             new EventBus(),
             /* localLockFreeOutputEnabled= */ false,
@@ -546,6 +547,7 @@ public final class ExecutionGraphModuleTest extends FoundationTestCase {
       DependencyInfo depType) {
     ActionDumpWriter writer =
         new ActionDumpWriter(
+            new CompressionServiceImpl(),
             bugReporter,
             eventBus,
             localLockFreeOutputEnabled,
@@ -668,8 +670,6 @@ public final class ExecutionGraphModuleTest extends FoundationTestCase {
   public void spawnAndAction_withDifferentOutputs() throws Exception {
     var buffer = new ByteArrayOutputStream();
     startLogging(eventBus, buffer, DependencyInfo.ALL);
-    var nanosToMillis = BlazeClock.createNanosToMillisSinceEpochConverter();
-    module.setNanosToMillis(nanosToMillis);
 
     module.spawnExecuted(
         new SpawnExecutedEvent(
@@ -708,7 +708,7 @@ public final class ExecutionGraphModuleTest extends FoundationTestCase {
                 .setIndex(1)
                 .setMetrics(
                     ExecutionGraph.Metrics.newBuilder()
-                        .setStartTimestampMillis(nanosToMillis.toEpochMillis(0)))
+                        .setStartTimestampMillis(module.getNanosToMillis().toEpochMillis(0)))
                 .setRuleClass("dummy-kind")
                 .build());
   }
@@ -717,8 +717,6 @@ public final class ExecutionGraphModuleTest extends FoundationTestCase {
   public void noSpawnAction_hasCorrectDuration() throws Exception {
     var buffer = new ByteArrayOutputStream();
     startLogging(eventBus, buffer, DependencyInfo.ALL);
-    var nanosToMillis = BlazeClock.createNanosToMillisSinceEpochConverter();
-    module.setNanosToMillis(nanosToMillis);
 
     var action = new ActionsTestUtil.NullAction(createOutputArtifact("foo/out"));
     module.actionComplete(
@@ -736,7 +734,7 @@ public final class ExecutionGraphModuleTest extends FoundationTestCase {
             executionGraphNodeBuilderForAction(action)
                 .setMetrics(
                     ExecutionGraph.Metrics.newBuilder()
-                        .setStartTimestampMillis(nanosToMillis.toEpochMillis(1000000))
+                        .setStartTimestampMillis(module.getNanosToMillis().toEpochMillis(1000000))
                         .setDurationMillis(1)
                         .setProcessMillis(1))
                 .setRuleClass("dummy-kind")
@@ -799,42 +797,15 @@ public final class ExecutionGraphModuleTest extends FoundationTestCase {
         .inOrder();
   }
 
-  enum LocalLockFreeOutput {
-    LOCAL_LOCK_FREE_OUTPUT_ENABLED(/* optionValue= */ true) {
-      @Override
-      void assertBugReport(BugReporter bugReporter) {
-        verify(bugReporter, never()).sendNonFatalBugReport(any());
-      }
-    },
-    LOCAL_LOCK_FREE_OUTPUT_DISABLED(/* optionValue= */ false) {
-      @Override
-      void assertBugReport(BugReporter bugReporter) {
-        var captor = ArgumentCaptor.forClass(Exception.class);
-        verify(bugReporter).sendNonFatalBugReport(captor.capture());
-        assertThat(captor.getValue())
-            .hasMessageThat()
-            .contains("Multiple spawns produced 'output/foo/out' with overlapping execution time.");
-      }
-    };
-
-    LocalLockFreeOutput(boolean optionValue) {
-      this.optionValue = optionValue;
-    }
-
-    private final boolean optionValue;
-
-    abstract void assertBugReport(BugReporter bugReporter);
-  }
-
   @Test
   public void multipleSpawnsWithSameOutput_overlapping_recordsBothSpawnsWithoutRetry(
-      @TestParameter LocalLockFreeOutput localLockFreeOutput) throws Exception {
+      @TestParameter boolean localLockFreeOutputEnabled) throws Exception {
     var buffer = new ByteArrayOutputStream();
     BugReporter bugReporter = mock(BugReporter.class);
     startLogging(
         eventBus,
         bugReporter,
-        localLockFreeOutput.optionValue,
+        localLockFreeOutputEnabled,
         /* logFileWriteEdges= */ false,
         buffer,
         DependencyInfo.ALL);
@@ -887,7 +858,7 @@ public final class ExecutionGraphModuleTest extends FoundationTestCase {
                 .setIdentifier("foo2")
                 .build())
         .inOrder();
-    localLockFreeOutput.assertBugReport(bugReporter);
+    verify(bugReporter, never()).sendNonFatalBugReport(any());
   }
 
   @Test

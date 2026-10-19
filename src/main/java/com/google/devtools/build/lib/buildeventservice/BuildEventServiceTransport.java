@@ -21,7 +21,7 @@ import com.google.common.eventbus.EventBus;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.buildeventservice.BuildEventServiceOptions.BesUploadMode;
 import com.google.devtools.build.lib.buildeventservice.client.BuildEventServiceClient;
-import com.google.devtools.build.lib.buildeventservice.client.BuildEventServiceClient.CommandContext;
+import com.google.devtools.build.lib.buildeventservice.client.CommandContext;
 import com.google.devtools.build.lib.buildeventstream.ArtifactGroupNamer;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEventArtifactUploader;
@@ -82,8 +82,19 @@ public class BuildEventServiceTransport implements BuildEventTransport {
   }
 
   @Override
+  public ListenableFuture<Void> getQuiescenceFuture() {
+    return besUploader.getQuiescenceFuture();
+  }
+
+  @Override
   public BuildEventArtifactUploader getUploader() {
     return besUploader.getBuildEventUploader();
+  }
+
+  @Override
+  @Nullable
+  public String getInvocationId() {
+    return besUploader.getInvocationId();
   }
 
   @Override

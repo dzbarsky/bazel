@@ -28,18 +28,31 @@ from src.test.py.bazel import test_base
 
 class RepoContentsCacheTest(test_base.TestBase):
 
+  def assertNoUnexpectedWarning(self, stderr):
+    # On Windows, gRPC and Abseil may occasionally output harmless log
+    # initialization warnings during Bazel startup (e.g., "WARNING: All log
+    # messages before absl::InitializeLog() ...").
+    # We explicitly ignore this benign warning to avoid false-positive test
+    # failures.
+    for line in stderr.splitlines():
+      if 'WARNING' in line:
+        if (
+            'All log messages before absl::InitializeLog() is called are'
+            ' written to STDERR'
+            not in line
+        ):
+          self.fail('Unexpected warning found: ' + line)
+
   def setUp(self):
     test_base.TestBase.setUp(self)
     self.repo_contents_cache = tempfile.mkdtemp(dir=self._tests_root).replace(
         '\\', '/'
     )
-    self.ScratchFile(
-        '.bazelrc',
-        [
-            'build --verbose_failures',
-            'common --repo_contents_cache=%s' % self.repo_contents_cache,
-        ],
-    )
+    self.ScratchFile('.bazelrc', ['build --verbose_failures'])
+    # The test harness disables the repo contents cache in its own bazelrc,
+    # which takes precedence over the workspace .bazelrc.
+    with open(self._test_bazelrc, 'at') as f:
+      f.write('common --repo_contents_cache=%s\n' % self.repo_contents_cache)
 
   def hasCacheEntry(self):
     for l1 in os.listdir(self.repo_contents_cache):
@@ -100,6 +113,20 @@ class RepoContentsCacheTest(test_base.TestBase):
           )
     except OSError:
       pass  # Not a symlink means not cached, which is expected
+
+  def testOutputBaseInsideRepoContentsCache_rejected(self):
+    _, stdout, _ = self.RunBazel(['info', 'output_base'])
+    output_base = stdout[0].strip()
+
+    # The command fails with an error rather than a crash, and the server stays
+    # usable.
+    exit_code, _, stderr = self.RunBazel(
+        ['info', '--repo_contents_cache=' + output_base], allow_failure=True
+    )
+    self.assertNotEqual(exit_code, 0)
+    self.assertNotEqual(exit_code, 37)
+    self.assertIn('is inside the repo contents cache', '\n'.join(stderr))
+    self.RunBazel(['info'])
 
   def testCachedAfterCleanExpunge(self):
     self.ScratchFile(
@@ -361,7 +388,7 @@ class RepoContentsCacheTest(test_base.TestBase):
     _, _, stderr = self.RunBazel(['build', '@my_repo//:haha'])
     stderr = '\n'.join(stderr)
     self.assertIn('JUST FETCHED', stderr)
-    self.assertNotIn('WARNING', stderr)
+    self.assertNoUnexpectedWarning(stderr)
 
   def testGc_singleServer_gcAfterCacheMiss(self):
     self.ScratchFile(
@@ -396,7 +423,7 @@ class RepoContentsCacheTest(test_base.TestBase):
     _, _, stderr = self.RunBazel(['build', '@my_repo//:haha'])
     stderr = '\n'.join(stderr)
     self.assertIn('JUST FETCHED', stderr)
-    self.assertNotIn('WARNING', stderr)
+    self.assertNoUnexpectedWarning(stderr)
 
   def testGc_multipleServers(self):
     module_bazel_lines = [
@@ -453,7 +480,7 @@ class RepoContentsCacheTest(test_base.TestBase):
     )
     stderr = '\n'.join(stderr)
     self.assertIn('JUST FETCHED', stderr)
-    self.assertNotIn('WARNING', stderr)
+    self.assertNoUnexpectedWarning(stderr)
 
     # GC'd while B's server is alive (after B's earlier cache hit):
     # not cached, but also no crash
@@ -461,7 +488,7 @@ class RepoContentsCacheTest(test_base.TestBase):
     _, _, stderr = self.RunBazel(['build', '@my_repo//:haha'], cwd=dir_b)
     stderr = '\n'.join(stderr)
     self.assertIn('JUST FETCHED', stderr)
-    self.assertNotIn('WARNING', stderr)
+    self.assertNoUnexpectedWarning(stderr)
 
   def testReverseDependencyDirection(self):
     # Set up two repos that retain their predeclared input hashes across two
@@ -597,7 +624,7 @@ class RepoContentsCacheTest(test_base.TestBase):
     )
     stderr = '\n'.join(stderr)
     self.assertIn('JUST FETCHED', stderr)
-    self.assertNotIn('WARNING', stderr)
+    self.assertNoUnexpectedWarning(stderr)
     with open(os.path.join(workspace, 'bazel-bin/out.txt'), 'r') as f:
       self.assertEqual(f.read(), 'hello world3\n')
 
@@ -608,7 +635,7 @@ class RepoContentsCacheTest(test_base.TestBase):
         cwd=workspace,
     )
     self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
-    self.assertNotIn('WARNING', '\n'.join(stderr))
+    self.assertNoUnexpectedWarning('\n'.join(stderr))
     with open(os.path.join(workspace, 'bazel-bin/out.txt'), 'r') as f:
       self.assertEqual(f.read(), 'hello world4\n')
 
@@ -628,7 +655,7 @@ class RepoContentsCacheTest(test_base.TestBase):
     )
     stderr = '\n'.join(stderr)
     self.assertIn('JUST FETCHED', stderr)
-    self.assertNotIn('WARNING', stderr)
+    self.assertNoUnexpectedWarning(stderr)
     with open(os.path.join(workspace, 'bazel-bin/out.txt'), 'r') as f:
       self.assertEqual(f.read(), 'hello world5\n')
 

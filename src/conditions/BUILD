@@ -85,6 +85,15 @@ config_setting(
 )
 
 config_setting(
+    name = "linux_loongarch64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:loongarch64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
     name = "linux_x86_64",
     constraint_values = [
         "@platforms//os:linux",
@@ -144,12 +153,6 @@ config_setting(
         "@platforms//os:macos",
         "@platforms//cpu:arm64e",
     ],
-    visibility = ["//visibility:public"],
-)
-
-config_setting(
-    name = "iphonesdk",
-    values = {"define": "IPHONE_SDK=1"},
     visibility = ["//visibility:public"],
 )
 
@@ -231,6 +234,36 @@ selects.config_setting_group(
     match_any = [
         ":windows_clang_cl",
         ":windows_msvc_cl",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "windows_clang",
+    constraint_values = ["@platforms//os:windows"],
+    flag_values = {"@rules_cc//cc/compiler:compiler": "clang"},
+)
+
+config_setting(
+    name = "windows_gcc",
+    constraint_values = ["@platforms//os:windows"],
+    flag_values = {"@rules_cc//cc/compiler:compiler": "gcc"},
+)
+
+config_setting(
+    name = "windows_mingw_gcc",
+    constraint_values = ["@platforms//os:windows"],
+    flag_values = {"@rules_cc//cc/compiler:compiler": "mingw-gcc"},
+)
+
+# Compilers targeting Windows that use a GCC-style driver (MinGW), which expects
+# -l<lib> rather than -DEFAULTLIB:<lib>.lib to link against system libraries.
+selects.config_setting_group(
+    name = "windows_gcc_like",
+    match_any = [
+        ":windows_clang",
+        ":windows_gcc",
+        ":windows_mingw_gcc",
     ],
     visibility = ["//visibility:public"],
 )

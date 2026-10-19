@@ -260,10 +260,7 @@ public final class SpawnActionTest extends BuildViewTestCase {
 
     Spawn spawn =
         action.getSpawn(
-            actionExecutionContext,
-            ImmutableMap.of(),
-            /* envResolved= */ false,
-            /* reportOutputs= */ true);
+            actionExecutionContext, /* clientEnv= */ ImmutableMap.of(), /* reportOutputs= */ true);
     String paramFileName = output.getExecPathString() + "-0.params";
     // The spawn's primary arguments should reference the param file
     assertThat(spawn.getArguments())
@@ -565,6 +562,23 @@ public final class SpawnActionTest extends BuildViewTestCase {
         createWorkerSupportSpawn(ImmutableMap.of("worker-key-mnemonic", "ToolPoolMnemonic"));
     assertThat(Spawns.getWorkerKeyMnemonic(customMnemonicSpawn.getSpawnForTesting()))
         .isEqualTo("ToolPoolMnemonic");
+  }
+
+  @Test
+  public void testWorkerMnemonicOverride_validSpecialCharacters() throws Exception {
+    SpawnAction customMnemonicSpawn =
+        createWorkerSupportSpawn(ImmutableMap.of("worker-key-mnemonic", "Tool_Pool-Mnemonic"));
+    assertThat(Spawns.getWorkerKeyMnemonic(customMnemonicSpawn.getSpawnForTesting()))
+        .isEqualTo("Tool_Pool-Mnemonic");
+  }
+
+  @Test
+  public void testWorkerMnemonicValidation_invalidPathTraversal() throws Exception {
+    SpawnAction customMnemonicSpawn =
+        createWorkerSupportSpawn(
+            ImmutableMap.of("worker-key-mnemonic", "../../../ToolPoolMnemonic"));
+    Spawn spawn = customMnemonicSpawn.getSpawnForTesting();
+    assertThrows(IllegalArgumentException.class, () -> Spawns.getWorkerKeyMnemonic(spawn));
   }
 
   private ActionOwner nullOwnerWithTargetConfig() {

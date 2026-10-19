@@ -197,8 +197,9 @@ public final class RewindingTest extends BuildIntegrationTestCase {
   }
 
   @Test
-  public void ineffectiveRewindingResultsInLostInputTooManyTimes() throws Exception {
-    helper.runIneffectiveRewindingResultsInLostInputTooManyTimes();
+  public void ineffectiveRewindingResultsInLostInputTooManyTimes(
+      @TestParameter({"2", "20"}) int maxRepeatedLostInputs) throws Exception {
+    helper.runIneffectiveRewindingResultsInLostInputTooManyTimes(maxRepeatedLostInputs);
     assertOutputForRule2NotCreated();
   }
 
@@ -241,6 +242,43 @@ public final class RewindingTest extends BuildIntegrationTestCase {
   }
 
   @Test
+  public void changedRewoundOutputDetected(@TestParameter boolean changeSecondaryOutput)
+      throws Exception {
+    helper.runChangedRewoundOutputDetected(
+        /* producerFromPreviousBuild= */ false, changeSecondaryOutput);
+  }
+
+  @Test
+  public void changedRewoundOutputFromPreviousBuildDetected() throws Exception {
+    helper.runChangedRewoundOutputDetected(
+        /* producerFromPreviousBuild= */ true, /* changeSecondaryOutput= */ false);
+  }
+
+  @Test
+  public void deterministicRewoundOutputCheckSucceeds() throws Exception {
+    addOptions("--experimental_check_rewound_action_outputs");
+    helper.runIntermediateActionRewound();
+  }
+
+  @Test
+  public void omittedRewoundOutputCheckSucceeds(@TestParameter boolean omittedBeforeRewind)
+      throws Exception {
+    helper.runOmittedRewoundOutputCheckSucceeds(omittedBeforeRewind);
+  }
+
+  @Test
+  public void sharedRewoundOutputCheckIsBestEffort(
+      @TestParameter boolean cacheHit, @TestParameter boolean changed) throws Exception {
+    helper.runSharedRewoundOutputCheckIsBestEffort(cacheHit, changed);
+  }
+
+  @Test
+  public void sharedRewoundOutputCheckSucceeds() throws Exception {
+    addOptions("--experimental_check_rewound_action_outputs");
+    helper.runParallelTrackSharedActionsRewound();
+  }
+
+  @Test
   public void parallelTrackSharedActionsRewound() throws Exception {
     helper.runParallelTrackSharedActionsRewound();
   }
@@ -261,6 +299,28 @@ public final class RewindingTest extends BuildIntegrationTestCase {
   public void treeArtifactRewound_oneFileLost() throws Exception {
     skipIfNotLinux();
     helper.runTreeArtifactRewound_oneFileLost_spawnFailed();
+  }
+
+  @Test
+  public void actionTemplateExpansionRewound_notConcurrentWithTreeConsumers() throws Exception {
+    helper.runActionTemplateExpansionRewound_notConcurrentWithTreeConsumers();
+  }
+
+  @Test
+  public void actionTemplateExpansionRewound_fileUnderSubtreeArtifactLost() throws Exception {
+    helper.runActionTemplateExpansionRewound_fileUnderSubtreeArtifactLost();
+  }
+
+  @Test
+  public void actionTemplateExpansionRewound_fileUnderSubtreeArtifactInRunfilesLost()
+      throws Exception {
+    helper.runActionTemplateExpansionRewound_fileUnderSubtreeArtifactInRunfilesLost();
+  }
+
+  @Test
+  public void actionTemplateExpansionRewound_siblingActionsReExecuteConcurrently()
+      throws Exception {
+    helper.runActionTemplateExpansionRewound_siblingActionsReExecuteConcurrently();
   }
 
   @Test

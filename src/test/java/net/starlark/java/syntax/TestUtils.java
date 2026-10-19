@@ -50,6 +50,30 @@ public final class TestUtils {
     }
   }
 
+  /** A minimal {@link TypeContext} implementation for tests. */
+  public static final TypeContext TYPE_CONTEXT =
+      new TypeContext() {
+        @Override
+        public StarlarkType getStrFieldType(String name) {
+          return null;
+        }
+
+        @Override
+        public StarlarkType getListFieldType(String name) {
+          return null;
+        }
+
+        @Override
+        public StarlarkType getDictFieldType(String name) {
+          return null;
+        }
+
+        @Override
+        public StarlarkType getSetFieldType(String name) {
+          return null;
+        }
+      };
+
   /**
    * A static resolver {@link net.starlark.java.syntax.Resolver.Module} implementation, for tests of
    * the resolver and type checker.
@@ -133,7 +157,7 @@ public final class TestUtils {
     }
 
     @Override
-    public Scope resolve(String name) throws Undefined {
+    public Scope resolve(String name, boolean resolveTypeSyntax) throws Undefined {
       if (predeclared.contains(name)) {
         return Scope.PREDECLARED;
       } else {
@@ -144,32 +168,8 @@ public final class TestUtils {
     @Override
     @Nullable
     public TypeConstructor getTypeConstructor(String name) throws Undefined {
-      resolve(name); // throws if unknown
+      resolve(name, /* resolveTypeSyntax= */ true); // throws if unknown
       return typeConstructors.get(name);
-    }
-
-    @Override
-    @Nullable
-    public StarlarkType getStrFieldType(String name) {
-      return null;
-    }
-
-    @Override
-    @Nullable
-    public StarlarkType getListFieldType(String name) {
-      return null;
-    }
-
-    @Override
-    @Nullable
-    public StarlarkType getDictFieldType(String name) {
-      return null;
-    }
-
-    @Override
-    @Nullable
-    public StarlarkType getSetFieldType(String name) {
-      return null;
     }
 
     @Override
@@ -183,14 +183,25 @@ public final class TestUtils {
     public StarlarkType getUniversalSymbolType(String name) {
       throw new UnsupportedOperationException("universal types not supported");
     }
+
+    @Override
+    public TypeContext getTypeContext() {
+      return TYPE_CONTEXT;
+    }
   }
 
   /** A static {@link TypeTagger.LoadableModule} implementation, for tests of the type checker. */
   public static class LoadableModule implements TypeTagger.LoadableModule {
     private final ImmutableMap<String, StarlarkType> exports;
+    private final ImmutableMap<String, TypeConstructor> typeConstructors;
 
-    public LoadableModule(Map<String, StarlarkType> exports) {
+    public LoadableModule(
+        Map<String, StarlarkType> exports, Map<String, TypeConstructor> typeConstructors) {
+      checkArgument(
+          typeConstructors.keySet().stream().allMatch(exports::containsKey),
+          "type constructor names must be a subset of export names");
       this.exports = ImmutableMap.copyOf(exports);
+      this.typeConstructors = ImmutableMap.copyOf(typeConstructors);
     }
 
     /** Creates a LoadableModule with exports expressed as flattened name-type pairs. */
@@ -200,7 +211,23 @@ public final class TestUtils {
       for (int i = 0; i < args.length; i += 2) {
         exports.put((String) args[i], (StarlarkType) args[i + 1]);
       }
-      return new LoadableModule(exports.buildOrThrow());
+      return new LoadableModule(exports.buildOrThrow(), ImmutableMap.of());
+    }
+
+    /**
+     * Creates a LoadableModule with exports expressed as flattened name-type-constructor triples.
+     */
+    public static LoadableModule ofTypesAndConstructors(Object... args) {
+      checkArgument(args.length % 3 == 0);
+      ImmutableMap.Builder<String, StarlarkType> exports = ImmutableMap.builder();
+      ImmutableMap.Builder<String, TypeConstructor> typeConstructors = ImmutableMap.builder();
+      for (int i = 0; i < args.length; i += 3) {
+        exports.put((String) args[i], (StarlarkType) args[i + 1]);
+        if (args[i + 2] != null) {
+          typeConstructors.put((String) args[i], (TypeConstructor) args[i + 2]);
+        }
+      }
+      return new LoadableModule(exports.buildOrThrow(), typeConstructors.buildOrThrow());
     }
 
     @Override
@@ -217,6 +244,12 @@ public final class TestUtils {
     @Nullable
     public StarlarkType getExportType(String name) {
       return exports.get(name);
+    }
+
+    @Override
+    @Nullable
+    public TypeConstructor getExportTypeConstructor(String name) {
+      return typeConstructors.get(name);
     }
   }
 }

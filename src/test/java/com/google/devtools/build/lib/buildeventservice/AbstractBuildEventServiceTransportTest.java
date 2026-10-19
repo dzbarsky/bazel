@@ -33,9 +33,9 @@ import com.google.common.hash.HashCode;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.buildeventservice.client.BuildEventServiceClient;
-import com.google.devtools.build.lib.buildeventservice.client.BuildEventServiceClient.CommandContext;
-import com.google.devtools.build.lib.buildeventservice.client.BuildEventServiceClient.InvocationStatus;
 import com.google.devtools.build.lib.buildeventservice.client.BuildEventServiceProtoUtil;
+import com.google.devtools.build.lib.buildeventservice.client.CommandContext;
+import com.google.devtools.build.lib.buildeventservice.client.LifecycleEvent.InvocationStatus;
 import com.google.devtools.build.lib.buildeventstream.ArtifactGroupNamer;
 import com.google.devtools.build.lib.buildeventstream.BuildCompletingEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent;
@@ -113,7 +113,7 @@ public abstract class AbstractBuildEventServiceTransportTest extends FoundationT
   private static final ImmutableSet<String> KEYWORDS = ImmutableSet.of("foo=bar", "spam=eggs");
   private static final Instant COMMAND_START_TIME = Instant.ofEpochMilli(500L);
   private static final CommandContext COMMAND_CONTEXT =
-      CommandContext.builder()
+      CommandContextImpl.builder()
           .setBuildId(BUILD_REQUEST_ID)
           .setInvocationId(BUILD_INVOCATION_ID)
           .setAttemptNumber(1)
@@ -261,6 +261,93 @@ public abstract class AbstractBuildEventServiceTransportTest extends FoundationT
                 success.asStreamProto(buildEventContext).toByteArray()),
             BuildEventServiceProtoUtil.streamFinished(COMMAND_CONTEXT, timestamp, 4))
         .inOrder();
+  }
+
+  @Test(timeout = TIMEOUT_MILLIS)
+  public void quiescenceFuture_completesWhenLastAckIsWithheld() throws Exception {
+    clock.advanceMillis(1000L);
+    Instant timestamp = clock.now();
+    // Simulate BES backend behavior (b/73904614): withhold ACK for the last event (seq 2).
+    fakeBesServer.setSendResponsesOnRequestPredicate(
+        req -> req.getOrderedBuildEvent().getSequenceNumber() != 2);
+
+    BuildEventServiceTransport transport =
+        newBuildEventServiceTransport(/* publishLifecycleEvents= */ false);
+    transport.sendBuildEvent(started);
+    transport.sendBuildEvent(progress);
+
+    ListenableFuture<Void> quiescenceFuture = transport.getQuiescenceFuture();
+    quiescenceFuture.get();
+
+    // Quiescence completes even though the ACK for event 2 has not been received yet.
+    assertThat(quiescenceFuture.isDone()).isTrue();
+    assertThat(transport.getHalfCloseFuture().isDone()).isFalse();
+
+    // Restore predicate so subsequent events can be ACKed, then close the stream.
+    fakeBesServer.setSendResponsesOnRequestPredicate(req -> true);
+    transport.sendBuildEvent(success);
+    transport.close().get();
+
+    assertThat(transport.getHalfCloseFuture().isDone()).isTrue();
+    assertThat(
+            fakeBesServer.getStreamEvents(
+                BuildEventServiceProtoUtil.streamId(COMMAND_CONTEXT, BAZEL_EVENT)))
+        .containsExactly(
+            BuildEventServiceProtoUtil.bazelEvent(
+                COMMAND_CONTEXT,
+                timestamp,
+                1,
+                started.asStreamProto(buildEventContext).toByteArray()),
+            BuildEventServiceProtoUtil.bazelEvent(
+                COMMAND_CONTEXT,
+                timestamp,
+                2,
+                progress.asStreamProto(buildEventContext).toByteArray()),
+            BuildEventServiceProtoUtil.bazelEvent(
+                COMMAND_CONTEXT,
+                timestamp,
+                3,
+                success.asStreamProto(buildEventContext).toByteArray()),
+            BuildEventServiceProtoUtil.streamFinished(COMMAND_CONTEXT, timestamp, 4))
+        .inOrder();
+  }
+
+  @Test(timeout = TIMEOUT_MILLIS)
+  public void quiescenceFuture_emptyQueueOrAfterClose() throws Exception {
+    BuildEventServiceTransport transport =
+        newBuildEventServiceTransport(/* publishLifecycleEvents= */ false);
+    // Immediately completes when no events are enqueued.
+    assertThat(transport.getQuiescenceFuture().isDone()).isTrue();
+
+    transport.sendBuildEvent(started);
+    transport.sendBuildEvent(success);
+    transport.close().get();
+
+    // Immediately completes after transport is closed.
+    assertThat(transport.getQuiescenceFuture().isDone()).isTrue();
+  }
+
+  @Test(timeout = TIMEOUT_MILLIS)
+  public void quiescenceFuture_completesEvenWhenSubsequentEventsArrive() throws Exception {
+    BuildEventServiceTransport transport =
+        newBuildEventServiceTransport(/* publishLifecycleEvents= */ false);
+    transport.sendBuildEvent(started);
+
+    ListenableFuture<Void> quiescenceFuture = transport.getQuiescenceFuture();
+
+    // Enqueue subsequent events behind Quiesce. Since event 1 was the only event sent so far, its
+    // ACK is held back by the server (b/73904614) until subsequent events are dispatched.
+    transport.sendBuildEvent(progress);
+    transport.sendBuildEvent(success);
+
+    quiescenceFuture.get();
+    assertThat(quiescenceFuture.isDone()).isTrue();
+
+    // Calling getQuiescenceFuture again returns the same future.
+    assertThat(transport.getQuiescenceFuture()).isSameInstanceAs(quiescenceFuture);
+
+    transport.close().get();
+    assertThat(transport.getHalfCloseFuture().isDone()).isTrue();
   }
 
   @Test(timeout = TIMEOUT_MILLIS)

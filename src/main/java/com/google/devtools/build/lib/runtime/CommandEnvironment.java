@@ -44,6 +44,7 @@ import com.google.devtools.build.lib.concurrent.QuiescingExecutors;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventBusEventHandler;
 import com.google.devtools.build.lib.events.Reporter;
+import com.google.devtools.build.lib.exec.RunfilesTreeUpdater;
 import com.google.devtools.build.lib.exec.SingleBuildFileCache;
 import com.google.devtools.build.lib.pkgcache.PackageManager;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
@@ -52,10 +53,8 @@ import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.ExternalRepository;
 import com.google.devtools.build.lib.server.FailureDetails.ExternalRepository.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
-import com.google.devtools.build.lib.server.FailureDetails.Skyfocus;
 import com.google.devtools.build.lib.server.IdleTask;
 import com.google.devtools.build.lib.skyframe.BuildResultListener;
-import com.google.devtools.build.lib.skyframe.SkyfocusOptions;
 import com.google.devtools.build.lib.skyframe.SkyframeBuildView;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.WorkspaceInfoFromDiff;
@@ -169,6 +168,11 @@ public class CommandEnvironment {
 
   @GuardedBy("outputDirectoryHelperLock")
   private ActionOutputDirectoryHelper outputDirectoryHelper;
+
+  private final Object runfilesTreeUpdaterLock = new Object();
+
+  @GuardedBy("runfilesTreeUpdaterLock")
+  private RunfilesTreeUpdater runfilesTreeUpdater;
 
   // List of flags and their values that were added by invocation policy. May contain multiple
   // occurrences of the same flag.
@@ -680,6 +684,15 @@ public class CommandEnvironment {
     return workspace.getSkyframeExecutor();
   }
 
+  /**
+   * Returns the path of the repo contents cache directory, or {@code null} if the repo contents
+   * cache is disabled.
+   */
+  @Nullable
+  public Path getRepoContentsCachePath() {
+    return getSkyframeExecutor().getRepoContentsCachePath();
+  }
+
   public SkyframeBuildView getSkyframeBuildView() {
     return getSkyframeExecutor().getSkyframeBuildView();
   }
@@ -722,6 +735,30 @@ public class CommandEnvironment {
    */
   public Path getActionTempsDirectory() {
     return directories.getActionTempsDirectory(getExecRoot());
+  }
+
+  /**
+   * Returns the {@link RunfilesTreeUpdater} for this command, lazily creating it on first use.
+   *
+   * <p>All spawn strategies (local, sandboxed, worker) share this one instance so that staging of a
+   * runfiles tree under {@code --nobuild_runfile_links} is serialized across strategies via the
+   * updater's dedup map. Per-strategy instances would let two strategies reconcile the same tree
+   * concurrently and race on {@code createSymbolicLink} ({@code EEXIST}). This is reachable under
+   * dynamic execution: the local branch stages a tree via the {@code worker} strategy while the
+   * remote branch fails over to the {@code local} strategy ({@code --remote_local_fallback}) and
+   * stages the same tree into the same execroot path at the same time.
+   *
+   * <p>Scoped to the command, not static: the dedup map caches completed futures and never evicts,
+   * which is correct within a build (a tree's contents are fixed) but would wrongly skip a tree
+   * that changed in a later build.
+   */
+  public RunfilesTreeUpdater getRunfilesTreeUpdater() {
+    synchronized (runfilesTreeUpdaterLock) {
+      if (runfilesTreeUpdater == null) {
+        runfilesTreeUpdater = new RunfilesTreeUpdater(getExecRoot(), getXattrProvider());
+      }
+      return runfilesTreeUpdater;
+    }
   }
 
   /**
@@ -844,6 +881,7 @@ public class CommandEnvironment {
                 packageLocator,
                 commandId,
                 clientEnv,
+                repoEnv,
                 timestampGranularityMonitor,
                 quiescingExecutors,
                 options,
@@ -937,30 +975,6 @@ public class CommandEnvironment {
 
     // Modules that are subscribed to CommandStartEvent may create pending exceptions.
     throwPendingException();
-
-    // Determine if Skyfocus will run for this command: Skyfocus runs only for commands that
-    // execute actions. Throw an error if this is a command that is not guaranteed to work
-    // correctly on a focused Skyframe graph.
-    if (getCommand().buildPhase().executes()) {
-      skyframeExecutor.prepareForSkyfocus(
-          options.getOptions(SkyfocusOptions.class), reporter, runtime.getProductName());
-    } else if (getCommand().buildPhase().loads()
-        && !getSkyframeExecutor().getSkyfocusState().activeDirectories().isEmpty()) {
-      // A non-empty active directories implies a focused Skyframe state.
-      throw new AbruptExitException(
-          DetailedExitCode.of(
-              FailureDetail.newBuilder()
-                  .setMessage(
-                      command.name()
-                          + " is not supported after using Skyfocus because it can"
-                          + " return partial/incorrect results. Run clean or shutdown and try"
-                          + " again.")
-                  .setSkyfocus(
-                      Skyfocus.newBuilder()
-                          .setCode(Skyfocus.Code.DISALLOWED_OPERATION_ON_FOCUSED_GRAPH)
-                          .build())
-                  .build()));
-    }
   }
 
   /**

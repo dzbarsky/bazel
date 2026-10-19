@@ -16,7 +16,7 @@ package com.google.devtools.build.lib.skyframe.serialization.analysis;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.util.concurrent.Futures.immediateFailedFuture;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
-import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.google.devtools.build.lib.concurrent.safeexecutor.SafeExecutor.safeDirectExecutor;
 import static com.google.devtools.build.lib.skyframe.serialization.analysis.FileDependencyKeySupport.DIRECTORY_KEY_DELIMITER;
 import static com.google.devtools.build.lib.skyframe.serialization.analysis.FileDependencyKeySupport.FILE_KEY_DELIMITER;
 import static com.google.devtools.build.lib.skyframe.serialization.analysis.FileDependencyKeySupport.MAX_KEY_LENGTH;
@@ -26,16 +26,16 @@ import static com.google.protobuf.ExtensionRegistry.getEmptyRegistry;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.luben.zstd.RecyclingBufferPool;
-import com.github.luben.zstd.ZstdInputStream;
 import com.google.common.base.Function;
 import com.google.common.base.Functions;
 import com.google.common.util.concurrent.AsyncFunction;
 import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.devtools.build.lib.compress.CompressionService;
 import com.google.devtools.build.lib.concurrent.QuiescingFuture;
 import com.google.devtools.build.lib.concurrent.SettableFutureKeyedValue;
+import com.google.devtools.build.lib.concurrent.safeexecutor.SafeExecutor;
+import com.google.devtools.build.lib.concurrent.safeexecutor.SafeFutures;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueStore;
 import com.google.devtools.build.lib.skyframe.serialization.Fingerprinter;
 import com.google.devtools.build.lib.skyframe.serialization.KeyBytesProvider;
@@ -55,7 +55,6 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Executor;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import javax.annotation.Nullable;
@@ -93,7 +92,8 @@ final class FileDependencyDeserializer {
   /** Singleton representing the root file. */
   static final FileDependencies ROOT_FILE = FileDependencies.builder("").build();
 
-  private final Executor executor;
+  private final SafeExecutor executor;
+  private final CompressionService compressionService;
   private final Fingerprinter fingerprinter;
 
   /**
@@ -151,9 +151,17 @@ final class FileDependencyDeserializer {
               FutureNestedDependencies.class,
               FileDependencyDeserializer.this::populateFutureNestedDependencies);
 
-  FileDependencyDeserializer(Executor executor, Fingerprinter fingerprinter) {
+  FileDependencyDeserializer(
+      SafeExecutor executor, CompressionService compressionService, Fingerprinter fingerprinter) {
     this.executor = executor;
+    this.compressionService = compressionService;
     this.fingerprinter = fingerprinter;
+  }
+
+  public void unsafeClearForTesting() {
+    fileCache.unsafeClearForTesting();
+    listingCache.unsafeClearForTesting();
+    nestedCache.unsafeClearForTesting();
   }
 
   sealed interface FileDependenciesOrFuture permits FileDependencies, FutureFileDependencies {}
@@ -329,7 +337,7 @@ final class FileDependencyDeserializer {
     return switch (getFileDependencies(parentKey, store)) {
       case FileDependencies parent -> waitForParent.apply(parent);
       case FutureFileDependencies future ->
-          Futures.transformAsync(future, waitForParent, directExecutor());
+          SafeFutures.transformAsync(future, waitForParent, executor);
     };
   }
 
@@ -352,18 +360,19 @@ final class FileDependencyDeserializer {
       FileDependencies.Builder builder;
       String parentDirectory;
       switch (parentOrMissing) {
-        case null:
+        case null -> {
           parentDirectory = null;
           builder = FileDependencies.builder(basename);
-          break;
-        case AvailableFileDependencies parent:
+        }
+        case AvailableFileDependencies parent -> {
           parentDirectory = parent.resolvedPath();
           builder =
               FileDependencies.builder(getRelative(parentDirectory, basename))
                   .addDependency(parent);
-          break;
-        case MissingFileDependencies unused:
+        }
+        case MissingFileDependencies unused -> {
           return immediateFuture(FileDependencies.newMissingInstance());
+        }
       }
       return processSymlinks(key, data, /* symlinkIndex= */ 0, parentDirectory, builder, store);
     }
@@ -427,7 +436,7 @@ final class FileDependencyDeserializer {
     return switch (getFileDependencies(newParentKey, store)) {
       case FileDependencies resolvedParent -> waitForSymlinkParent.apply(resolvedParent);
       case FutureFileDependencies future ->
-          Futures.transformAsync(future, waitForSymlinkParent, directExecutor());
+          SafeFutures.transformAsync(future, waitForSymlinkParent, executor);
     };
   }
 
@@ -561,7 +570,7 @@ final class FileDependencyDeserializer {
         case FileDependencies dependencies ->
             immediateFuture(ListingDependencies.from(dependencies));
         case FutureFileDependencies future ->
-            Futures.transform(future, ListingDependencies::from, directExecutor());
+            SafeFutures.transform(future, ListingDependencies::from, safeDirectExecutor());
       };
     }
   }
@@ -569,9 +578,11 @@ final class FileDependencyDeserializer {
   // ---------- Begin NestedDependencies deserialization implementation ----------
 
   private class WaitForNestedNodeBytes implements AsyncFunction<byte[], NestedDependencies> {
+    private final PackedFingerprint key;
     private final FingerprintValueStore store;
 
-    private WaitForNestedNodeBytes(PackedFingerprint unused, FingerprintValueStore store) {
+    private WaitForNestedNodeBytes(PackedFingerprint key, FingerprintValueStore store) {
+      this.key = key;
       this.store = store;
     }
 
@@ -593,7 +604,7 @@ final class FileDependencyDeserializer {
         if (usesZstdCompression) {
           ByteArrayInputStream byteArrayInputStream =
               new ByteArrayInputStream(bytes, 2, bytes.length - 2);
-          inputStream = new ZstdInputStream(byteArrayInputStream, RecyclingBufferPool.INSTANCE);
+          inputStream = compressionService.newZstdInputStream(byteArrayInputStream);
         } else {
           inputStream = new ByteArrayInputStream(bytes);
         }
@@ -609,7 +620,7 @@ final class FileDependencyDeserializer {
               sourceCount > 0
                   ? new FileDependencies[sourceCount]
                   : NestedDependencies.EMPTY_SOURCES;
-          var countdown = new PendingElementCountdown(elements, sources);
+          var countdown = new PendingElementCountdown(this.key, elements, sources);
 
           for (int i = 0; i < nestedCount; i++) {
             var key = PackedFingerprint.readFrom(codedIn);
@@ -617,7 +628,7 @@ final class FileDependencyDeserializer {
               case NestedDependencies dependencies -> elements[i] = dependencies;
               case FutureNestedDependencies future -> {
                 countdown.registerPendingElement();
-                Futures.addCallback(future, new WaitingForElement(i, countdown), directExecutor());
+                executor.addCallback(future, new WaitingForElement(i, countdown));
               }
             }
           }
@@ -629,7 +640,7 @@ final class FileDependencyDeserializer {
               case FileDependencies dependencies -> elements[i] = dependencies;
               case FutureFileDependencies future -> {
                 countdown.registerPendingElement();
-                Futures.addCallback(future, new WaitingForElement(i, countdown), directExecutor());
+                executor.addCallback(future, new WaitingForElement(i, countdown));
               }
             }
           }
@@ -641,7 +652,7 @@ final class FileDependencyDeserializer {
               case ListingDependencies dependencies -> elements[i] = dependencies;
               case FutureListingDependencies future -> {
                 countdown.registerPendingElement();
-                Futures.addCallback(future, new WaitingForElement(i, countdown), directExecutor());
+                executor.addCallback(future, new WaitingForElement(i, countdown));
               }
             }
           }
@@ -652,11 +663,11 @@ final class FileDependencyDeserializer {
               case FileDependencies dependencies -> sources[i] = dependencies;
               case FutureFileDependencies future -> {
                 countdown.registerPendingElement();
-                Futures.addCallback(future, new WaitingForSource(i, countdown), directExecutor());
+                executor.addCallback(future, new WaitingForSource(i, countdown));
               }
             }
           }
-          countdown.notifyInitializationDone();
+          countdown.finishRegistration();
           return countdown;
         }
       } catch (IOException e) {
@@ -672,21 +683,20 @@ final class FileDependencyDeserializer {
    * <p>This future completes once all the elements are set.
    */
   private static class PendingElementCountdown extends QuiescingFuture<NestedDependencies> {
+    private final PackedFingerprint key;
     private final FileSystemDependencies[] elements;
     private final FileDependencies[] sources;
 
-    private PendingElementCountdown(FileSystemDependencies[] elements, FileDependencies[] sources) {
-      super(directExecutor());
+    private PendingElementCountdown(
+        PackedFingerprint key, FileSystemDependencies[] elements, FileDependencies[] sources) {
+      super(safeDirectExecutor());
+      this.key = key;
       this.elements = elements;
       this.sources = sources;
     }
 
     private void registerPendingElement() {
       increment();
-    }
-
-    private void notifyInitializationDone() {
-      decrement();
     }
 
     private void setPendingElement(int index, FileSystemDependencies value) {
@@ -705,7 +715,7 @@ final class FileDependencyDeserializer {
 
     @Override
     protected NestedDependencies getValue() {
-      return NestedDependencies.from(elements, sources);
+      return NestedDependencies.from(key, elements, sources);
     }
   }
 
@@ -771,7 +781,7 @@ final class FileDependencyDeserializer {
     }
 
     return ownedFuture.completeWith(
-        Futures.transformAsync(futureBytes, waitFactory.apply(key, store), executor));
+        SafeFutures.transformAsync(futureBytes, waitFactory.apply(key, store), executor));
   }
 
   private KeyBytesProvider getKeyBytes(String cacheKey) {

@@ -54,7 +54,6 @@ import com.google.devtools.build.lib.buildtool.BuildTool;
 import com.google.devtools.build.lib.buildtool.PathPrettyPrinter;
 import com.google.devtools.build.lib.buildtool.buildevent.ExecRequestEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.RunBuildCompleteEvent;
-import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.exec.ExecutionOptions;
@@ -131,9 +130,7 @@ public class RunCommand implements BlazeCommand {
         help =
             "If set, write a shell script to the given file which invokes the target. If this"
                 + " option is set, the target is not run from %{product}. Use '%{product} run"
-                + " --script_path=foo //foo && ./foo' to invoke target '//foo' This differs from"
-                + " '%{product} run //foo' in that the %{product} lock is released and the"
-                + " executable is connected to the terminal's stdin.")
+                + " --script_path=foo //foo && ./foo' to invoke target '//foo'.")
     public abstract PathFragment getScriptPath();
 
     @Option(
@@ -320,7 +317,7 @@ public class RunCommand implements BlazeCommand {
                   env,
                   /* testLogDir= */ builtTargets
                       .configuration
-                      .getTestLogsDirectory(RepositoryName.MAIN)
+                      .getTestLogsDirectory()
                       .getExecPathString(),
                   runCommandLine.isTestTarget())
               : ImmutableList.of();
@@ -527,7 +524,7 @@ public class RunCommand implements BlazeCommand {
     // target to run needs to be preserved, as it acts as the working directory.
     Path targetToRunRunfilesDir = null;
     RunfilesSupport targetToRunRunfilesSupport = null;
-    RunfilesTreeUpdater runfilesTreeUpdater = RunfilesTreeUpdater.forCommandEnvironment(env);
+    RunfilesTreeUpdater runfilesTreeUpdater = env.getRunfilesTreeUpdater();
     for (ConfiguredTarget target : topLevelTargets) {
       FilesToRunProvider provider = target.getProvider(FilesToRunProvider.class);
       RunfilesSupport runfilesSupport = provider == null ? null : provider.getRunfilesSupport();
@@ -776,6 +773,19 @@ public class RunCommand implements BlazeCommand {
             env.getSkyframeExecutor()
                 .getActionGraph(env.getReporter())
                 .getGeneratingAction(Iterables.getOnlyElement(statusArtifacts));
+    if (testAction.getUnrunnableReason() != null) {
+      // Fail just like executing the test action with `bazel test` would.
+      env.getReporter().handle(Event.error(testAction.getUnrunnableReason()));
+      throw new RunCommandException(
+          BlazeCommandResult.failureDetail(
+              FailureDetail.newBuilder()
+                  .setMessage(testAction.getUnrunnableReason())
+                  .setToolchain(
+                      FailureDetails.Toolchain.newBuilder()
+                          .setCode(FailureDetails.Toolchain.Code.NO_MATCHING_TOOLCHAIN))
+                  .build()),
+          builtTargets.stopTime);
+    }
     TestTargetExecutionSettings settings = testAction.getExecutionSettings();
     // ensureRunfilesBuilt does build the runfiles, but an extra consistency check won't hurt.
     Preconditions.checkState(

@@ -354,13 +354,16 @@ public final class MockProtoSupport {
     config.create(
         "net/proto2/proto/BUILD",
         "load('@com_google_protobuf//bazel:proto_library.bzl', 'proto_library')",
+        "load('//tools/build_defs/go:go_library.bzl', 'go_library')",
         "package(default_visibility=['//visibility:public'])",
         "genrule(name = 'go_internal_bootstrap_hack',",
         "        srcs = [ 'descriptor.pb.go-prebuilt' ],",
         "        outs = [ 'descriptor.pb.go' ],",
         "        cmd = '')",
         "proto_library(name='descriptor',",
-        "              srcs=['descriptor.proto'])");
+        "              srcs=['descriptor.proto'])",
+        "go_library(name='descriptor_go_proto',",
+        "           srcs=['descriptor.pb.go'])");
     config.create(
         "net/proto2/go/BUILD",
         """
@@ -432,6 +435,97 @@ public final class MockProtoSupport {
             srcs = ["metadata.go"],
         )
         """);
+    config.create(
+        "third_party/golang/grpc/codes/BUILD",
+        """
+        load("//tools/build_defs/go:go_library.bzl", "go_library")
+        package(default_visibility = ["//visibility:public"])
+
+        licenses(["notice"])
+
+        go_library(
+            name = "codes",
+            srcs = ["codes.go"],
+        )
+        """);
+    config.create(
+        "third_party/golang/grpc/status/BUILD",
+        """
+        load("//tools/build_defs/go:go_library.bzl", "go_library")
+        package(default_visibility = ["//visibility:public"])
+
+        licenses(["notice"])
+
+        go_library(
+            name = "status",
+            srcs = ["status.go"],
+        )
+        """);
+    config.create(
+        "third_party/golang/genproto/alias/BUILD",
+        """
+        load("//tools/build_defs/go:go_binary.bzl", "go_binary")
+        package(default_visibility = ["//visibility:public"])
+
+        licenses(["notice"])
+
+        go_binary(
+            name = "aliasgen_bin",
+            srcs = ["main.go"],
+        )
+        """);
+    config.create(
+        "third_party/golang/protobuf/v2/proto/BUILD",
+        """
+        load("//tools/build_defs/go:go_library.bzl", "go_library")
+        package(default_visibility = ["//visibility:public"])
+
+        licenses(["notice"])
+
+        go_library(
+            name = "proto",
+            srcs = ["proto.go"],
+        )
+        """);
+    config.create(
+        "third_party/golang/protobuf/v2/reflect/protoreflect/BUILD",
+        """
+        load("//tools/build_defs/go:go_library.bzl", "go_library")
+        package(default_visibility = ["//visibility:public"])
+
+        licenses(["notice"])
+
+        go_library(
+            name = "protoreflect",
+            srcs = ["protoreflect.go"],
+        )
+        """);
+    config.create(
+        "third_party/golang/protobuf/v2/reflect/protodesc/BUILD",
+        """
+        load("//tools/build_defs/go:go_library.bzl", "go_library")
+        package(default_visibility = ["//visibility:public"])
+
+        licenses(["notice"])
+
+        go_library(
+            name = "protodesc",
+            srcs = ["protodesc.go"],
+        )
+        """);
+    config.create(
+        "third_party/golang/protobuf/v2/reflect/protoregistry/BUILD",
+        """
+        load("//tools/build_defs/go:go_library.bzl", "go_library")
+        package(default_visibility = ["//visibility:public"])
+
+        licenses(["notice"])
+
+        go_library(
+            name = "protoregistry",
+            srcs = ["protoregistry.go"],
+        )
+        """);
   }
 
   public static void setupWorkspace(MockToolsConfig config) throws IOException {
@@ -449,31 +543,39 @@ public final class MockProtoSupport {
     if (TestConstants.PRODUCT_NAME.equals("bazel")) {
       Runfiles runfiles = Runfiles.preload().withSourceRepository("");
       PathFragment path =
-          PathFragment.create(runfiles.rlocation("com_google_protobuf/bazel/BUILD.bazel"));
+          PathFragment.create(runfiles.rlocation("com_google_protobuf/bazel/BUILD"));
       config.copyDirectory(
           path.getParentDirectory(), "third_party/protobuf/bazel", MAX_VALUE, false);
       config.overwrite(
           "third_party/protobuf/BUILD",
           "filegroup(name = 'license')",
-          "genrule(name='protoc_gen', cmd='', executable = True, outs = ['protoc'])");
+          "load('@rules_cc//cc:defs.bzl', 'cc_binary')",
+          "cc_binary(name='protoc', srcs=['protoc.cc'])",
+          "load('@rules_java//java:defs.bzl', 'java_library')",
+          "java_library(name = 'runtime', srcs = ['Runtime.java'])",
+          "alias(name = 'javalite_toolchain', actual = '//java/lite:toolchain')");
+      config.create("third_party/protobuf/protoc.cc", "int main() { return 0; }");
+      config.create("third_party/protobuf/Runtime.java", "class Runtime {}");
+      config.create(
+          "third_party/protobuf/java/lite/BUILD",
+          "load('//bazel/toolchains:proto_lang_toolchain.bzl', 'proto_lang_toolchain')",
+          "proto_lang_toolchain(name = 'toolchain', command_line ="
+              + " '--java_out=lite,immutable:$(OUT)', runtime = '//:runtime')");
       config.overwrite(
           "proto_bazel_features_workspace/MODULE.bazel", "module(name = 'proto_bazel_features')");
       // Overwritten to remove bazel7 toolchains from protobuf
       config.overwrite(
-          "third_party/protobuf/bazel/private/toolchains/BUILD.bazel",
+          "third_party/protobuf/bazel/private/oss/toolchains/BUILD.bazel",
           "load('//bazel/toolchains:proto_toolchain.bzl', 'proto_toolchain')",
           TestConstants.LOAD_PROTO_LANG_TOOLCHAIN,
-          "proto_toolchain(name = 'protoc_sources',"
-              + "proto_compiler = '"
-              + ProtoConstants.DEFAULT_PROTOC_LABEL
-              + "')");
+          "proto_toolchain(name = 'protoc_sources'," + "proto_compiler = '//proto:compiler')");
       config.overwrite(
-          "third_party/protobuf/bazel/private/toolchains/prebuilt/authenticity.bzl",
+          "third_party/protobuf/bazel/private/oss/toolchains/prebuilt/authenticity.bzl",
           "def _authenticity_impl(ctx):",
           "    return [OutputGroupInfo(_validation = depset())]",
           "authenticity_rule = rule(implementation = _authenticity_impl)");
       config.overwrite(
-          "third_party/protobuf/bazel/private/toolchains/prebuilt/BUILD.bazel",
+          "third_party/protobuf/bazel/private/oss/toolchains/prebuilt/BUILD.bazel",
           "load(':authenticity.bzl', 'authenticity_rule')",
           "authenticity_rule(name = 'authenticity_validation', visibility ="
               + " ['//visibility:public'])");

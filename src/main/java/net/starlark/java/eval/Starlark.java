@@ -88,6 +88,11 @@ public final class Starlark {
     }
 
     @Override
+    public boolean isAcyclic() {
+      return true;
+    }
+
+    @Override
     public void repr(Printer printer, StarlarkSemantics semantics) {
       printer.append("<unbound>");
     }
@@ -97,6 +102,12 @@ public final class Starlark {
    * The universal bindings predeclared in every Starlark file, such as None, True, len, and range.
    */
   public static final ImmutableMap<String, Object> UNIVERSE = makeUniverse();
+
+  /** Universal type constructors whose symbols are not already present in {@link #UNIVERSE}. */
+  public static final ImmutableMap<String, Object> UNIVERSE_EXTRA_TYPE_CONSTRUCTORS =
+      Types.TYPE_UNIVERSE.entrySet().stream()
+          .filter(e -> !UNIVERSE.containsKey(e.getKey()))
+          .collect(toImmutableMap(Map.Entry::getKey, e -> TypeConstructorValue.of(e.getValue())));
 
   /** The Starlark types of the entries in {@link #UNIVERSE}. */
   static final ImmutableMap<String, StarlarkType> UNIVERSAL_SYMBOL_TYPES =
@@ -136,10 +147,10 @@ public final class Starlark {
   }
 
   /**
-   * Reports whether the argument is a legal Starlark value: a string, boolean, or StarlarkValue.
+   * Reports whether the argument is a legal Starlark value: a string, StarlarkValue, or boolean.
    */
   public static boolean valid(Object x) {
-    return x instanceof String || x instanceof Boolean || x instanceof StarlarkValue;
+    return x instanceof String || x instanceof StarlarkValue || x instanceof Boolean;
   }
 
   /**
@@ -151,6 +162,22 @@ public final class Starlark {
       throw new InvalidStarlarkValueException(x == null ? null : x.getClass());
     }
     return x;
+  }
+
+  /**
+   * Returns whether the given Starlark value is acyclic, i.e. is guaranteed to not contain a
+   * reference cycle in its object graph.
+   *
+   * <p>See {@link StarlarkValue#isAcyclic} for more details.
+   */
+  public static boolean isAcyclic(Object x) {
+    return switch (x) {
+      case String s -> true;
+      case Boolean bool -> true;
+      case StarlarkValue val -> val.isAcyclic();
+      case null -> throw new InvalidStarlarkValueException(null);
+      default -> throw new InvalidStarlarkValueException(x.getClass());
+    };
   }
 
   /** Reports whether {@code x} is Java null or Starlark None. */
@@ -172,13 +199,51 @@ public final class Starlark {
   public static boolean isImmutable(Object x) {
     // NB: This is used as the basis for accepting objects in Depsets,
     // as well as for accepting objects as keys for Starlark dicts.
+    return switch (x) {
+      case String s -> true;
+      case StarlarkValue val -> val.isImmutable();
+      case Boolean bool -> true;
+      default -> throw new InvalidStarlarkValueException(x.getClass());
+    };
+  }
 
-    if (x instanceof String || x instanceof Boolean) {
-      return true;
-    } else if (x instanceof StarlarkValue) {
-      return ((StarlarkValue) x).isImmutable();
+  /**
+   * Returns normally if the Starlark value is hashable and thus suitable as a dict key.
+   *
+   * @param checkSelfReferential whether to check for stack overflow in {@link
+   *     StarlarkValue#checkHashable}, in which case the stack overflow is reported as an {@link
+   *     EvalException}. Should be set to false only by implementations of {@link
+   *     StarlarkValue#checkHashable} that recurse back into {@link Starlark#checkHashable} (this is
+   *     the case e.g. for {@link Tuple}), since such implementations will have their
+   *     StackOverflowException caught by the top-level call to {@link Starlark#checkHashable}.
+   *     Setting this param to false in such a case avoids redundant traversals that are quadratic
+   *     in the nesting depth of the values.
+   * @throws EvalException if the value is not hashable.
+   */
+  public static void checkHashable(Object x, boolean checkSelfReferential) throws EvalException {
+    if (x instanceof String) {
+      // Strings are the most common dict keys. Check them first, since `instanceof StarlarkValue`
+      // (an interface) is slower than `instanceof String` (a final class).
+    } else if (x instanceof StarlarkValue starlarkValue) {
+      try {
+        // It's possible for a very deep, non-self-referential structure to not trigger a
+        // stack overflow for this call, but for `starlarkValue.hashCode()` to cause a stack
+        // overflow at a later point, if that later point happens to be at a greater stack depth. In
+        // practice, such a scenario is extremely unlikely. Guarding against it would require
+        // additional try/catch for StackOverflowError at any addition of a Starlark value to a Java
+        // map or set.
+        starlarkValue.checkHashable();
+      } catch (StackOverflowError e) {
+        if (checkSelfReferential) {
+          throw Starlark.errorf(
+              "self-referential or overly nested data structure %s", Starlark.reprForErrors(x));
+        } else {
+          throw e;
+        }
+      }
     } else {
-      throw new InvalidStarlarkValueException(x.getClass());
+      // Throw if the type is bad. Otherwise it's a Boolean, which is hashable.
+      Starlark.checkValid(x);
     }
   }
 
@@ -188,15 +253,7 @@ public final class Starlark {
    * @throws EvalException otherwise.
    */
   public static void checkHashable(Object x) throws EvalException {
-    if (x instanceof String) {
-      // Strings are the most common dict keys. Check them first, since `instanceof StarlarkValue`
-      // (an interface) is slower than `instanceof String` (a final class).
-    } else if (x instanceof StarlarkValue) {
-      ((StarlarkValue) x).checkHashable();
-    } else {
-      // Throw if the type is bad. Otherwise it's a Boolean, which is hashable.
-      Starlark.checkValid(x);
-    }
+    checkHashable(x, /* checkSelfReferential= */ true);
   }
 
   /**
@@ -258,15 +315,12 @@ public final class Starlark {
    * bool(x)}.
    */
   public static boolean truth(Object x) {
-    if (x instanceof Boolean) {
-      return (Boolean) x;
-    } else if (x instanceof StarlarkValue) {
-      return ((StarlarkValue) x).truth();
-    } else if (x instanceof String) {
-      return !((String) x).isEmpty();
-    } else {
-      throw new InvalidStarlarkValueException(x.getClass());
-    }
+    return switch (x) {
+      case String s -> !s.isEmpty();
+      case StarlarkValue val -> val.truth();
+      case Boolean bool -> bool;
+      default -> throw new InvalidStarlarkValueException(x.getClass());
+    };
   }
 
   /**
@@ -305,14 +359,13 @@ public final class Starlark {
    * x}. A Starlark value is iterable if it implements {@link StarlarkIterable}.
    */
   public static Object[] toArray(Object x) throws EvalException {
-    // Specialize Sequence and Dict to avoid allocation and/or indirection.
-    if (x instanceof Sequence) {
-      return ((Sequence<?>) x).toArray();
-    } else if (x instanceof Dict) {
-      return ((Dict<?, ?>) x).keySet().toArray();
-    } else {
-      return Iterables.toArray(toIterable(x), Object.class);
-    }
+    // Specialize common types to avoid allocation and/or indirection.
+    return switch (x) {
+      case Sequence<?> seq -> seq.toArray();
+      case Dict<?, ?> dict -> dict.keySet().toArray();
+      case StarlarkSet<?> set -> set.toArray();
+      case null, default -> Iterables.toArray(toIterable(x), Object.class);
+    };
   }
 
   /**
@@ -321,35 +374,33 @@ public final class Starlark {
    * no length.
    */
   public static int len(Object x) {
-    if (x instanceof String) {
-      return ((String) x).length();
-    } else if (x instanceof Sequence) {
-      return ((Sequence) x).size();
-    } else if (x instanceof Dict) {
-      return ((Dict) x).size();
-    } else if (x instanceof StarlarkSet) {
-      return ((StarlarkSet) x).size();
-    } else if (x instanceof StarlarkIterable) {
+    return switch (x) {
+      case String s -> s.length();
+      case Sequence<?> seq -> seq.size();
+      case Dict<?, ?> dict -> dict.size();
+      case StarlarkSet<?> set -> set.size();
       // Iterables.size runs in constant time if x implements Collection.
-      return Iterables.size((Iterable<?>) x);
-    } else {
-      checkValid(x);
-      return -1; // valid but not a sequence
-    }
+      case StarlarkIterable<?> iterable -> Iterables.size(iterable);
+      case null -> throw new InvalidStarlarkValueException(null);
+      default -> {
+        checkValid(x);
+        yield -1;
+      }
+    };
   }
 
   /** Returns the type of the given Starlark value. */
-  static StarlarkType getStarlarkType(Object value, StarlarkSemantics semantics) {
+  public static StarlarkType getStarlarkType(Object value, StarlarkSemantics semantics) {
     return switch (value) {
       case String s -> Types.STR;
-      case Boolean b -> Types.BOOL;
       case StarlarkValue x -> {
         @Nullable StarlarkType type = x.getStarlarkType(semantics);
         if (type == null) {
-          type = CallUtils.getBuiltinManager(semantics).getClassStarlarkType(value.getClass());
+          type = CallUtils.getStarlarkBuiltinAutoType(value.getClass());
         }
         yield type != null ? type : Types.ANY;
       }
+      case Boolean b -> Types.BOOL;
       default -> {
         checkValid(value); // throws
         throw new AssertionError("unreachable");
@@ -523,7 +574,9 @@ public final class Starlark {
 
   /**
    * Defines the strict weak ordering of Starlark values used for sorting and the comparison
-   * operators. Throws ClassCastException on failure.
+   * operators.
+   *
+   * @throws ClassCastException on failure.
    */
   static int compareUnchecked(Object x, Object y) {
     if (sameType(x, y)) {
@@ -531,7 +584,16 @@ public final class Starlark {
       if (x instanceof Comparable) {
         @SuppressWarnings("unchecked")
         Comparable<Object> xcomp = (Comparable<Object>) x;
-        return xcomp.compareTo(y);
+        try {
+          return xcomp.compareTo(y);
+        } catch (StackOverflowError unused) {
+          // Wart: this particular error has nothing to do with class mismatch - but alas,
+          // Comparable interface uses ClassCastException for reporting all cannot-compare errors.
+          throw new ClassCastException(
+              String.format(
+                  "cannot compare self-referential or overly nested data structures %s and %s",
+                  Starlark.reprForErrors(x), Starlark.reprForErrors(y)));
+        }
       }
 
     } else {
@@ -552,6 +614,26 @@ public final class Starlark {
         String.format("unsupported comparison: %s <=> %s", Starlark.type(x), Starlark.type(y)));
   }
 
+  /**
+   * Returns true if the given values are equal. Safe to use for potentially self-referential
+   * Starlark data structures.
+   *
+   * @throws EvalException if x and/or y is a self-referential data structures (signaled by {@link
+   *     Object#equals} overflowing the stack)
+   */
+  public static boolean checkedEquals(@Nullable Object x, @Nullable Object y) throws EvalException {
+    if (x == null) {
+      return y == null;
+    }
+    try {
+      return x.equals(y);
+    } catch (StackOverflowError unused) {
+      throw Starlark.errorf(
+          "cannot compare self-referential or overly nested data structures %s and %s",
+          Starlark.reprForErrors(x), Starlark.reprForErrors(y));
+    }
+  }
+
   private static boolean sameType(Object x, Object y) {
     return x.getClass() == y.getClass() || Starlark.type(x).equals(Starlark.type(y));
   }
@@ -564,6 +646,22 @@ public final class Starlark {
   /** Returns the string form of a value as if by the Starlark expression {@code repr(x)}. */
   public static String repr(Object x, StarlarkSemantics semantics) {
     return new Printer().repr(x, semantics).toString();
+  }
+
+  /**
+   * Returns the string form of a value as if by the Starlark expression {@code repr(x)}; returns a
+   * reasonable fallback text if {@code repr(x)} causes a stack overflow.
+   *
+   * <p>Intended for formatting exception messages, where we do not want to cause another exception
+   * to be thrown. We *do not* want to catch stack overflows in {@link repr} or {@link str} because
+   * that would make the interpreter's non-error behavior non-deterministic.
+   */
+  public static String reprForErrors(Object x) {
+    try {
+      return repr(x, StarlarkSemantics.DEFAULT);
+    } catch (StackOverflowError unused) {
+      return String.format("<overly nested %s>", Starlark.type(x));
+    }
   }
 
   /** Returns a string formatted as if by the Starlark expression {@code pattern % arguments}. */
@@ -1004,6 +1102,15 @@ public final class Starlark {
       String name,
       @Nullable Object defaultValue)
       throws EvalException, InterruptedException {
+    // Check if it's a user-defined struct field first. If it is, we bypass the overhead of
+    // attempting to look up a non-existent MethodDescriptor.
+    if (x instanceof Structure struct) {
+      Object field = struct.getValue(semantics, name);
+      if (field != null) {
+        return Starlark.checkValid(field);
+      }
+    }
+
     // StarlarkMethod-annotated field or method?
     MethodDescriptor method = manager.getAnnotatedMethods(x.getClass()).get(name);
     if (method != null) {
@@ -1014,24 +1121,15 @@ public final class Starlark {
       }
     }
 
-    // user-defined field?
+    if (defaultValue != null) {
+      return defaultValue;
+    }
+
     if (x instanceof Structure struct) {
-      Object field = struct.getValue(semantics, name);
-      if (field != null) {
-        return Starlark.checkValid(field);
-      }
-
-      if (defaultValue != null) {
-        return defaultValue;
-      }
-
       String error = struct.getErrorMessageForUnknownField(name);
       if (error != null) {
         throw Starlark.errorf("%s", error);
       }
-
-    } else if (defaultValue != null) {
-      return defaultValue;
     }
 
     throw Starlark.errorf(
@@ -1194,16 +1292,10 @@ public final class Starlark {
     return execFileProgram(prog, module, thread);
   }
 
-  /** Variant of {@link #execFile} that creates a module for the given predeclared environment. */
-  // TODO(adonovan): is this needed?
-  public static Object execFile(
-      ParserInput input,
-      FileOptions options,
-      Map<String, Object> predeclared,
-      StarlarkThread thread)
+  /** Variant of {@link #execFile} that uses an appropriate default {@link FileOptions}. */
+  public static Object execFile(ParserInput input, Module module, StarlarkThread thread)
       throws SyntaxError.Exception, EvalException, InterruptedException {
-    Module module = Module.withPredeclared(thread.getSemantics(), predeclared);
-    return execFile(input, options, module, thread);
+    return execFile(input, thread.getSemantics().getDefaultFileOptions(), module, thread);
   }
 
   /**
@@ -1280,6 +1372,9 @@ public final class Starlark {
    * Parses the input as an expression, resolves it in the specified module environment, compiles
    * it, evaluates it, and returns its value.
    *
+   * @param options the {@link FileOptions} to use for parsing and resolving the input. The caller
+   *     must ensure that these options are compatible with {@link StarlarkThread}'s semantics; see
+   *     {@link StarlarkSemantics#updateFileOptions}.
    * @throws SyntaxError.Exception if there were (static) scanner, parser, resolver, type tagger, or
    *     static type checker errors.
    * @throws EvalException if there was a (dynamic) evaluation error.
@@ -1294,16 +1389,17 @@ public final class Starlark {
     return Starlark.positionalOnlyCall(thread, fn);
   }
 
-  /** Variant of {@link #eval} that creates a module for the given predeclared environment. */
-  // TODO(adonovan): is this needed?
-  public static Object eval(
-      ParserInput input,
-      FileOptions options,
-      Map<String, Object> predeclared,
-      StarlarkThread thread)
+  /** Variant of {@link #eval} that uses an appropriate default {@link FileOptions}. */
+  public static Object eval(ParserInput input, Module module, StarlarkThread thread)
       throws SyntaxError.Exception, EvalException, InterruptedException {
-    Module module = Module.withPredeclared(thread.getSemantics(), predeclared);
-    return eval(input, options, module, thread);
+    StarlarkFunction fn =
+        newExprFunction(
+            input,
+            thread.getSemantics().getDefaultFileOptions(),
+            module,
+            thread.getSemantics(),
+            thread.getNextIdentityToken());
+    return Starlark.positionalOnlyCall(thread, fn);
   }
 
   /**

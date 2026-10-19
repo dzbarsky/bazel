@@ -46,6 +46,7 @@ import com.google.devtools.build.lib.analysis.ResolvedToolchainContext;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
+import com.google.devtools.build.lib.analysis.RunfilesSupport;
 import com.google.devtools.build.lib.analysis.ShToolchain;
 import com.google.devtools.build.lib.analysis.SymlinkEntry;
 import com.google.devtools.build.lib.analysis.ToolchainCollection;
@@ -85,6 +86,7 @@ import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.packages.Type.LabelClass;
 import com.google.devtools.build.lib.packages.Types;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
+import com.google.devtools.build.lib.rules.config.FeatureFlagValue;
 import com.google.devtools.build.lib.shell.ShellUtils;
 import com.google.devtools.build.lib.shell.ShellUtils.TokenizationException;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
@@ -125,7 +127,9 @@ import net.starlark.java.eval.Tuple;
  * (such attempts will result in {@link EvalException}s).
  */
 public final class StarlarkRuleContext
-    implements StarlarkRuleContextApi<ConstraintValueInfo>, StarlarkActionContext {
+    implements StarlarkRuleContextApi<ConstraintValueInfo>,
+        StarlarkActionContext,
+        FragmentCollection.FragmentSupplier {
 
   private static final String EXECUTABLE_OUTPUT_NAME = "executable";
 
@@ -195,7 +199,7 @@ public final class StarlarkRuleContext
     this.ruleContext = Preconditions.checkNotNull(ruleContext);
     this.actionFactory = new StarlarkActionFactory(this);
     this.ruleLabelCanonicalName = ruleContext.getLabel().getCanonicalForm();
-    this.fragments = new FragmentCollection(ruleContext);
+    this.fragments = new FragmentCollection(this);
     this.aspectDescriptor = aspectDescriptor;
     this.isForAspect = aspectDescriptor != null;
     this.ruleClassUnderEvaluation = ruleContext.getRule().getRuleClassObject();
@@ -205,7 +209,7 @@ public final class StarlarkRuleContext
     if (aspectDescriptor == null) {
       Collection<Attribute> attributes =
           rule.getAttributes().stream()
-              .filter(attribute -> !attribute.getName().equals("aspect_hints"))
+              .filter(attribute -> !attribute.getName().equals(RuleClass.ASPECT_HINTS_ATTR))
               .collect(Collectors.toList());
 
       // Populate ctx.outputs.
@@ -243,7 +247,10 @@ public final class StarlarkRuleContext
           outputs.addOutput(attrName, artifacts);
         } else {
           throw ruleContext.throwWithRuleError(
-              String.format("Attribute %s has unexpected output type %s", attrName, type));
+              String.format(
+                  "attribute '%s' has type '%s', but only types 'output' and 'output_list' are"
+                      + " allowed for output attributes",
+                  attrName, type));
         }
       }
       // Add the implicit outputs. In the case where the rule has a native-defined implicit outputs
@@ -374,6 +381,12 @@ public final class StarlarkRuleContext
     @Override
     public boolean isImmutable() {
       return context.isImmutable();
+    }
+
+    @Override
+    public boolean isAcyclic() {
+      // Artifacts are acyclic
+      return true;
     }
 
     @Override
@@ -729,6 +742,17 @@ public final class StarlarkRuleContext
   }
 
   @Override
+  @Nullable
+  public Object getStarlarkFragment(String name) throws EvalException {
+    return ruleContext.getStarlarkFragment(name);
+  }
+
+  @Override
+  public ImmutableCollection<String> getStarlarkFragmentNames() {
+    return ruleContext.getStarlarkFragmentNames();
+  }
+
+  @Override
   public BuildConfigurationValue getConfiguration() throws EvalException {
     checkMutable("configuration");
     return ruleContext.getConfiguration();
@@ -747,7 +771,21 @@ public final class StarlarkRuleContext
 
     BuildSetting buildSetting = ruleContext.getRule().getRuleClassObject().getBuildSetting();
     if (starlarkFlagSettings.containsKey(ruleContext.getLabel())) {
-      return starlarkFlagSettings.get(ruleContext.getLabel());
+      Object value = starlarkFlagSettings.get(ruleContext.getLabel());
+      if (value instanceof FeatureFlagValue) {
+        // FeatureFlagValue is only a valid value for native.config_feature_flag rules (which
+        // aren't Starlark flags so don't call this method). While rule definitions can restrict
+        // their attrs through parameters like "allowed_rules" or "providers" to already block
+        // this, that doesn't kick in until the requested dependency is evaluated. If that
+        // dependency is a Starlark flag that means this method kicks in first. So add an extra
+        // error check to prevent a Blaze crash.
+        throw new EvalException(
+            String.format(
+                "android_binary's \"feature_flags\" attribute can only set config_feature_flag"
+                    + " targets: %s is a %s.",
+                ruleContext.getLabel(), ruleContext.getRule().getRuleClassObject().getName()));
+      }
+      return value;
     } else {
       Object defaultValue =
           ruleContext
@@ -788,13 +826,13 @@ public final class StarlarkRuleContext
   @Override
   public ArtifactRoot getBinDirectory() throws EvalException {
     checkMutable("bin_dir");
-    return getConfiguration().getBinDirectory(ruleContext.getRule().getRepository());
+    return getConfiguration().getBinDirectory();
   }
 
   @Override
   public ArtifactRoot getGenfilesDirectory() throws EvalException {
     checkMutable("genfiles_dir");
-    return getConfiguration().getGenfilesDirectory(ruleContext.getRule().getRepository());
+    return getConfiguration().getGenfilesDirectory();
   }
 
   @Override
@@ -1073,10 +1111,10 @@ public final class StarlarkRuleContext
     Runfiles.Builder builder = new Runfiles.Builder(ruleContext.getWorkspaceName());
     boolean checkConflicts = false;
     if (Starlark.truth(collectData)) {
-      builder.addRunfiles(ruleContext, RunfilesProvider.DATA_RUNFILES);
+      RunfilesSupport.addRunfiles(builder, ruleContext, RunfilesProvider.DATA_RUNFILES);
     }
     if (Starlark.truth(collectDefault)) {
-      builder.addRunfiles(ruleContext, RunfilesProvider.DEFAULT_RUNFILES);
+      RunfilesSupport.addRunfiles(builder, ruleContext, RunfilesProvider.DEFAULT_RUNFILES);
     }
     if (!files.isEmpty()) {
       Sequence<Artifact> artifacts = Sequence.cast(files, Artifact.class, "files");

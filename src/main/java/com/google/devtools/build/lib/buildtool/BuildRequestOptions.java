@@ -16,6 +16,8 @@ package com.google.devtools.build.lib.buildtool;
 import com.github.benmanes.caffeine.cache.CaffeineSpec;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.flogger.GoogleLogger;
+import com.google.devtools.build.lib.analysis.config.CoreOptionConverters.EmptyToNullLabelConverter;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.util.OptionsUtils;
 import com.google.devtools.build.lib.util.ResourceConverter;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -92,6 +94,22 @@ public abstract class BuildRequestOptions extends OptionsBase {
           less than `--jobs`, it is clamped to `--jobs`.
           """)
   public abstract int getAsyncExecutionMaxConcurrentActions();
+
+  @Option(
+      name = "bust_action_caches",
+      converter = EmptyToNullLabelConverter.class,
+      defaultValue = "null",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.EXECUTION},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          """
+          If set to a target label, unconditionally executes all actions of this target,
+          circumventing the usual caching layers. Intended for debugging only; no guarantees are
+          made that every execution strategy will respect it.
+          """)
+  @Nullable
+  public abstract Label getBustActionCachesTarget();
 
   @Option(
       name = "progress_report_interval",
@@ -179,6 +197,17 @@ public abstract class BuildRequestOptions extends OptionsBase {
   public abstract List<String> getOutputGroups();
 
   @Option(
+      name = "incompatible_fail_on_unknown_output_groups",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.OUTPUT_SELECTION,
+      effectTags = {OptionEffectTag.EXECUTION, OptionEffectTag.AFFECTS_OUTPUTS},
+      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      help =
+          "If true, building explicitly requested output groups that are not present on any"
+              + " top-level target or aspect fails the build.")
+  public abstract boolean getIncompatibleFailOnUnknownOutputGroups();
+
+  @Option(
       name = "run_validations",
       oldName = "experimental_run_validations",
       defaultValue = "true",
@@ -234,6 +263,24 @@ public abstract class BuildRequestOptions extends OptionsBase {
           to end users out of console output.
           """)
   public abstract List<String> getHideAspectResults();
+
+  @Option(
+      name = "hide_output_group_results",
+      converter = Converters.CommaSeparatedOptionListConverter.class,
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
+      help =
+          """
+          Comma-separated list of output group names whose artifacts are not displayed in
+          results (see `--show_result`). The output groups are still built and treated as
+          important outputs; only console output is affected. An artifact that also belongs to
+          a requested output group not in this list is still displayed. Also suppresses the
+          warning for listed output groups that are requested but not present on any top-level
+          target or aspect (but not the error under
+          `--incompatible_fail_on_unknown_output_groups`).
+          """)
+  public abstract List<String> getHideOutputGroupResults();
 
   @Option(
       name = "symlink_prefix",
@@ -373,11 +420,46 @@ public abstract class BuildRequestOptions extends OptionsBase {
 
   @Option(
       name = "rewind_lost_inputs",
-      defaultValue = "false",
+      defaultValue = "true",
       documentationCategory = OptionDocumentationCategory.REMOTE,
       effectTags = {OptionEffectTag.EXECUTION},
       help = "Whether to use action rewinding to recover from lost inputs.")
   public abstract boolean getRewindLostInputs();
+
+  @Option(
+      name = "experimental_check_rewound_action_outputs",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.EXECUTION},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "Fail if regenerating a rewound action changes its recorded output contents. This detects"
+              + " nondeterministic regeneration before dependent actions consume the new result."
+              + " Best effort: requires previous output metadata and may miss changes when another"
+              + " shared action regenerates the outputs.")
+  public abstract boolean getCheckRewoundActionOutputs();
+
+  @Option(
+      name = "experimental_max_repeated_lost_inputs",
+      defaultValue = "20",
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "The maximum number of times action rewinding will try to recover the same lost input (or"
+              + " top-level output) for the same action before giving up and failing the build. Set"
+              + " this lower to fail fast on an unstable remote cache instead of repeatedly"
+              + " rewinding a single lost input; 0 fails on the first lost input. Only takes effect"
+              + " when --rewind_lost_inputs is enabled.")
+  public abstract int getMaxRepeatedLostInputs();
+
+  @Option(
+      name = "experimental_precise_rewinding",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.EXECUTION},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help = "No-op slated for removal.")
+  public abstract boolean getExperimentalPreciseRewinding();
 
   @Option(
       name = "incompatible_skip_genfiles_symlink",
@@ -403,6 +485,29 @@ public abstract class BuildRequestOptions extends OptionsBase {
           "If set, build will read patterns from the file named here, rather than on the command "
               + "line. It is an error to specify a file here as well as command-line patterns.")
   public abstract String getTargetPatternFile();
+
+  @Option(
+      name = "target_query",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.GENERIC_INPUTS,
+      effectTags = {OptionEffectTag.CHANGES_INPUTS},
+      help =
+          "If set, build will evaluate the query expression and build the resulting targets. "
+              + "Example: --target_query='deps(//foo) - deps(//bar)'. May be combined with "
+              + "command-line target patterns. Cannot be used with --target_pattern_file or "
+              + "--target_query_file.")
+  public abstract String getTargetQuery();
+
+  @Option(
+      name = "target_query_file",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.GENERIC_INPUTS,
+      effectTags = {OptionEffectTag.CHANGES_INPUTS},
+      help =
+          "If set, build will read a query expression from the file named here and build the "
+              + "resulting targets. May be combined with command-line target patterns. Cannot be "
+              + "used with --target_pattern_file or --target_query.")
+  public abstract String getTargetQueryFile();
 
   /**
    * Do not use directly. Instead use {@link
@@ -481,17 +586,6 @@ public abstract class BuildRequestOptions extends OptionsBase {
               + " PROJECT.scl, which can be found by walking up the target's packagge path. See"
               + " b/324126745.")
   public abstract boolean getEnforceProjectConfigs();
-
-  @Option(
-      name = "experimental_skyframe_error_handling_refactor",
-      defaultValue = "false",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      metadataTags = {OptionMetadataTag.EXPERIMENTAL, OptionMetadataTag.HIDDEN},
-      effectTags = {OptionEffectTag.NO_OP},
-      help =
-          "Used solely for the safe rollout of simplifying Skyframe error handling. This will be "
-              + " removed once the rollout is complete (expected timeframe: 1 release)")
-  public abstract boolean getSkyframeErrorHandlingRefactor();
 
   @Option(
       name = "experimental_aquery_dump_after_build_format",

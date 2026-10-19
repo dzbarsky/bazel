@@ -20,6 +20,7 @@ import com.google.common.base.MoreObjects;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.skyframe.PackageoidValue;
 import com.google.devtools.build.lib.skyframe.serialization.DeserializedSkyValue;
 import com.google.devtools.build.skyframe.KeyToConsolidate.Op;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -99,6 +100,9 @@ public class IncrementalInMemoryNodeEntry extends AbstractInMemoryNodeEntry<Dirt
    */
   public void clearSkyValue() {
     Preconditions.checkState(isDone());
+    if (toValue() instanceof PackageoidValue packageoidValue) {
+      InMemoryGraphImpl.weakInternPackageTargetsLabels(packageoidValue);
+    }
     this.value = CLEARED_SKY_VALUE;
   }
 
@@ -176,7 +180,7 @@ public class IncrementalInMemoryNodeEntry extends AbstractInMemoryNodeEntry<Dirt
       //  - If old deserialized -> new computed, we prefer the computed value since we do have
       //    proper deps and can therefore rely on the more precise classic bottom-up invalidation.
       Version lastChanged = version.lastChanged();
-      version = NodeVersion.of(lastChanged, graphVersion);
+      version = NodeVersionGetter.get(lastChanged, graphVersion);
       SkyValue oldValue = dirtyBuildingState.getLastBuildValue();
       this.value =
           value instanceof DeserializedSkyValue != oldValue instanceof DeserializedSkyValue
@@ -381,6 +385,32 @@ public class IncrementalInMemoryNodeEntry extends AbstractInMemoryNodeEntry<Dirt
     return version.lastChanged();
   }
 
+  /**
+   * Returns this node's direct deps from the last evaluation if the node may be resurrected by
+   * change pruning; otherwise returns {@code null}. The node may be kept iff every returned dep is
+   * still present and was not changed more recently than {@link #lastEvaluatedVersion}.
+   */
+  @Nullable
+  final Iterable<SkyKey> lastBuildDepsIfChangePrunable() {
+    var localDirtyBuildingState = dirtyBuildingState;
+    if (localDirtyBuildingState == null
+        || !localDirtyBuildingState.isIncremental()
+        || isChanged()) {
+      return null;
+    }
+    try {
+      return localDirtyBuildingState.getLastBuildDirectDeps().getAllElementsAsIterable();
+    } catch (InterruptedException e) {
+      // An incremental dirty state returns its stored deps without blocking.
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /** Returns the version at which this node was last evaluated; see {@link NodeVersion}. */
+  public final Version lastEvaluatedVersion() {
+    return version.lastEvaluated();
+  }
+
   @Override
   public final synchronized ImmutableSet<SkyKey> getAllDirectDepsForIncompleteNode()
       throws InterruptedException {
@@ -445,15 +475,16 @@ public class IncrementalInMemoryNodeEntry extends AbstractInMemoryNodeEntry<Dirt
   }
 
   /**
-   * For Skyfocus only: clears out all direct dep edges of this node. It is not safe to call this
-   * otherwise.
+   * Clears out all direct dep edges of this node.
+   *
+   * <p>Only safe once the graph no longer needs to be incrementally correct: by Skycache uploads
+   * under {@code --nokeep_state_after_build}.
    */
-  public final synchronized void clearDirectDepsForSkyfocus() {
+  public final synchronized void clearDirectDeps() {
 
     checkState(isDone(), this);
     this.directDeps = GroupedDeps.EMPTY_COMPRESSED;
   }
-
   /** Flushes pending reverse dep operations, which potentially saves memory. */
   public final synchronized void consolidateReverseDeps() {
 

@@ -58,7 +58,6 @@ import java.util.HashMap;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestName;
@@ -66,24 +65,10 @@ import org.junit.rules.TestName;
 public abstract class SkycacheIntegrationTestBase extends BuildIntegrationTestCase
     implements SkycacheIntegrationTestHelpers {
 
-  protected static final String UPLOAD_MODE_OPTION =
-      "--experimental_remote_analysis_cache_mode=upload";
-  protected static final String DOWNLOAD_MODE_OPTION =
-      "--experimental_remote_analysis_cache_mode=download";
-  protected static final String DUMP_MANIFEST_MODE_OPTION =
-      "--experimental_remote_analysis_cache_mode=dump_upload_manifest_only";
 
   @Rule public TestName testName = new TestName();
 
   private final ClearCountingSyscallCache syscallCache = new ClearCountingSyscallCache();
-
-  @Before
-  public void setup() {
-    // TODO: b/367284400 - replace this with a barebones diffawareness check that works in Bazel
-    // integration tests (e.g. making LocalDiffAwareness supported and not return
-    // EVERYTHING_MODIFIED) for baseline diffs.
-    addOptions("--experimental_frontier_violation_check=disabled_for_testing");
-  }
 
   protected void addDownloadOptions() {
     addOptions(DOWNLOAD_MODE_OPTION);
@@ -651,8 +636,7 @@ filegroup(name = "I")
 
     // Under the frontier
     assertThat(labels).doesNotContain(parseCanonicalUnchecked("//C"));
-    assertThat(labels.stream().map(Label::toString).collect(toImmutableSet()))
-        .doesNotContain("//D:D");
+    assertThat(labels).doesNotContain(parseCanonicalUnchecked("//D"));
 
     // Different top level target
     assertThat(labels).doesNotContain(parseCanonicalUnchecked("//B"));
@@ -690,8 +674,7 @@ filegroup(name = "I")
 
     // Under the frontier
     assertThat(labels).doesNotContain(parseCanonicalUnchecked("//C"));
-    assertThat(labels.stream().map(Label::toString).collect(toImmutableSet()))
-        .doesNotContain("//D:D");
+    assertThat(labels).doesNotContain(parseCanonicalUnchecked("//D"));
 
     // Different top level target
     assertThat(labels).doesNotContain(parseCanonicalUnchecked("//B"));
@@ -757,8 +740,7 @@ ACTIVE: CONFIGURED_TARGET:ConfiguredTargetKey{label=//A:in.txt, config=null}
         .containsAtLeast(parseCanonicalUnchecked("//C"), parseCanonicalUnchecked("//E"));
 
     // Under the frontier
-    assertThat(owningLabels.stream().map(Label::toString).collect(toImmutableSet()))
-        .contains("//D:D");
+    assertThat(owningLabels).contains(parseCanonicalUnchecked("//D"));
 
     // Different top level target
     assertThat(owningLabels).doesNotContain(parseCanonicalUnchecked("//B"));

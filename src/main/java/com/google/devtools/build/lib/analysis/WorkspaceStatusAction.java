@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.analysis;
 
+import com.google.common.base.CharMatcher;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -93,9 +94,9 @@ public abstract class WorkspaceStatusAction extends AbstractAction {
             A command invoked at the beginning of the build to provide status
             information about the workspace in the form of key/value pairs.
             See the User's Manual for the full specification. Also see
-            [`tools/buildstamp/get_workspace_status`][wksp-stat] for an example.
+            [`scripts/get_workspace_status.sh`][wksp-stat] for an example.
 
-            [wksp-stat]: https://github.com/bazelbuild/bazel/blob/master/tools/buildstamp/get_workspace_status
+            [wksp-stat]: https://github.com/bazelbuild/bazel/blob/master/scripts/get_workspace_status.sh
             """)
     public abstract PathFragment getWorkspaceStatusCommand();
 
@@ -121,19 +122,19 @@ public abstract class WorkspaceStatusAction extends AbstractAction {
    *
    * <p>The output is a text file with each line representing a workspace status info key. The key
    * is the part of the line before the first space and should consist of the characters [A-Z_]
-   * (although this is not checked). Everything after the first space is the value.
+   * (although this is not checked). Everything after the first space is the value. Lines with no
+   * space are treated as keys with an empty value.
    */
   public static Map<String, String> parseValues(Path file) throws IOException {
     HashMap<String, String> result = new HashMap<>();
     Splitter lineSplitter = Splitter.on(' ').limit(2);
     for (String line :
-        Splitter.on('\n').split(new String(FileSystemUtils.readContentAsLatin1(file)))) {
+        Splitter.on('\n')
+            .trimResults(CharMatcher.is('\r'))
+            .omitEmptyStrings()
+            .split(new String(FileSystemUtils.readContentAsLatin1(file)))) {
       List<String> items = lineSplitter.splitToList(line);
-      if (items.size() != 2) {
-        continue;
-      }
-
-      result.put(items.get(0), items.get(1));
+      result.put(items.get(0), items.size() >= 2 ? items.get(1) : "");
     }
 
     return ImmutableMap.copyOf(result);

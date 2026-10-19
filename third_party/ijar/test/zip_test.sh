@@ -97,6 +97,34 @@ function test_zipper() {
   expect_not_log "path"
 }
 
+function test_zipper_delete_entries() {
+  mkdir -p ${TEST_TMPDIR}/filter/META-INF/license
+  mkdir -p ${TEST_TMPDIR}/filter/META-INF/native
+  echo "Manifest-Version: 1.0" >${TEST_TMPDIR}/filter/META-INF/MANIFEST.MF
+  echo "license" >${TEST_TMPDIR}/filter/META-INF/license/LICENSE.txt
+  echo "linux" >${TEST_TMPDIR}/filter/META-INF/native/library.so
+  echo "windows" >${TEST_TMPDIR}/filter/META-INF/native/library.dll
+
+  (cd ${TEST_TMPDIR}/filter && \
+    $ZIPPER c ${TEST_TMPDIR}/input.zip \
+      META-INF/MANIFEST.MF \
+      META-INF/license/LICENSE.txt \
+      META-INF/native/library.so \
+      META-INF/native/library.dll)
+  $ZIPPER d ${TEST_TMPDIR}/input.zip ${TEST_TMPDIR}/output.zip \
+    "*/license/*" "*.dll"
+
+  $ZIPPER v ${TEST_TMPDIR}/output.zip >$TEST_log
+  expect_log "META-INF/MANIFEST.MF"
+  expect_log "META-INF/native/library.so"
+  expect_not_log "license"
+  expect_not_log "library.dll"
+
+  $ZIPPER d ${TEST_TMPDIR}/input.zip ${TEST_TMPDIR}/empty.zip "*"
+  $ZIPPER v ${TEST_TMPDIR}/empty.zip >$TEST_log
+  [ ! -s $TEST_log ] || fail "The '*' pattern did not remove every entry"
+}
+
 function test_zipper_junk_paths() {
   mkdir -p ${TEST_TMPDIR}/test/path/to/some
   mkdir -p ${TEST_TMPDIR}/test/some/other/path
@@ -240,11 +268,40 @@ function test_unzipper_zip64_archive() {
   "${ZIPPER}" x zip.zip -d unzipped
 
   diff -r unzipped source
+  rm -rf "${test_dir}"
 }
 
 function test_zipper_file_large_than_2G() {
-  dd if=/dev/zero of=${TEST_TMPDIR}/file_2064M.bin bs=16M count=129
-  $ZIPPER c ${TEST_TMPDIR}/output.zip ${TEST_TMPDIR}/file_2064M.bin
+  local -r test_dir="${TEST_TMPDIR}/${FUNCNAME[0]}"
+  mkdir -p "${test_dir}"
+  (
+    cd "${test_dir}"
+    local -r mb=$((2 ** 20))
+    /bin/dd if=/dev/zero of=file_2064M.bin bs="${mb}" count=2064 conv=sparse \
+        >& "${TEST_log}"
+    "${ZIPPER}" c output.zip file_2064M.bin
+    "${ZIPPER}" x output.zip -d unzipped
+    diff -r unzipped/file_2064M.bin file_2064M.bin
+  )
+  rm -rf "${test_dir}"
+}
+
+function test_zipper_output_larger_than_4G() {
+  local -r test_dir="${TEST_TMPDIR}/${FUNCNAME[0]}"
+  mkdir -p "${test_dir}"
+  (
+    cd "${test_dir}"
+    /bin/dd if=/dev/zero of=file_4097M.bin bs=1 count=0 seek=4097M \
+        >& "${TEST_log}"
+    echo "hello zip64" > file2.txt
+    "${ZIPPER}" c output.zip file_4097M.bin file2.txt
+    "${UNZIP}" -t output.zip >& "${TEST_log}" \
+        || fail "unzip -t failed on >4GiB output.zip"
+    "${ZIPPER}" x output.zip -d unzipped
+    diff -r unzipped/file_4097M.bin file_4097M.bin
+    diff -r unzipped/file2.txt file2.txt
+  )
+  rm -rf "${test_dir}"
 }
 
 function test_no_path_traversal() {
