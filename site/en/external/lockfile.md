@@ -80,6 +80,56 @@ optimization. While it can be deleted together with the output base via
 `bazel clean --expunge`, any need to do so is a bug in either Bazel itself or a
 module extension.
 
+### Experimental extension capsules {:#extension-capsules}
+
+An optional local cache can supply previously evaluated results for module
+extensions that declare `reproducible = True`. This draft interface is disabled
+unless the server is started with an absolute capsule-directory path:
+
+```text
+bazel --host_jvm_args=-Dbazel30.extension_cache_dir=/absolute/capsule-directory build //...
+```
+
+Bazel checks the workspace and hidden lockfiles first. If neither provides a
+valid result, it checks the matching capsule and runs the same extension-cache
+validation as for a lockfile entry: implementation and usage digests, recorded
+inputs, evaluation factors, and facts. Workspace facts remain authoritative.
+Missing, malformed, incompatible, or stale capsules fall back to normal
+extension evaluation. `--lockfile_mode=off` also disables capsule lookup.
+
+A capsule directory contains:
+
+*   `workspace-root.txt`: the producer's exact absolute workspace path, followed
+    by a single newline. Bazel requires an exact match with the consumer's
+    workspace path.
+*   One JSON file per extension, named with the lowercase hexadecimal SHA-256 of
+    the UTF-8 representation of `ModuleExtensionId.toString()`, followed by
+    `.json`. For a main-repository extension, that representation begins with
+    `@@//`, even though its lockfile JSON key begins with `//`.
+
+Each JSON file uses the current native `BazelLockFileValue` format and contains
+exactly one `moduleExtensions` entry. Preserve that entry's evaluation-factor
+keys, generated repository specifications, recorded inputs, metadata, facts,
+and facts versions unchanged. The `facts` and `factsVersions` maps may contain
+only that extension's key. Capsules larger than 256 MiB are ignored. This format,
+the property name, and the lookup protocol are experimental and may change.
+
+Create capsules from a completed, successful producer evaluation while its
+lockfile is not being written. Producers and consumers must trust the capsule
+contents and the extension's reproducibility contract, just as they trust
+lockfile entries. A matching workspace path alone does not establish that all
+generated repository attributes are portable: exporters must reject references
+to a producer's output base or other host-specific paths. Do not rewrite paths,
+digests, recorded inputs, or facts to make an incompatible result appear valid.
+Distribution, authenticity, access control, and producer revision selection are
+outside this native reader's scope.
+
+The reader hashes freshly read bytes for every lookup. A four-entry in-memory
+cache avoids parsing unchanged capsule bytes repeatedly. Digest arrays are
+copied, and values with unfrozen Starlark attributes or facts are not retained.
+File size and modification time alone are never used to establish that a cached
+value remains valid.
+
 ## Lockfile Contents {:#lockfile-contents}
 
 The lockfile contains all the necessary information to determine whether the
