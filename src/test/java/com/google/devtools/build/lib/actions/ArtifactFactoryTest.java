@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.testutil.Scratch;
+import com.google.devtools.build.lib.util.StringEncoding;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
@@ -350,6 +351,50 @@ public class ArtifactFactoryTest {
             artifactFactory.resolveSourceArtifactsAsciiCaseInsensitively(
                 PathFragment.create("foo/fIlE.h"), MAIN))
         .containsExactly(a1, a2, a3);
+  }
+
+  @Test
+  public void testCaseInsensitiveLookupWithUnicodeAndAsciiPaths() {
+    artifactFactory.noteAnalysisStarting();
+    ImmutableList<String> names =
+        ImmutableList.of(
+            "i",
+            "I",
+            "\u0130",
+            "\u0131",
+            "k",
+            "\u212a",
+            "s",
+            "\u017f",
+            "\u03a3",
+            "\u03c2",
+            "\u03c3",
+            "\ud801\udc00",
+            "\ud801\udc28",
+            "[header]",
+            "{header}",
+            "prefix",
+            "prefix-longer");
+    ImmutableList<Artifact.SourceArtifact> artifacts =
+        names.stream()
+            .map(name -> PathFragment.create(StringEncoding.unicodeToInternal("foo/" + name)))
+            .map(path -> artifactFactory.getSourceArtifact(path, clientRoot))
+            .collect(ImmutableList.toImmutableList());
+
+    for (Artifact.SourceArtifact artifact : artifacts) {
+      PathFragment path = artifact.getExecPath();
+      String unicodePath = StringEncoding.internalToUnicode(path.getPathString());
+      assertThat(artifactFactory.resolveSourceArtifact(path, MAIN)).isSameInstanceAs(artifact);
+      assertThat(artifactFactory.resolveSourceArtifactsAsciiCaseInsensitively(path, MAIN))
+          .containsExactlyElementsIn(
+              artifacts.stream()
+                  .filter(
+                      other ->
+                          unicodePath.equalsIgnoreCase(
+                              StringEncoding.internalToUnicode(
+                                  other.getExecPath().getPathString())))
+                  .collect(ImmutableList.toImmutableList()));
+    }
   }
 
   @Test

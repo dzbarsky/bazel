@@ -13,8 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.actions;
 
-import static java.util.Comparator.comparing;
-
+import com.google.common.base.Ascii;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Interner;
@@ -83,10 +82,34 @@ public class ArtifactFactory implements ArtifactResolver {
      */
     private final ConcurrentMap<PathFragment, Object /* Entry | CopyOnWriteArrayList<Entry> */>
         pathToSourceArtifact =
-            new ConcurrentSkipListMap<>(
-                comparing(
-                    pathFragment -> StringEncoding.internalToUnicode(pathFragment.getPathString()),
-                    String.CASE_INSENSITIVE_ORDER));
+            new ConcurrentSkipListMap<>(SourceArtifactCache::comparePathsIgnoringCase);
+
+    // Skip identical bytes before case folding, without scanning whole paths for Unicode conversion.
+    private static int comparePathsIgnoringCase(PathFragment left, PathFragment right) {
+      String a = left.getPathString();
+      String b = right.getPathString();
+      int length = Math.min(a.length(), b.length());
+      int i = left.getCommonPrefixLength(right);
+      for (; i < length; i++) {
+        char ac = a.charAt(i);
+        char bc = b.charAt(i);
+        if (ac >= 128 || bc >= 128) {
+          break;
+        }
+        if (ac != bc) {
+          int difference = Ascii.toLowerCase(ac) - Ascii.toLowerCase(bc);
+          if (difference != 0) {
+            return difference;
+          }
+        }
+      }
+      if (i == a.length() && i == b.length()) {
+        return 0;
+      }
+      // An unequal-length common byte prefix can end inside a UTF-8 sequence.
+      return String.CASE_INSENSITIVE_ORDER.compare(
+          StringEncoding.internalToUnicode(a), StringEncoding.internalToUnicode(b));
+    }
 
     /** Id of current build. Has to be increased every time before analysis starts. */
     private int buildId = -1;
