@@ -934,7 +934,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         GenAnalysisQueryKey.FUNCTION_NAME,
         new GenAnalysisQueryFunction(
             queryEvaluators.buildOrThrow(),
-            () -> SkyframeExecutorWrappingWalkableGraph.of(this),
+            this::getWalkableGraph,
             this::tracksStateForIncrementality,
             cpuBoundSemaphore));
     map.put(
