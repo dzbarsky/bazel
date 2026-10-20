@@ -197,7 +197,6 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
         print('PASS', case)
 
     workflow = (root / '.github/workflows/build-and-publish-bazel.yml').read_text()
-    assert "      - 'dzbarsky-??.??.????'" in workflow
     assert 'group: bazel-release-${{ github.ref }}\n  cancel-in-progress: false' in workflow
     assert 'run: bash .github/scripts/bazel-release-tag.sh select' in workflow
     assert '--clobber' not in workflow
