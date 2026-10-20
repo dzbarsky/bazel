@@ -9,11 +9,11 @@ permissions:
 
 jobs:
   validate:
-    name: Validate RemoteTests and ServerTests
+    name: Validate toolchain resolution and Skycache
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      SOURCE_REF: 57df9494fb1e9b6b24897bb988865cb3994ae0d1
+      SOURCE_REF: a2de3bac391f36282703f0826fbe94965d846bec
     defaults:
       run:
         shell: bash
@@ -50,8 +50,10 @@ jobs:
             exit 1
           fi
           targets=(
-            //src/test/java/com/google/devtools/build/lib/server:ServerTests
-            //src/test/java/com/google/devtools/build/lib/remote:RemoteTests
+            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:RegisteredToolchainsFunctionTest
+            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:SingleToolchainResolutionFunctionTest
+            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:ToolchainResolutionFunctionTest
+            //src/test/java/com/google/devtools/build/lib/skyframe/serialization/analysis:BazelSkycacheIntegrationTest
           )
           printf 'Source: `%s`\n\n' "${SOURCE_REF}" >> "${GITHUB_STEP_SUMMARY}"
           printf -- '- `%s`\n' "${targets[@]}" >> "${GITHUB_STEP_SUMMARY}"
