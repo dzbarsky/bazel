@@ -31,7 +31,6 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.SymlinkTargetType;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.util.ArrayDeque;
@@ -307,6 +306,15 @@ public class UnixFileSystem extends DiskBackedFileSystem {
 
   @Override
   public PathFragment readSymbolicLink(PathFragment path) throws IOException {
+    return PathFragment.create(readSymbolicLinkRaw(path));
+  }
+
+  @Override
+  public boolean hasExactSymlinkTarget(PathFragment path, PathFragment target) throws IOException {
+    return readSymbolicLinkRaw(path).equals(target.getPathString());
+  }
+
+  private String readSymbolicLinkRaw(PathFragment path) throws IOException {
     // Note that the default implementation of readSymbolicLinkUnchecked calls this method and thus
     // is optimal since we only make one system call in here.
     String name = path.toString();
@@ -317,7 +325,7 @@ public class UnixFileSystem extends DiskBackedFileSystem {
       if (result == null) {
         throw new NotASymlinkException(path);
       }
-      return PathFragment.create(result);
+      return result;
     } finally {
       Blocker.end(comp);
       Profiler.instance().logSimpleTask(startTime, ProfilerTask.VFS_READLINK, name);
@@ -358,10 +366,10 @@ public class UnixFileSystem extends DiskBackedFileSystem {
   }
 
   @Override
-  public void setLastModifiedTime(PathFragment path, long newTime) throws IOException {
+  public boolean setLastModifiedTimeIfExists(PathFragment path, long newTime) throws IOException {
     var comp = Blocker.begin();
     try {
-      run(
+      return run(
           () ->
               nativePosixFilesService.utimensat(
                   path.toString(), newTime == Path.NOW_SENTINEL_TIME, newTime));

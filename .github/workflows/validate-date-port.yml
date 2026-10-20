@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      SOURCE_REF: f403d56c8561e3f7518d1e585964036385788a66
+      SOURCE_REF: bc21bf19bd5de3a858380e1a98390921d83dc363
     defaults:
       run:
         shell: bash
@@ -54,7 +54,7 @@ jobs:
             --worker_max_instances=1 \
             --remote_cache=grpcs://remote.buildbuddy.io --remote_upload_local_results --remote_download_toplevel --remote_timeout=600 \
             "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
-            --nocache_test_results --test_timeout=1800 \
+            --nocache_test_results --test_timeout=1800 --keep_going \
             --test_output=errors --test_summary=detailed --verbose_failures \
             --color=no --curses=no \
             //src:bazel-dev \

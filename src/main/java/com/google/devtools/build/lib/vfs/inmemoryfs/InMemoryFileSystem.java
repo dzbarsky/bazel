@@ -539,6 +539,12 @@ public class InMemoryFileSystem extends FileSystem {
   }
 
   @Override
+  public boolean hasExactSymlinkTarget(PathFragment path, PathFragment target) throws IOException {
+    // Link contents are stored as PathFragments, so no raw path components have been discarded.
+    return readSymbolicLink(path).equals(target);
+  }
+
+  @Override
   public long getFileSize(PathFragment path, boolean followSymlinks) throws IOException {
     return stat(path, followSymlinks).getSize();
   }
@@ -598,10 +604,17 @@ public class InMemoryFileSystem extends FileSystem {
   }
 
   @Override
-  public synchronized void setLastModifiedTime(PathFragment path, long newTime) throws IOException {
-    InMemoryContentInfo status = inodeStat(path, true);
-    status.setLastModifiedTime(
-        newTime == Path.NOW_SENTINEL_TIME ? clock.currentTimeMillis() : newTime);
+  public synchronized boolean setLastModifiedTimeIfExists(PathFragment path, long newTime)
+      throws IOException {
+    InodeOrErrno status = inodeStatErrno(path, /* followSymlinks= */ true);
+    if (status == Errno.ENOENT) {
+      return false;
+    }
+    status
+        .inodeOrThrow(path)
+        .setLastModifiedTime(
+            newTime == Path.NOW_SENTINEL_TIME ? clock.currentTimeMillis() : newTime);
+    return true;
   }
 
   @Override

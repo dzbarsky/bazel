@@ -273,7 +273,7 @@ public abstract class StarlarkBaseExternalContext implements AutoCloseable, Star
   @Nullable
   protected String getValueAndRecordInput(RepoRecordedInput input)
       throws InterruptedException, NeedsSkyframeRestartException, IOException {
-    var maybeValue = input.getValue(env, directories);
+    var maybeValue = input.getValueForRecording(env, directories);
     if (env.valuesMissing()) {
       throw new NeedsSkyframeRestartException();
     }
@@ -1577,9 +1577,9 @@ Strip the given number of leading components from file paths on extraction. Only
             doc =
                 """
                 Whether to <a href="#watch">watch</a> the source file or directory. Can be the \
-                string 'yes', 'no', or 'auto'. Passing 'yes' is equivalent to immediately \
-                invoking the <a href="#watch"><code>watch()</code></a> method for a file and \
-                the <a href="repository_ctx.html#watch_tree"><code>watch_tree()</code></a> \
+                string 'yes', 'no', or 'auto'. Passing 'yes' watches file contents and executable \
+                bits for a file, and is equivalent to invoking \
+                <a href="repository_ctx.html#watch_tree"><code>watch_tree()</code></a> \
                 method for a directory; passing 'no' does not attempt to watch the source; \
                 passing 'auto' will only attempt to watch the source when it is legal to do so \
                 (see <code>watch()</code> docs for more information.
@@ -1600,7 +1600,7 @@ Strip the given number of leading components from file paths on extraction. Only
     if (isDir) {
       maybeWatchTree(srcPath.getPath(), ShouldWatch.fromString(watchSrc), ImmutableList.of());
     } else {
-      maybeWatch(srcPath, ShouldWatch.fromString(watchSrc));
+      maybeWatch(srcPath, ShouldWatch.fromString(watchSrc), /* watchExecutable= */ true);
     }
     try {
       checkInOutputDirectory("write", dstPath);
@@ -1774,7 +1774,11 @@ Strip the given number of leading components from file paths on extraction. Only
       })
   public String readFile(Object path, String watch, StarlarkThread thread)
       throws RepositoryFunctionException, EvalException, InterruptedException {
-    StarlarkPath p = getPath(path);
+    // A direct read can use the remote file system without materializing the whole repository.
+    StarlarkPath p =
+        path instanceof Label label
+            ? getPathFromLabel(label, /* materialize= */ false)
+            : getPath(path);
     WorkspaceRuleEvent w =
         WorkspaceRuleEvent.newReadEvent(
             p.toString(), identifyingStringForLogging, thread.getCallerLocation());
@@ -1864,13 +1868,19 @@ Strip the given number of leading components from file paths on extraction. Only
 
   protected void maybeWatch(StarlarkPath starlarkPath, ShouldWatch shouldWatch)
       throws EvalException, RepositoryFunctionException, InterruptedException {
+    maybeWatch(starlarkPath, shouldWatch, /* watchExecutable= */ false);
+  }
+
+  private void maybeWatch(
+      StarlarkPath starlarkPath, ShouldWatch shouldWatch, boolean watchExecutable)
+      throws EvalException, RepositoryFunctionException, InterruptedException {
     RepoCacheFriendlyPath repoCacheFriendlyPath =
         toRepoCacheFriendlyPath(starlarkPath.getPath(), shouldWatch);
     if (repoCacheFriendlyPath == null) {
       return;
     }
     try {
-      getValueAndRecordInput(new RepoRecordedInput.File(repoCacheFriendlyPath));
+      getValueAndRecordInput(new RepoRecordedInput.File(repoCacheFriendlyPath, watchExecutable));
     } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
     }
@@ -2565,11 +2575,17 @@ func(
 
   // Resolve the label given by value into a file path.
   protected StarlarkPath getPathFromLabel(Label label) throws EvalException, InterruptedException {
+    return getPathFromLabel(label, /* materialize= */ true);
+  }
+
+  private StarlarkPath getPathFromLabel(Label label, boolean materialize)
+      throws EvalException, InterruptedException {
     RootedPath rootedPath = RepositoryUtils.getRootedPathFromLabel(label, env);
     if (rootedPath == null) {
       throw new NeedsSkyframeRestartException();
     }
-    if (!label.getRepository().isMain()
+    if (materialize
+        && !label.getRepository().isMain()
         && directories.getOutputBase().getFileSystem()
             instanceof LazyMaterializer lazyMaterializer) {
       try {

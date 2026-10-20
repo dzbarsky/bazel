@@ -335,7 +335,15 @@ public abstract class FileSystem {
    * Sets the last modification time of the file denoted by {@code path}. See {@link
    * Path#setLastModifiedTime} for specification.
    */
-  public abstract void setLastModifiedTime(PathFragment path, long newTime) throws IOException;
+  public void setLastModifiedTime(PathFragment path, long newTime) throws IOException {
+    if (!setLastModifiedTimeIfExists(path, newTime)) {
+      throw new FileNotFoundException(path + ERR_NO_SUCH_FILE_OR_DIR);
+    }
+  }
+
+  /** Like {@link #setLastModifiedTime}, but returns false if the file does not exist. */
+  public abstract boolean setLastModifiedTimeIfExists(PathFragment path, long newTime)
+      throws IOException;
 
   /**
    * Returns value of the given extended attribute name or null if attribute does not exist or file
@@ -582,6 +590,19 @@ public abstract class FileSystem {
    * @throws IOException if the contents of the link could not be read for any reason.
    */
   public abstract PathFragment readSymbolicLink(PathFragment path) throws IOException;
+
+  /**
+   * Returns true only if the unnormalized target text of the symbolic link equals {@code target}.
+   *
+   * <p>Unlike {@link #readSymbolicLink}, this must not discard relative path components before
+   * comparing: resolving {@code symlink/../file} can differ from resolving {@code file}.
+   * Implementations that cannot make this guarantee return false, allowing a conservative fallback.
+   *
+   * @throws IOException if reading the link fails
+   */
+  public boolean hasExactSymlinkTarget(PathFragment path, PathFragment target) throws IOException {
+    return false;
+  }
 
   /**
    * Returns the target of a symbolic link, under the assumption that the given path is indeed a

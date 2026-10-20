@@ -121,6 +121,11 @@ public abstract class PathTransformingDelegateFileSystem extends FileSystem {
   }
 
   @Override
+  public boolean setLastModifiedTimeIfExists(PathFragment path, long newTime) throws IOException {
+    return delegateFs.setLastModifiedTimeIfExists(toDelegatePath(path), newTime);
+  }
+
+  @Override
   public boolean isSymbolicLink(PathFragment path) throws IOException {
     return delegateFs.isSymbolicLink(toDelegatePath(path));
   }
@@ -150,6 +155,11 @@ public abstract class PathTransformingDelegateFileSystem extends FileSystem {
   @Override
   public PathFragment readSymbolicLink(PathFragment path) throws IOException {
     return fromDelegatePath(delegateFs.readSymbolicLink(toDelegatePath(path)));
+  }
+
+  @Override
+  public boolean hasExactSymlinkTarget(PathFragment path, PathFragment target) throws IOException {
+    return delegateFs.hasExactSymlinkTarget(toDelegatePath(path), target);
   }
 
   @Override

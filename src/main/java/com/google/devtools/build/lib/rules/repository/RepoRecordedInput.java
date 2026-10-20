@@ -46,6 +46,8 @@ import com.google.devtools.build.lib.vfs.Dirent;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
+import com.google.devtools.build.lib.vfs.Symlinks;
+import com.google.devtools.build.lib.vfs.SyscallCache;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import com.google.devtools.build.skyframe.SkyKey;
 import java.io.IOException;
@@ -113,7 +115,12 @@ public abstract sealed class RepoRecordedInput {
     }
     for (Parser parser :
         new Parser[] {
-          File.PARSER, Dirents.PARSER, DirTree.PARSER, EnvVar.PARSER, RecordedRepoMapping.PARSER
+          File.PARSER,
+          File.EXECUTABLE_PARSER,
+          Dirents.PARSER,
+          DirTree.PARSER,
+          EnvVar.PARSER,
+          RecordedRepoMapping.PARSER
         }) {
       if (parts.get(0).equals(parser.getPrefix())) {
         return parser.parse(parts.get(1));
@@ -308,6 +315,16 @@ public abstract sealed class RepoRecordedInput {
       throws InterruptedException;
 
   /**
+   * Returns the value to record during repository or module extension evaluation. Unlike
+   * verification of a previous evaluation, recording can observe writes made during this
+   * evaluation.
+   */
+  public MaybeValue getValueForRecording(Environment env, BlazeDirectories directories)
+      throws InterruptedException {
+    return getValue(env, directories);
+  }
+
+  /**
    * Returns a human-readable description of the change from {@code oldValue} to {@code newValue}.
    */
   public abstract String describeChange(@Nullable String oldValue, @Nullable String newValue);
@@ -418,36 +435,48 @@ public abstract sealed class RepoRecordedInput {
    * Represents a file input accessed during the repo fetch. Despite being named just "file", this
    * can represent a file or a directory on the filesystem, and it does not need to exist. The value
    * of the input contains whether this is a file or a directory or nonexistent, and if it's a file,
-   * the digest of its contents.
+   * the digest of its contents and optionally its executable bit.
    */
   public static final class File extends RepoRecordedInput {
-    public static final Parser PARSER =
-        new Parser() {
-          @Override
-          public String getPrefix() {
-            return "FILE";
-          }
+    public static final Parser PARSER = parser(false);
+    private static final Parser EXECUTABLE_PARSER = parser(true);
 
-          @Override
-          public RepoRecordedInput parse(String s) {
-            try {
-              return new File(RepoCacheFriendlyPath.parse(s));
-            } catch (LabelSyntaxException e) {
-              // malformed inputs cause refetch
-              return NeverUpToDateRepoRecordedInput.PARSE_FAILURE;
-            }
+    private static Parser parser(boolean watchExecutable) {
+      return new Parser() {
+        @Override
+        public String getPrefix() {
+          // Old FILE records lack the executable bit and must be revalidated, including copies.
+          // Content-only watches use a new kind so module lockfiles stay platform-independent.
+          return watchExecutable ? "FILE" : "FILE_CONTENTS";
+        }
+
+        @Override
+        public RepoRecordedInput parse(String s) {
+          try {
+            return new File(RepoCacheFriendlyPath.parse(s), watchExecutable);
+          } catch (LabelSyntaxException e) {
+            // malformed inputs cause refetch
+            return NeverUpToDateRepoRecordedInput.PARSE_FAILURE;
           }
-        };
+        }
+      };
+    }
 
     private final RepoCacheFriendlyPath path;
+    private final boolean watchExecutable;
 
     public File(RepoCacheFriendlyPath path) {
+      this(path, false);
+    }
+
+    public File(RepoCacheFriendlyPath path, boolean watchExecutable) {
       this.path = path;
+      this.watchExecutable = watchExecutable;
     }
 
     @Override
     public Parser getParser() {
-      return PARSER;
+      return watchExecutable ? EXECUTABLE_PARSER : PARSER;
     }
 
     @Override
@@ -458,12 +487,12 @@ public abstract sealed class RepoRecordedInput {
       if (!(o instanceof File that)) {
         return false;
       }
-      return Objects.equals(path, that.path);
+      return watchExecutable == that.watchExecutable && Objects.equals(path, that.path);
     }
 
     @Override
     public int hashCode() {
-      return path.hashCode();
+      return 31 * path.hashCode() + Boolean.hashCode(watchExecutable);
     }
 
     @Override
@@ -477,7 +506,8 @@ public abstract sealed class RepoRecordedInput {
      * directory.
      */
     @VisibleForTesting
-    static String fileValueToMarkerValue(RootedPath rootedPath, FileValue fileValue)
+    static String fileValueToMarkerValue(
+        RootedPath rootedPath, FileValue fileValue, boolean watchExecutable)
         throws IOException {
       if (fileValue.isDirectory()) {
         return "DIR";
@@ -485,7 +515,7 @@ public abstract sealed class RepoRecordedInput {
       if (!fileValue.exists()) {
         return "ENOENT";
       }
-      // Return the file content digest in hex. fileValue may or may not have the digest available.
+      // Copies preserve executable bits as well as contents.
       var fileStateValue = fileValue.realFileStateValue();
       byte[] digest = fileStateValue.getDigest();
       if (digest == null) {
@@ -499,7 +529,13 @@ public abstract sealed class RepoRecordedInput {
             DigestUtils.manuallyComputeDigest(
                 fileValue.realRootedPath(rootedPath).asPath(), maybeStat);
       }
-      return BaseEncoding.base16().lowerCase().encode(digest);
+      return watchExecutable && !fileValue.isSpecialFile()
+          ? markerValue(digest, fileStateValue.isExecutable())
+          : BaseEncoding.base16().lowerCase().encode(digest);
+    }
+
+    private static String markerValue(byte[] digest, boolean executable) {
+      return BaseEncoding.base16().lowerCase().encode(digest) + (executable ? ":x" : ":-");
     }
 
     @Override
@@ -524,7 +560,39 @@ public abstract sealed class RepoRecordedInput {
       }
       try {
         return new MaybeValue.Valid(
-            fileValueToMarkerValue((RootedPath) skyKey.argument(), fileValue));
+            fileValueToMarkerValue((RootedPath) skyKey.argument(), fileValue, watchExecutable));
+      } catch (IOException e) {
+        return new MaybeValue.Invalid("failed to stat %s: %s".formatted(path, e.getMessage()));
+      }
+    }
+
+    @Override
+    public MaybeValue getValueForRecording(Environment env, BlazeDirectories directories)
+        throws InterruptedException {
+      var skyKey = getSkyKey(directories);
+      // Keep the Skyframe dependency, but an extension may modify a watched file after Skyframe
+      // evaluated its FileValue. Check the original path so a changed symlink is followed, too.
+      if (env.getValue(skyKey) == null) {
+        return MaybeValue.VALUES_MISSING;
+      }
+      var watchedPath = ((RootedPath) skyKey.argument()).asPath();
+      try {
+        var status = watchedPath.statIfFound(Symlinks.FOLLOW);
+        if (status == null) {
+          return new MaybeValue.Valid("ENOENT");
+        }
+        if (status.isDirectory()) {
+          return new MaybeValue.Valid("DIR");
+        }
+        byte[] digest =
+            DigestUtils.getDigestWithManualFallback(watchedPath, SyscallCache.NO_CACHE, status);
+        if (!watchExecutable || status.isSpecialFile()) {
+          return new MaybeValue.Valid(BaseEncoding.base16().lowerCase().encode(digest));
+        }
+        int permissions = status.getPermissions();
+        boolean executable =
+            permissions >= 0 ? (permissions & 0100) != 0 : watchedPath.isExecutable();
+        return new MaybeValue.Valid(markerValue(digest, executable));
       } catch (IOException e) {
         return new MaybeValue.Invalid("failed to stat %s: %s".formatted(path, e.getMessage()));
       }
