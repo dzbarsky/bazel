@@ -35,6 +35,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
 import com.google.common.util.concurrent.ListeningScheduledExecutorService;
+import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnMetrics;
@@ -70,6 +71,7 @@ import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.io.FileOutErr;
+import com.google.devtools.build.lib.vfs.DetailedIOException;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.longrunning.Operation;
 import com.google.protobuf.Any;
@@ -81,6 +83,7 @@ import io.grpc.Status.Code;
 import io.grpc.protobuf.StatusProto;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import javax.annotation.Nullable;
@@ -281,6 +284,25 @@ public class RemoteSpawnRunner implements SpawnRunner {
                 // only be regenerated reliably by action rewinding or an invocation retry. Unwrap
                 // the LostInputsExecException, which is not classified as retryable.
                 e.getLostArtifacts(context.getInputMetadataProvider()::getInput).throwIfNotEmpty();
+                // Lost repository files need an invocation retry; they cannot be rewound as
+                // generated action inputs. Preserve permanent errors when uploads fail for mixed
+                // reasons.
+                var suppressed = e.getSuppressed();
+                if (suppressed.length > 0
+                    && Arrays.stream(suppressed)
+                        .allMatch(
+                            t ->
+                                t instanceof DetailedIOException detailed
+                                    && detailed
+                                            .getDetailedExitCode()
+                                            .getFailureDetail()
+                                            .getFilesystem()
+                                            .getCode()
+                                        == FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED)) {
+                  var detailed = (DetailedIOException) suppressed[0];
+                  throw new EnvironmentalExecException(
+                      e, detailed.getDetailedExitCode().getFailureDetail());
+                }
                 throw e;
               }
 
