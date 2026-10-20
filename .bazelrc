@@ -127,3 +127,12 @@ common:ci-windows --test_tag_filters=-no_windows,-slow
 # Hide warnings and output of successful actions from external repositories
 # (e.g. MSVC warnings from grpc, protobuf and abseil). Errors still show.
 common:ci-windows --output_filter=^//
+
+
+# Cache configuration for fork release builds.
+common:buildbuddy-cache --bes_results_url=https://app.buildbuddy.io/invocation/
+common:buildbuddy-cache --bes_backend=grpcs://remote.buildbuddy.io
+common:buildbuddy-cache --remote_cache=grpcs://remote.buildbuddy.io
+common:buildbuddy-cache --remote_upload_local_results
+common:buildbuddy-cache --remote_download_toplevel
+common:buildbuddy-cache --remote_timeout=600
