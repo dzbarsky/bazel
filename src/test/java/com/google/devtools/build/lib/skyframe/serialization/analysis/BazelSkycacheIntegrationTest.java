@@ -43,9 +43,9 @@ import com.google.devtools.build.lib.runtime.CommandStartEvent;
 import com.google.devtools.build.lib.runtime.MemoryPressureEvent;
 import com.google.devtools.build.lib.runtime.MemoryPressureOptions;
 import com.google.devtools.build.lib.runtime.WorkspaceBuilder;
+import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.HighWaterMarkLimiter;
-import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.WorkspaceStatusValue;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueService;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueStore;
@@ -659,10 +659,18 @@ public final class BazelSkycacheIntegrationTest extends SkycacheIntegrationTestB
     setupScenarioWithAspects();
     assertUploadSuccess("//bar:one");
 
-    var listener = getCommandEnvironment().getRemoteAnalysisCachingEventListener();
-    assertThat(listener.getSerializedKeysCount()).isAtLeast(9); // for Bazel
-    assertThat(listener.getSkyfunctionCounts().count(SkyFunctions.CONFIGURED_TARGET))
-        .isAtLeast(9); // for Bazel
+    var serializedKeys =
+        getCommandEnvironment().getRemoteAnalysisCachingEventListener().getSerializedKeys();
+    assertThat(getLabels(filterKeys(serializedKeys, ConfiguredTargetKey.class)))
+        .containsAtLeast(
+            parseCanonicalUnchecked("//bar:one"),
+            parseCanonicalUnchecked("//bar:two"),
+            parseCanonicalUnchecked("//foo:generate_y"),
+            parseCanonicalUnchecked("//foo:x.txt"),
+            parseCanonicalUnchecked("@@bazel_tools//tools/jdk:toolchain_type"),
+            parseCanonicalUnchecked("@@bazel_tools//tools/jdk:dummy_java_toolchain"));
+    assertThat(getLabels(filterKeys(serializedKeys, AspectKey.class)))
+        .containsAtLeast(parseCanonicalUnchecked("//bar:one"), parseCanonicalUnchecked("//bar:two"));
   }
 
   @Test
