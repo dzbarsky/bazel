@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.skyframe.serialization.analysis;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.util.concurrent.Futures.getUnchecked;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.devtools.build.lib.cmdline.Label.parseCanonicalUnchecked;
 import static java.util.concurrent.ForkJoinPool.commonPool;
@@ -109,7 +110,7 @@ public final class BazelSkycacheIntegrationTest extends SkycacheIntegrationTestB
 
     private FailingFingerprintValueStore() {
       // The serializer omits filesystem roots because they are constant.
-      delegate.put(new StringKey(":"), new byte[0]);
+      assertThat(getUnchecked(delegate.put(new StringKey(":"), new byte[0]))).isTrue();
     }
 
     private void failNextPut() {
