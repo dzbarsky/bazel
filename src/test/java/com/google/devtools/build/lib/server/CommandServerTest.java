@@ -959,11 +959,12 @@ public final class CommandServerTest {
             return BlazeCommandResult.success();
           }
         };
-    createServer(dispatcher);
+    ServerAndStub serverAndStub = createServerAndStub(dispatcher);
+    CommandServer server = serverAndStub.server();
+    CommandServerStub stub = serverAndStub.stub();
 
     List<RunResponse> firstCommandResponses = new ArrayList<>();
     CountDownLatch firstCommandDone = new CountDownLatch(1);
-    CommandServerStub stub = CommandServerGrpc.newStub(channel);
     stub.run(
         createRequest(firstCommandArg),
         createResponseObserver(firstCommandResponses, firstCommandDone));
