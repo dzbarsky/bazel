@@ -145,9 +145,8 @@ public final class Reporter implements ExtendedEventHandler {
     }
   }
 
-  /** Detaches command-scoped event sinks after all command work has completed. */
+  /** Removes all command handlers after the command has completed. */
   public synchronized void clear() {
-    eventBus = null;
     eventHandlers.clear();
     ansiAllowingHandler = null;
     ansiStrippingHandler = null;
