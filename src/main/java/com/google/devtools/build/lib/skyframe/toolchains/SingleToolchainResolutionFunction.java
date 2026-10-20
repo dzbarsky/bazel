@@ -120,6 +120,37 @@ public class SingleToolchainResolutionFunction implements SkyFunction {
             targetPlatform,
             toolchains.registeredToolchains());
 
+    // Restore target-incompatible candidates for the mandatory-toolchain failure diagnostic.
+    if (!debug
+        && key.toolchainType().mandatory()
+        && toolchainResolution.availableToolchainLabels().isEmpty()) {
+      try {
+        toolchains =
+            (RegisteredToolchainsValue)
+                env.getValueOrThrow(
+                    RegisteredToolchainsValue.key(
+                        key.configurationKey(),
+                        key.toolchainTypeInfo().typeLabel(),
+                        key.targetPlatformKey(),
+                        /* debug= */ true),
+                    InvalidToolchainLabelException.class);
+        if (toolchains == null) {
+          return null;
+        }
+      } catch (InvalidToolchainLabelException e) {
+        throw new ToolchainResolutionFunctionException(e);
+      }
+      toolchainResolution =
+          resolveConstraints(
+              debugPrinter,
+              key.toolchainType(),
+              key.toolchainTypeInfo(),
+              key.availableExecutionPlatformKeys(),
+              platforms,
+              targetPlatform,
+              toolchains.registeredToolchains());
+    }
+
     debugPrinter.finishDebugging();
 
     return toolchainResolution;
