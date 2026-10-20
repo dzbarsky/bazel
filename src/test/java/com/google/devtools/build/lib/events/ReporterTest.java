@@ -18,6 +18,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.eventbus.EventBus;
 import com.google.devtools.build.lib.events.ExtendedEventHandler.Postable;
 import java.util.regex.Pattern;
 import org.junit.Before;
@@ -102,7 +103,7 @@ public class ReporterTest extends EventTestTemplate {
   public void clearDetachesEventBusAndAnsiHandlers() {
     EventBus eventBus = mock(EventBus.class);
     EventHandler ansiHandler = mock(EventHandler.class);
-    Reporter reporter = new Reporter(eventBus, outAppender);
+    Reporter reporter = new Reporter(new EventBusEventHandler(eventBus), outAppender);
     reporter.registerAnsiAllowingHandler(outAppender, ansiHandler);
 
     reporter.clear();

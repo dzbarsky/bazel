@@ -28,6 +28,7 @@ java_library(
         "//src/main/java/net/starlark/java/syntax",
         "//src/test/java/com/google/devtools/build/lib/testutil:JunitUtils",
         "//third_party/java/guava:collect",
+        "//third_party/java/guava:eventbus",
         "//third_party/java/guava:testing",
         "//third_party/java/junit",
         "//third_party/java/mockito",
