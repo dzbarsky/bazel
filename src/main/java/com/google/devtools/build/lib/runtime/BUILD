@@ -1092,6 +1092,7 @@ java_library(
     ],
     deps = [
         ":after_command_event",
+        ":aggregating_test_listener",
         ":async_directory_cleaner",
         ":blaze_command_result",
         ":blaze_server_startup_options",
@@ -1124,6 +1125,7 @@ java_library(
         ":starlark_options_parser",
         ":test_result_aggregator",
         ":test_summary",
+        ":test_summary_options",
         ":ui_event_handler",
         ":ui_options",
         "//src/main/java/com/google/devtools/build/lib/actions",
