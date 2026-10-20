@@ -1,0 +1,75 @@
+name: Validate date release patch port
+
+on:
+  push:
+    branches: [codex/bazel-date-port-validation]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Compile and test date release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      SOURCE_REF: 33552fd2e5672452bc117b4d0b4eff73ff60a640
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - name: Check out the date release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          path: source
+          persist-credentials: false
+      - name: Install Bazelisk and record source
+        id: setup
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_REF}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "${SOURCE_REF}" ]]
+          test "$(id -u)" -ne 0
+          df -h . /tmp
+          free -h
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 120 \
+            --output "${RUNNER_TEMP}/bazelisk" \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
+          chmod +x "${RUNNER_TEMP}/bazelisk"
+          printf 'Source: `%s`\n' "${SOURCE_REF}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Compile bazel-dev and run cache, tree artifact, and bzlmod tests
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${BUILDBUDDY_API_KEY}"
+          "${RUNNER_TEMP}/bazelisk" \
+            --batch --nohome_rc --nosystem_rc --host_jvm_args=-Xmx4g \
+            test \
+            --jobs=2 --local_test_jobs=1 \
+            --local_resources=cpu=2 --local_resources=memory=8192 \
+            --worker_max_instances=1 \
+            --remote_cache=grpcs://remote.buildbuddy.io --remote_upload_local_results --remote_download_toplevel --remote_timeout=600 \
+            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
+            --nocache_test_results --test_timeout=1800 --keep_going \
+            --test_output=errors --test_summary=detailed --verbose_failures \
+            --color=no --curses=no \
+            //src:bazel-dev \
+            //src/test/java/com/google/devtools/build/lib/skyframe:CacheProbeCompletionTest \
+            //src/test/java/com/google/devtools/build/lib/skyframe:TreeArtifactBuildTest \
+            //src/test/java/com/google/devtools/build/lib/skyframe:ArtifactFunctionTest \
+            //src/test/java/com/google/devtools/build/lib/bazel/bzlmod:BzlmodTests
+
+      - name: Upload test logs
+        if: always() && steps.setup.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: date-port-test-logs-${{ github.run_id }}
+          path: |
+            source/bazel-testlogs/**/test.log
+            source/bazel-testlogs/**/test.xml
+          if-no-files-found: ignore
+          retention-days: 7
