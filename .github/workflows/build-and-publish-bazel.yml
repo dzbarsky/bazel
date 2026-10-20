@@ -3,7 +3,7 @@ name: Build and publish Bazel
 on:
   push:
     branches:
-      - 'dzbarsky-??.??.????'
+      - 'dzbarsky-[0-9][0-9].[0-9][0-9].[0-9][0-9][0-9][0-9]'
   workflow_dispatch:
     inputs:
       release_tag:
