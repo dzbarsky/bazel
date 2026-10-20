@@ -360,14 +360,20 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:__subpackages__",
     ],
     deps = [
+        ":aspect_key_creator",
+        ":configured_target_key",
+        ":rule_configured_target_value",
         "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_data",
         "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_key",
         "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
+        "//src/main/java/com/google/devtools/build/lib/analysis:aspect_value",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
+        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gen_aquery_directory_info",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:depend_on_future_shim",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:deserialized-sky-value",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:skyvalue_retriever",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:analysis_cache_entry",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:dependencies_provider",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:frontier_serializer",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:remote_analysis_cache_client",
@@ -375,6 +381,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/main/java/com/google/devtools/build/skyframe:version",
         "//third_party/java/guava:base",
+        "//third_party/java/guava:collect",
     ],
 )
 
@@ -2805,6 +2812,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/events",
         "//src/main/java/com/google/devtools/build/lib/packages",
         "//src/main/java/com/google/devtools/build/lib/pkgcache",
+        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gen_analysis_query_key",
         "//src/main/java/com/google/devtools/build/skyframe",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//third_party/java/guava:base",
@@ -3017,6 +3025,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/packages",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:deserialized-sky-value",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//third_party/java/error_prone:annotations",
         "//third_party/java/guava:base",
         "//third_party/java/guava:collect",
@@ -3125,6 +3134,19 @@ java_library(
 )
 
 java_library(
+    name = "lazy_main_repo_mapping",
+    srcs = ["LazyMainRepoMapping.java"],
+    deps = [
+        ":repository_mapping_value",
+        "//src/main/java/com/google/devtools/build/lib/analysis:caching_analysis_environment",
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
+        "//src/main/java/com/google/devtools/build/lib/supplier",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//third_party/java/guava:base",
+    ],
+)
+
+java_library(
     name = "bzl_load_function",
     srcs = [
         "BzlLoadFunction.java",
@@ -3140,6 +3162,7 @@ java_library(
         ":containing_package_lookup_value",
         ":cycle_utils",
         ":detailed_exceptions",
+        ":lazy_main_repo_mapping",
         ":precomputed_value",
         ":repository_mapping_value",
         ":starlark_builtins_value",
@@ -3152,6 +3175,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/packages:bzl_visibility",
         "//src/main/java/com/google/devtools/build/lib/packages:starlark_exportable",
         "//src/main/java/com/google/devtools/build/lib/packages/semantics",
+        "//src/main/java/com/google/devtools/build/lib/supplier",
         "//src/main/java/com/google/devtools/build/lib/util",
         "//src/main/java/com/google/devtools/build/lib/util:detailed_exit_code",
         "//src/main/java/com/google/devtools/build/lib/vfs",
@@ -3207,6 +3231,7 @@ java_library(
     name = "eval_macro_function",
     srcs = ["EvalMacroFunction.java"],
     deps = [
+        ":lazy_main_repo_mapping",
         ":macro_instance_function",
         ":package_value",
         "//src/main/java/com/google/devtools/build/lib/clock",
@@ -3326,6 +3351,7 @@ java_library(
         ":globs_value",
         ":ignored_subdirectories_value",
         ":invalid_glob_pattern_exception",
+        ":lazy_main_repo_mapping",
         ":macro_instance_function",
         ":package_lookup_function",
         ":package_lookup_value",
@@ -3955,6 +3981,7 @@ java_library(
     name = "skyframe_core",
     srcs = [
         "AspectFunction.java",
+        "AspectQueryDependencyRecorder.java",
         "ConfiguredTargetFunction.java",
         "LoadAspectsFunction.java",
         "SkyframeBuildView.java",
@@ -4194,6 +4221,9 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/query2/common:universe-scope",
         "//src/main/java/com/google/devtools/build/lib/remote/options",
         "//src/main/java/com/google/devtools/build/lib/rules:alias",
+        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gen_analysis_query_core",
+        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gen_analysis_query_key",
+        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gen_aquery_directory_info",
         "//src/main/java/com/google/devtools/build/lib/rules/genquery:genquery_package_providers",
         "//src/main/java/com/google/devtools/build/lib/runtime:keep_going_option",
         "//src/main/java/com/google/devtools/build/lib/runtime:keep_state_after_build_option",
@@ -4393,6 +4423,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/pkgcache",
         "//src/main/java/com/google/devtools/build/lib/profiler",
         "//src/main/java/com/google/devtools/build/lib/profiler:google-auto-profiler-utils",
+        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gen_analysis_query_key",
         "//src/main/java/com/google/devtools/build/lib/skyframe/actiongraph/v2:actiongraph_v2",
         "//src/main/java/com/google/devtools/build/lib/skyframe/config",
         "//src/main/java/com/google/devtools/build/lib/skyframe/rewinding:rewindable_graph_inconsistency_receiver",

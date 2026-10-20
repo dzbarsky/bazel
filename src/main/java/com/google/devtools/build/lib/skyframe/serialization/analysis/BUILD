@@ -134,6 +134,7 @@ java_library(
         "//src/test/java/com/google/devtools/build/lib/skyframe/serialization/analysis:__pkg__",
     ],
     deps = [
+        ":analysis_cache_entry",
         ":event_listener",
         ":file_dependency_serializer",
         ":file_op_node_map",
@@ -144,6 +145,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_data",
         "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_key",
         "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
+        "//src/main/java/com/google/devtools/build/lib/analysis:configured_object_value",
         "//src/main/java/com/google/devtools/build/lib/analysis:configured_target_value",
         "//src/main/java/com/google/devtools/build/lib/analysis:configuredtargets/file_configured_target",
         "//src/main/java/com/google/devtools/build/lib/buildeventstream",
@@ -156,11 +158,14 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/profiler",
         "//src/main/java/com/google/devtools/build/lib/profiler:counter_series_task_impl",
         "//src/main/java/com/google/devtools/build/lib/rules:alias",
+        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gen_analysis_query_key",
+        "//src/main/java/com/google/devtools/build/lib/rules/genquery:gen_aquery_directory_info",
         "//src/main/java/com/google/devtools/build/lib/skyframe:action_execution_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:action_template_expansion_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:bzl_load_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:configured_target_key",
         "//src/main/java/com/google/devtools/build/lib/skyframe:filesystem_keys",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:sky_functions",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:deserialized-sky-value",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:error_message_helper",
@@ -839,4 +844,18 @@ java_library(
         "NodeValuePart.java",
     ],
     deps = ["//src/main/java/com/google/devtools/build/lib/skyframe/serialization"],
+)
+
+java_library(
+    name = "analysis_cache_entry",
+    srcs = ["AnalysisCacheEntry.java"],
+    visibility = [
+        "//src/main/java/com/google/devtools/build/lib/skyframe:__pkg__",
+        "//src/test/java/com/google/devtools/build/lib/skyframe/serialization/analysis:__pkg__",
+    ],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//third_party/java/guava:collect",
+    ],
 )

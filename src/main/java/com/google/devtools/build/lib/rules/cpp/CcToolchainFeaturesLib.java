@@ -138,14 +138,15 @@ public class CcToolchainFeaturesLib {
     ImmutableList<String> provides =
         getStringListFromStarlarkProviderField(featureStruct, "provides");
 
-    return new Feature(
-        name,
-        flagSetBuilder.build(),
-        envSetBuilder.build(),
-        enabled,
-        requiresBuilder.build(),
-        implies,
-        provides);
+    return Feature.intern(
+        new Feature(
+            name,
+            flagSetBuilder.build(),
+            envSetBuilder.build(),
+            enabled,
+            requiresBuilder.build(),
+            implies,
+            provides));
   }
 
   /**
@@ -352,7 +353,7 @@ public class CcToolchainFeaturesLib {
       withFeatureSetBuilder.add(withFeatureSetFromStarlark(withFeatureSetStruct));
     }
 
-    return new FlagSet(
+    return FlagSet.create(
         actions, ImmutableSet.of(), withFeatureSetBuilder.build(), flagGroupsBuilder.build());
   }
 

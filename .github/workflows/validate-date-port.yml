@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      SOURCE_REF: 33552fd2e5672452bc117b4d0b4eff73ff60a640
+      SOURCE_REF: f403d56c8561e3f7518d1e585964036385788a66
     defaults:
       run:
         shell: bash
@@ -40,7 +40,7 @@ jobs:
           chmod +x "${RUNNER_TEMP}/bazelisk"
           printf 'Source: `%s`\n' "${SOURCE_REF}" >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Compile bazel-dev and run cache, tree artifact, and bzlmod tests
+      - name: Compile bazel-dev and run gencquery, genaquery, Skycache and toolchain tests
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
@@ -54,14 +54,15 @@ jobs:
             --worker_max_instances=1 \
             --remote_cache=grpcs://remote.buildbuddy.io --remote_upload_local_results --remote_download_toplevel --remote_timeout=600 \
             "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
-            --nocache_test_results --test_timeout=1800 --keep_going \
+            --nocache_test_results --test_timeout=1800 \
             --test_output=errors --test_summary=detailed --verbose_failures \
             --color=no --curses=no \
             //src:bazel-dev \
-            //src/test/java/com/google/devtools/build/lib/skyframe:CacheProbeCompletionTest \
-            //src/test/java/com/google/devtools/build/lib/skyframe:TreeArtifactBuildTest \
-            //src/test/java/com/google/devtools/build/lib/skyframe:ArtifactFunctionTest \
-            //src/test/java/com/google/devtools/build/lib/bazel/bzlmod:BzlmodTests
+            //src/test/java/com/google/devtools/build/lib/buildtool:GenCqueryIntegrationTest \
+            //src/test/java/com/google/devtools/build/lib/buildtool:GenAqueryIntegrationTest \
+            //src/test/java/com/google/devtools/build/lib/skyframe/serialization/analysis:BazelSkycacheIntegrationTest \
+            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:RegisteredToolchainsFunctionTest \
+            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:SingleToolchainResolutionFunctionTest
 
       - name: Upload test logs
         if: always() && steps.setup.outcome == 'success'

@@ -21,7 +21,6 @@ import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static com.google.devtools.build.lib.analysis.config.CommonOptions.EMPTY_OPTIONS;
 import static com.google.devtools.build.lib.concurrent.Uninterruptibles.callUninterruptibly;
 import static com.google.devtools.build.lib.skyframe.ArtifactConflictFinder.ACTION_CONFLICTS;
 import static com.google.devtools.build.lib.skyframe.ConflictCheckingMode.NONE;
@@ -176,6 +175,10 @@ import com.google.devtools.build.lib.query2.common.QueryTransitivePackagePreload
 import com.google.devtools.build.lib.query2.common.UniverseScope;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.rules.AliasConfiguredTarget;
+import com.google.devtools.build.lib.rules.genquery.GenAnalysisQueryFunction;
+import com.google.devtools.build.lib.rules.genquery.GenAnalysisQueryKey;
+import com.google.devtools.build.lib.rules.genquery.GenAnalysisQueryValue;
+import com.google.devtools.build.lib.rules.genquery.GenAqueryDirectoryInfo;
 import com.google.devtools.build.lib.rules.genquery.GenQueryPackageProviderFactory;
 import com.google.devtools.build.lib.runtime.KeepGoingOption;
 import com.google.devtools.build.lib.runtime.KeepStateAfterBuildOption;
@@ -235,6 +238,7 @@ import com.google.devtools.build.lib.skyframe.toolchains.RegisteredToolchainsCyc
 import com.google.devtools.build.lib.skyframe.toolchains.RegisteredToolchainsFunction;
 import com.google.devtools.build.lib.skyframe.toolchains.SingleToolchainResolutionFunction;
 import com.google.devtools.build.lib.skyframe.toolchains.ToolchainContextKey;
+import com.google.devtools.build.lib.skyframe.toolchains.ToolchainDeclarationsFunction;
 import com.google.devtools.build.lib.skyframe.toolchains.ToolchainResolutionFunction;
 import com.google.devtools.build.lib.skyframe.toolchains.UnloadedToolchainContext;
 import com.google.devtools.build.lib.util.AbruptExitException;
@@ -896,6 +900,25 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     map.put(SkyFunctions.LOAD_ASPECTS, new LoadAspectsFunction());
     map.put(GenQueryPackageProviderFactory.GENQUERY_SCOPE, GenQueryPackageProviderFactory.FUNCTION);
     map.put(
+        GenAqueryDirectoryInfo.Key.FUNCTION_NAME,
+        (key, env) -> GenAqueryDirectoryInfo.create(directories));
+    var queryEvaluators =
+        ImmutableMap.<GenAnalysisQueryKey.Kind, GenAnalysisQueryFunction.QueryEvaluator>builder();
+    for (var kind : GenAnalysisQueryKey.Kind.values()) {
+      var rule = ruleClassProvider.getRuleClassMap().get(kind.ruleName());
+      if (rule != null) {
+        queryEvaluators.put(
+            kind, (GenAnalysisQueryFunction.QueryEvaluator) rule.getConfiguredTargetFactory());
+      }
+    }
+    map.put(
+        GenAnalysisQueryKey.FUNCTION_NAME,
+        new GenAnalysisQueryFunction(
+            queryEvaluators.buildOrThrow(),
+            () -> SkyframeExecutorWrappingWalkableGraph.of(this),
+            this::tracksStateForIncrementality,
+            cpuBoundSemaphore));
+    map.put(
         SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING,
         new ActionLookupConflictFindingFunction(this::getRemoteAnalysisCacheReaderDepsProvider));
     map.put(
@@ -966,7 +989,10 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     map.put(SkyFunctions.LOCAL_REPOSITORY_LOOKUP, new LocalRepositoryLookupFunction());
     map.put(
         SkyFunctions.REGISTERED_EXECUTION_PLATFORMS, new RegisteredExecutionPlatformsFunction());
-    map.put(SkyFunctions.REGISTERED_TOOLCHAINS, new RegisteredToolchainsFunction());
+    map.put(
+        SkyFunctions.REGISTERED_TOOLCHAINS,
+        new RegisteredToolchainsFunction(ruleClassProvider.getPrerequisiteValidator()));
+    map.put(SkyFunctions.TOOLCHAIN_DECLARATIONS, new ToolchainDeclarationsFunction());
     map.put(SkyFunctions.SINGLE_TOOLCHAIN_RESOLUTION, new SingleToolchainResolutionFunction());
     map.put(SkyFunctions.TOOLCHAIN_RESOLUTION, new ToolchainResolutionFunction());
     map.put(SkyFunctions.REPOSITORY_MAPPING, new RepositoryMappingFunction(ruleClassProvider));
@@ -1176,11 +1202,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       EmittedEventState emittedEventState);
 
   /**
-   * Use the fact that analysis of a target must occur before execution of that target, and in a
-   * separate Skyframe evaluation, to avoid propagating events from configured target nodes (and
-   * more generally action lookup nodes) to action execution nodes. We take advantage of the fact
-   * that if a node depends on an action lookup node and is not itself an action lookup node, then
-   * it is an execution-phase node: the action lookup nodes are terminal in the analysis phase.
+   * Avoid propagating analysis events into action execution nodes. Analysis nodes include action
+   * lookup nodes (except action-template expansion) and configured-query scopes, which analyze
+   * targets without bringing their actions into the build's action dependency graph.
    *
    * <p>Skymeld: propagate events to BuildDriverKey nodes, since they cover both analysis &
    * execution.
@@ -1195,15 +1219,16 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         @Override
         public boolean shouldPropagate(SkyKey depKey, SkyKey primaryKey) {
           // Do not propagate events from analysis phase nodes to execution phase nodes.
-          return isAnalysisPhaseActionLookupKey(primaryKey)
-              || !isAnalysisPhaseActionLookupKey(depKey)
+          return isAnalysisPhaseKey(primaryKey)
+              || !isAnalysisPhaseKey(depKey)
               // Skymeld only.
               || primaryKey instanceof BuildDriverKey;
         }
       };
 
-  private static boolean isAnalysisPhaseActionLookupKey(SkyKey key) {
-    return key instanceof ActionLookupKey && !(key instanceof ActionTemplateExpansionKey);
+  private static boolean isAnalysisPhaseKey(SkyKey key) {
+    return (key instanceof ActionLookupKey && !(key instanceof ActionTemplateExpansionKey))
+        || key instanceof GenAnalysisQueryKey;
   }
 
   protected SkyframeProgressReceiver newSkyframeProgressReceiver() {
@@ -1438,11 +1463,11 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     }
   }
 
-  protected static boolean isEmptyOptionsKey(@Nullable BuildConfigurationKey key) {
+  protected static boolean isNoConfigKey(@Nullable BuildConfigurationKey key) {
     if (key == null) {
       return false;
     }
-    return key.getOptionsChecksum().equals(EMPTY_OPTIONS.checksum());
+    return key.getOptions().hasNoConfig();
   }
 
   /** Signals whether nodes (or some internal node data) can be removed from the analysis cache. */
@@ -1466,7 +1491,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       }
     }
     if (discardType.discardsAnalysis()) {
-      if (functionName.equals(SkyFunctions.CONFIGURED_TARGET)) {
+      if (entry.getValue() instanceof GenAnalysisQueryValue query) {
+        query.clear();
+      } else if (functionName.equals(SkyFunctions.CONFIGURED_TARGET)) {
         ConfiguredTargetValue ctValue = (ConfiguredTargetValue) entry.getValue();
         if (ctValue == null) {
           return false; // Not successfully analyzed.
@@ -1486,9 +1513,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
           // case isn't worth optimizing for.
           return true;
         }
-        if (isEmptyOptionsKey(configuredTarget.getConfigurationKey())) {
+        if (isNoConfigKey(configuredTarget.getConfigurationKey())) {
           // Keep these to avoid the need to re-create them later, they are dependencies of the
-          // empty configuration key and will never change.
+          // no-config configuration key and will never change.
           return false;
         }
         ctValue.clear(!topLevel && !remoteAnalysisCachingEnabled);
@@ -1505,9 +1532,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
             && !hasActions(aspectValue)) {
           return true;
         }
-        if (isEmptyOptionsKey(aspectKey.getConfigurationKey())) {
+        if (isNoConfigKey(aspectKey.getConfigurationKey())) {
           // Keep these to avoid the need to re-create them later, they are dependencies of the
-          // empty configuration key and will never change.
+          // no-config configuration key and will never change.
           return false;
         }
         aspectValue.clear(!topLevel && !remoteAnalysisCachingEnabled);
@@ -3275,8 +3302,14 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       boolean determineTests)
       throws TargetParsingException, InterruptedException {
     return loadTargetPatternsWithFilters(
-        eventHandler, targetPatterns, relativeWorkingDirectory, options, threadCount,
-        keepGoing, determineTests, false);
+        eventHandler,
+        targetPatterns,
+        relativeWorkingDirectory,
+        options,
+        threadCount,
+        keepGoing,
+        determineTests,
+        false);
   }
 
   public TargetPatternPhaseValue loadTargetPatternsWithFilters(
@@ -4368,12 +4401,10 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         }
         var subtasks = new ArrayList<VisitActionLookupKey>();
         for (SkyKey dep : directDeps) {
-          // Besides PlatformFunction, the subgraph of dependencies of ActionLookupKeys never has
-          // a non-ActionLookupKey depending on an ActionLookupKey. So we can skip any other
-          // non-ActionLookupKeys in the traversal as an optimization.
+          // Follow build action dependencies. Query scope nodes analyze configured targets without
+          // making their actions part of the build; platform dependencies still need unwrapping.
           if (dep.functionName().equals(SkyFunctions.PLATFORM)) {
-            var platformLabel = ((PlatformValue.Key) dep.argument()).label();
-            dep = PlatformFunction.configuredTargetDep(platformLabel);
+            dep = PlatformFunction.configuredTargetDep((PlatformValue.Key) dep.argument());
           }
           if (!(dep instanceof ActionLookupKey depKey)) {
             continue;

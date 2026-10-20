@@ -516,6 +516,82 @@ Extract a value from a user defined Provider.
   $ bazel cquery //baz --output=starlark --starlark:file=example.cquery
 ```
 
+## Using configured query results in a build {#gencquery}
+
+The [`gencquery` rule](/reference/be/general#gencquery) makes a configured query
+result available as an ordinary build input. For example, this generates a
+manifest of the dependencies selected by the current build configuration.
+Use [`genquery`](/reference/be/general#genquery) instead to include all branches
+of `select()` without analyzing targets.
+
+```python
+gencquery(
+    name = "app-deps.txt",
+    expression = "deps(//app:app)",
+    scope = ["//app:app"],
+    output = "starlark",
+    opts = ["--notool_deps"],
+    starlark_expr = "str(target.label)",
+)
+```
+
+Building this rule analyzes `//app:app` and its dependencies, evaluates the query,
+and registers an action that writes the result. It does not execute the scope
+targets' actions. Other rules can use `:app-deps.txt` in attributes such as
+`srcs` or `data`.
+
+Actions belonging only to the query scope are excluded from build action-conflict
+checks. If a scope target is also requested for building, its actions undergo the
+usual checks.
+
+Scope targets' compatibility and transitive visibility do not constrain consumers
+of the report. Incompatible targets are queryable, with only the dependencies
+Bazel analyzes when determining their incompatibility.
+
+`scope` defines the entire graph visible to the query, including configurations
+introduced by transitions. Targets outside this configured closure are errors
+unless `strict = False`, which warns and skips those references while completing
+the rest of the query. The scope must still analyze successfully: missing
+dependencies and analysis cycles fail the build. Unlike command-line cquery,
+wildcard and recursive target patterns are not supported. Labels in the
+expression are relative to the rule's repository root, so `:app` refers to
+`//:app`, regardless of the package containing the rule.
+
+As with genquery, an absolute spelling such as `//pkg:all` can name an individual
+existing target instead of a wildcard.
+
+Results are formatted in label and configuration checksum order, except that a
+top-level `somepath(...)` expression retains dependency path order. A target in
+multiple configurations or execution-platform instances produces multiple results,
+even if the formatted text is identical. `config()` preserves all instances in
+the selected configuration. Expressions such as `some` and `somepath` retain
+cquery's freedom to choose any matching target or path. Targets analyzed by
+earlier builds cannot influence the query's scope.
+
+`output` selects `label` (the default), `label_kind`, or `starlark`. Specifying
+`starlark_expr` or `starlark_file` requires `output = "starlark"`; incompatible
+combinations are rejected before evaluating the query. `opts` accepts additional
+cquery options such as dependency filters, but not `--output`, `--starlark:expr`,
+or `--starlark:file`. Build options come from the enclosing build.
+
+As with genquery, output labels use canonical repository names.
+
+To use a formatter file, replace `starlark_expr` with
+`starlark_file = ":format.cquery"`. This attribute accepts a source-file label,
+including labels in other packages or repositories such as
+`//tools:format.cquery` or `@formatters//:format.cquery`. The source file must
+define `format(target)`; it has the same built-ins as command-line Starlark output.
+Changes to the file invalidate the result. Generated formatter files and
+`load()` statements are not supported. Formatting errors fail the build.
+
+This rule uses the configured dependency edges retained by
+`--track_incremental_state`, which is enabled by default.
+
+Set [`compressed_output = True`](/reference/be/general#gencquery.compressed_output)
+to write the result in GZIP format. Like `genquery`, Bazel internally compresses
+large query results; requesting compressed output also avoids decompressing
+them when writing the output file.
+
 ## cquery vs. query {#cquery-vs-query}
 
 `cquery` and `query` complement each other and excel in

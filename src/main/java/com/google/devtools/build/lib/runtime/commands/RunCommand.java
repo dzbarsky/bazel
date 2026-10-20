@@ -179,7 +179,9 @@ public class RunCommand implements BlazeCommand {
                 + " be used multiple times; for options given for the same variable, the latest"
                 + " wins, options for different variables accumulate. Note that the executed target"
                 + " will generally see the full environment of the host except for those variables"
-                + " that have been explicitly unset.")
+                + " that have been explicitly unset. The string <code>%bazel_workspace%</code> in a value"
+                + " will be replaced with the absolute path of the workspace as printed by"
+                + " <code>bazel info workspace</code>.")
     public abstract List<EnvVar> getRunEnvironment();
 
     @Option(
@@ -507,18 +509,6 @@ public class RunCommand implements BlazeCommand {
       configuration = result.getBuildConfiguration();
     }
 
-    // When --nobuild_runfile_manifests is enabled, the output service is responsible for staging
-    // runfiles.
-    if (!configuration.buildRunfileManifests()
-        && !env.getOutputService().stagesTopLevelRunfiles()) {
-      throw new RunCommandException(
-          reportAndCreateFailureResult(
-              env,
-              "--nobuild_runfile_manifests is incompatible with the \"run\" command",
-              Code.RUN_PREREQ_UNMET),
-          result.getStopTime());
-    }
-
     // Ensure runfiles directories are constructed, both for the target to run
     // and the --run_under target. The path of the runfiles directory of the
     // target to run needs to be preserved, as it acts as the working directory.
@@ -714,7 +704,7 @@ public class RunCommand implements BlazeCommand {
     for (var envVar : runOptions.getRunEnvironment()) {
       switch (envVar) {
         case EnvVar.Set(String name, String value) -> {
-          runEnvironment.put(name, value);
+          runEnvironment.put(name, env.expandWorkspaceInEnvironmentValue(value));
           envVariablesToClear.remove(name);
         }
         case EnvVar.Inherit(String name) -> {
@@ -787,10 +777,7 @@ public class RunCommand implements BlazeCommand {
           builtTargets.stopTime);
     }
     TestTargetExecutionSettings settings = testAction.getExecutionSettings();
-    // ensureRunfilesBuilt does build the runfiles, but an extra consistency check won't hurt.
-    Preconditions.checkState(
-        settings.getRunfilesSymlinksCreated()
-            == options.getOptions(CoreOptions.class).getBuildRunfileLinks());
+
 
     Path execRoot = env.getExecRoot();
     Path runfilesDir = settings.getRunfilesDir();
@@ -1021,8 +1008,9 @@ public class RunCommand implements BlazeCommand {
       workingDir = workingDir.getRelative(runfilesSupport.getRunfiles().getPrefix());
     }
 
-    // Return early if runfiles staging is managed by the output service.
-    if (env.getOutputService().stagesTopLevelRunfiles()) {
+    // Without build-time manifests, the run-only output group already staged the runfiles.
+    if (runfilesSupport.getRunfilesManifest() == null
+        || env.getOutputService().stagesTopLevelRunfiles()) {
       return workingDir;
     }
 

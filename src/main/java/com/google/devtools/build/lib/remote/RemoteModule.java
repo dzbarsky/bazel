@@ -563,7 +563,12 @@ public final class RemoteModule extends BlazeModule {
             outputsMode,
             downloadRegexes,
             lastRemoteOutputChecker);
-    remoteOutputChecker.maybeInvalidateSkyframeValues(env.getSkyframeExecutor().getEvaluator());
+    // Only commands that execute actions complete targets and thus download outputs. Other commands
+    // neither invalidate completed targets nor become the reference that the next executing
+    // command compares its download settings against.
+    if (env.getCommand().buildPhase().executes()) {
+      remoteOutputChecker.maybeInvalidateSkyframeValues(env.getSkyframeExecutor().getEvaluator());
+    }
 
     env.getEventBus().register(this);
     String invocationId = env.getCommandId().toString();
@@ -1114,11 +1119,14 @@ public final class RemoteModule extends BlazeModule {
                   rpcLogFileRef));
     }
 
+    Preconditions.checkNotNull(env);
     if (remoteOutputChecker != null) {
       remoteOutputChecker.clearPreviousCommand();
     }
-    lastRemoteOutputChecker = remoteOutputChecker;
-    lastBuildId = Preconditions.checkNotNull(env).getCommandId().toString();
+    if (env.getCommand().buildPhase().executes()) {
+      lastRemoteOutputChecker = remoteOutputChecker;
+    }
+    lastBuildId = env.getCommandId().toString();
 
     buildEventArtifactUploaderFactoryDelegate.reset();
     repositoryRemoteHelpersFactoryDelegate.reset();
@@ -1195,6 +1203,7 @@ public final class RemoteModule extends BlazeModule {
       return;
     }
     actionContextProvider.registerSpawnCache(registryBuilder);
+    actionContextProvider.registerFileWriteStrategy(registryBuilder);
 
     // For skymeld, a non-toplevel target might become a toplevel after it has been executed. This
     // is the last chance to download the missing toplevel outputs in this case before sending out
@@ -1434,6 +1443,12 @@ public final class RemoteModule extends BlazeModule {
   }
 
   @VisibleForTesting
+  @Nullable
+  RemoteOutputChecker getRemoteOutputChecker() {
+    return remoteOutputChecker;
+  }
+
+  @VisibleForTesting
   void setChannelFactory(ChannelFactory channelFactory) {
     this.channelFactory = channelFactory;
   }
@@ -1451,11 +1466,6 @@ public final class RemoteModule extends BlazeModule {
   @VisibleForTesting
   ThreadPoolExecutor getExecutorService() {
     return executorService;
-  }
-
-  @VisibleForTesting
-  RemoteOutputChecker getRemoteOutputChecker() {
-    return remoteOutputChecker;
   }
 
   @VisibleForTesting

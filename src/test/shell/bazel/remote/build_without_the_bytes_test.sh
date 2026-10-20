@@ -341,6 +341,25 @@ EOF
     || fail "Expected toplevel output bazel-bin/a/foo.txt to be downloaded"
 }
 
+function test_run_downloads_repo_mapping() {
+  add_rules_shell MODULE.bazel
+  cat > BUILD <<'EOF'
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+sh_binary(name = "foo", srcs = ["foo.sh"])
+EOF
+  cat > foo.sh <<'EOF'
+#!/bin/sh
+test -s "$0.runfiles/_repo_mapping"
+EOF
+  chmod +x foo.sh
+
+  bazel run \
+    --remote_executor=grpc://localhost:${worker_port} \
+    --remote_download_minimal \
+    --file_write_strategy=remote \
+    //:foo >& "$TEST_log" || fail "Repository mapping was not downloaded"
+}
+
 function test_downloads_toplevel_runfiles() {
   # Test that --remote_download_toplevel fetches only the top level binaries
   # and generated runfiles.
@@ -2229,6 +2248,44 @@ EOF
     //a:bin >& $TEST_log || fail "Failed to run //a:bin"
 
   expect_log "bin-message"
+}
+
+function test_bazel_run_with_minimal_without_manifests() {
+  if is_windows; then
+    return
+  fi
+  add_rules_shell "MODULE.bazel"
+  mkdir -p a
+  cat > a/BUILD <<'EOF'
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+genrule(
+  name = 'data',
+  outs = ['data.txt'],
+  cmd = "echo data-message > $@",
+)
+
+sh_binary(
+  name = 'bin',
+  srcs = ['bin.sh'],
+  data = [':data'],
+)
+EOF
+  cat > a/bin.sh <<'EOF'
+#!/bin/sh
+cat a/data.txt
+EOF
+  chmod +x a/bin.sh
+
+  bazel run \
+    --remote_executor=grpc://localhost:${worker_port} \
+    --remote_download_minimal \
+    --nobuild_runfile_manifests \
+    --experimental_remotable_source_manifests \
+    --enable_runfiles=yes \
+    //a:bin >& $TEST_log || fail "Failed to run //a:bin without build-time manifests"
+
+  expect_log "data-message"
 }
 
 function test_java_rbe_coverage_produces_report() {

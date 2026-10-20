@@ -29,7 +29,6 @@ import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
-import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.StoredEventHandler;
@@ -105,6 +104,7 @@ import java.util.function.Predicate;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Module;
+import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkSemantics;
 import net.starlark.java.syntax.FileOptions;
 import net.starlark.java.syntax.Location;
@@ -554,6 +554,15 @@ public abstract class PackageFunction implements SkyFunction {
       pfeFromNonSkyframeGlobbing = new PackageFunctionException(e, transience);
     } catch (InternalInconsistentFilesystemException e) {
       throw e.throwPackageFunctionException();
+    } catch (Starlark.UncheckedEvalException e) {
+      if (!LazyMainRepoMapping.isMissingDep(e)) {
+        throw e;
+      }
+      // A symbolic macro printed a label before the main repo mapping was available. Discard the
+      // partially built package and load it again after the restart.
+      checkState(env.valuesMissing());
+      state.loadedPackage = null;
+      return null;
     }
 
     try {
@@ -629,8 +638,7 @@ public abstract class PackageFunction implements SkyFunction {
     if (packageoid instanceof Package pkg) {
       return new PackageValue(pkg);
     } else if (packageoid instanceof PackagePiece.ForBuildFile pkgPiece) {
-      return new PackagePieceValue.ForBuildFile(
-          pkgPiece, starlarkBuiltinsValue.starlarkSemantics, pkgBuilder.getMainRepoMapping());
+      return new PackagePieceValue.ForBuildFile(pkgPiece, starlarkBuiltinsValue.starlarkSemantics);
     } else {
       throw new IllegalStateException("Unexpected packageoid type: " + packageoid.getClass());
     }
@@ -1004,8 +1012,6 @@ public abstract class PackageFunction implements SkyFunction {
     RepositoryMappingValue repositoryMappingValue =
         (RepositoryMappingValue)
             env.getValue(RepositoryMappingValue.key(packageId.getRepository()));
-    RepositoryMappingValue mainRepositoryMappingValue =
-        (RepositoryMappingValue) env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN));
     RootedPath buildFileRootedPath = packageLookupValue.getRootedPath(packageId);
     FileValue buildFileValue = getBuildFileValue(env, buildFileRootedPath);
     RuleVisibility defaultVisibility = PrecomputedValue.DEFAULT_VISIBILITY.get(env);
@@ -1035,7 +1041,6 @@ public abstract class PackageFunction implements SkyFunction {
     }
 
     RepositoryMapping repositoryMapping = repositoryMappingValue.repositoryMapping();
-    RepositoryMapping mainRepositoryMapping = mainRepositoryMappingValue.repositoryMapping();
     Label preludeLabel = null;
 
     // Load (optional) prelude, which determines environment.
@@ -1184,7 +1189,6 @@ public abstract class PackageFunction implements SkyFunction {
                   repositoryMappingValue.associatedModuleVersion(),
                   starlarkBuiltinsValue.starlarkSemantics,
                   repositoryMapping,
-                  mainRepositoryMapping,
                   cpuBoundSemaphore.get(),
                   /* (Nullable) */ compiled.generatorMap,
                   configSettingVisibilityPolicy,
@@ -1196,39 +1200,49 @@ public abstract class PackageFunction implements SkyFunction {
                   repositoryMappingValue.associatedModuleVersion(),
                   starlarkBuiltinsValue.starlarkSemantics,
                   repositoryMapping,
-                  mainRepositoryMapping,
                   cpuBoundSemaphore.get(),
                   /* (Nullable) */ compiled.generatorMap,
                   configSettingVisibilityPolicy,
                   globber);
+      pkgBuilder.setMainRepoMappingSupplier(LazyMainRepoMapping.supplier(env));
 
       pkgBuilder.mergePackageArgsFrom(
           PackageArgs.builder().setDefaultVisibility(defaultVisibility));
       pkgBuilder.mergePackageArgsFrom(repoPackageArgsValue.getPackageArgs());
 
       if (compiled.ok()) {
-        packageFactory.executeBuildFile(
-            pkgBuilder,
-            compiled.prog,
-            compiled.globs,
-            compiled.globsWithDirs,
-            compiled.subpackages,
-            compiled.predeclared,
-            loadedModules,
-            starlarkBuiltinsValue.starlarkSemantics);
-        // TODO: b/155396641 - Validate that transitive visibility groups are correctly declared and
-        // that this package is a member of all transitive visibility groups it declares, but
-        // probably not in this part of the code.
-        if (packagePieceId == null) {
-          try {
-            ((Package.Builder) pkgBuilder)
-                .expandAllRemainingMacros(starlarkBuiltinsValue.starlarkSemantics);
-          } catch (EvalException ex) {
-            pkgBuilder
-                .getLocalEventHandler()
-                .handle(Package.error(null, ex.getMessageWithStack(), Code.STARLARK_EVAL_ERROR));
-            pkgBuilder.setContainsErrors();
+        try {
+          packageFactory.executeBuildFile(
+              pkgBuilder,
+              compiled.prog,
+              compiled.globs,
+              compiled.globsWithDirs,
+              compiled.subpackages,
+              compiled.predeclared,
+              loadedModules,
+              starlarkBuiltinsValue.starlarkSemantics);
+          // TODO: b/155396641 - Validate that transitive visibility groups are correctly declared
+          // and that this package is a member of all transitive visibility groups it declares,
+          // but probably not in this part of the code.
+          if (packagePieceId == null) {
+            try {
+              ((Package.Builder) pkgBuilder)
+                  .expandAllRemainingMacros(starlarkBuiltinsValue.starlarkSemantics);
+            } catch (EvalException ex) {
+              pkgBuilder
+                  .getLocalEventHandler()
+                  .handle(Package.error(null, ex.getMessageWithStack(), Code.STARLARK_EVAL_ERROR));
+              pkgBuilder.setContainsErrors();
+            }
           }
+        } catch (Starlark.UncheckedEvalException e) {
+          if (!LazyMainRepoMapping.isMissingDep(e)) {
+            throw e;
+          }
+          // A BUILD file or finalizer printed a label before the main repo mapping was available.
+          // Discard this builder and restart, including any deferred macro expansions.
+          checkState(env.valuesMissing());
+          return null;
         }
       } else {
         // Execution not attempted due to static errors.
@@ -1446,7 +1460,6 @@ public abstract class PackageFunction implements SkyFunction {
             buildFilePiece.getMetadata(),
             buildFilePiece.getDeclarations(),
             nonFinalizerPackagePiecesValue.starlarkSemantics(),
-            nonFinalizerPackagePiecesValue.mainRepositoryMapping(),
             cpuBoundSemaphore.get(),
             /* generatorMap= */ null,
             configSettingVisibilityPolicy,
