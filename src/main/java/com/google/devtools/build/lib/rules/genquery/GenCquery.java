@@ -209,7 +209,7 @@ public final class GenCquery
                   ISO_8859_1);
       QueryExpression expression = QueryExpression.parse(request.expression(), queryEnvironment);
       Iterable<CqueryNode> orderedTargets;
-      if (expression.isTopLevelSomePathFunction()) {
+      if (expression.isSomePathFunction()) {
         var targets = QueryUtil.newOrderedAggregateAllOutputFormatterCallback(queryEnvironment);
         queryEnvironment.evaluateQuery(expression, targets);
         orderedTargets = targets.getResult();
