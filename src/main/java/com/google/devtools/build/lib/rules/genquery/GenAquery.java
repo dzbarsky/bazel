@@ -244,7 +244,7 @@ public final class GenAquery
         new ScopedEnvironment(request, repositoryMapping, semantics, scope, options, events)) {
       ActionQuery expression = parse(request.expression());
       Iterable<ConfiguredTargetValue> targets;
-      if (expression.targets().isTopLevelSomePathFunction()) {
+      if (expression.targets().isSomePathFunction()) {
         var selected = QueryUtil.newOrderedAggregateAllOutputFormatterCallback(query);
         query.evaluateQuery(expression.targets(), selected);
         targets = selected.getResult();
