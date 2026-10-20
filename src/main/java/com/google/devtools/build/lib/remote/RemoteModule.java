@@ -1449,11 +1449,6 @@ public final class RemoteModule extends BlazeModule {
   }
 
   @VisibleForTesting
-  RemoteOutputChecker getRemoteOutputChecker() {
-    return remoteOutputChecker;
-  }
-
-  @VisibleForTesting
   ThreadPoolExecutor getExecutorService() {
     return executorService;
   }
