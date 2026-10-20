@@ -15,7 +15,6 @@ package com.google.devtools.build.lib.skyframe.serialization.analysis;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth.assertWithMessage;
 import static com.google.common.util.concurrent.Futures.getUnchecked;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.devtools.build.lib.cmdline.Label.parseCanonicalUnchecked;
@@ -662,8 +661,7 @@ public final class BazelSkycacheIntegrationTest extends SkycacheIntegrationTestB
 
     var listener = getCommandEnvironment().getRemoteAnalysisCachingEventListener();
     assertThat(listener.getSerializedKeysCount()).isAtLeast(9); // for Bazel
-    assertWithMessage("serialized keys: %s", listener.getSerializedKeys())
-        .that(listener.getSkyfunctionCounts().count(SkyFunctions.CONFIGURED_TARGET))
+    assertThat(listener.getSkyfunctionCounts().count(SkyFunctions.CONFIGURED_TARGET))
         .isAtLeast(9); // for Bazel
   }
 

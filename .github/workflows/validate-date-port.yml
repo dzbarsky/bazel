@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      SOURCE_REF: ${{ github.sha }}
+      SOURCE_REF: ebbd5672c5f98f4d5e89d4aa2464cda2cb5c4e73
     defaults:
       run:
         shell: bash
@@ -40,7 +40,7 @@ jobs:
           chmod +x "${RUNNER_TEMP}/bazelisk"
           printf 'Source: `%s`\n' "${SOURCE_REF}" >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Print serialized keys from Skycache frontier upload test
+      - name: Compile bazel-dev and run gencquery, genaquery, Skycache and toolchain tests
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
@@ -57,8 +57,13 @@ jobs:
             --nocache_test_results --test_timeout=1800 --keep_going \
             --test_output=errors --test_summary=detailed --verbose_failures \
             --color=no --curses=no \
-            --test_filter=buildCommand_uploadsFrontierBytesWithUploadMode \
-            //src/test/java/com/google/devtools/build/lib/skyframe/serialization/analysis:BazelSkycacheIntegrationTest
+            //src:bazel-dev \
+            //src/test/java/com/google/devtools/build/lib/buildtool:GenCqueryIntegrationTest \
+            //src/test/java/com/google/devtools/build/lib/buildtool:GenAqueryIntegrationTest \
+            //src/test/java/com/google/devtools/build/lib/skyframe/serialization/analysis:BazelSkycacheIntegrationTest \
+            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:RegisteredToolchainsFunctionTest \
+            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:SingleToolchainResolutionFunctionTest \
+            //src/test/java/com/google/devtools/build/lib/events:EventsTests
 
       - name: Upload test logs
         if: always() && steps.setup.outcome == 'success'
