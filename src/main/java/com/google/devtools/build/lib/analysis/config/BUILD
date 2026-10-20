@@ -30,6 +30,7 @@ java_library(
     deps = [
         ":fragment",
         "//src/main/java/com/google/devtools/build/lib/concurrent",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec:serialization-constant",
         "//src/main/java/com/google/devtools/build/lib/util",
         "//third_party/java/guava:base",
         "//third_party/java/guava:collect",
