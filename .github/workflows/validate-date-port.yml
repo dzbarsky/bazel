@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      SOURCE_REF: bc21bf19bd5de3a858380e1a98390921d83dc363
+      SOURCE_REF: 089f4ce7ef6e1841f1770d08051ebbf0ddd48f5d
     defaults:
       run:
         shell: bash
@@ -62,7 +62,8 @@ jobs:
             //src/test/java/com/google/devtools/build/lib/buildtool:GenAqueryIntegrationTest \
             //src/test/java/com/google/devtools/build/lib/skyframe/serialization/analysis:BazelSkycacheIntegrationTest \
             //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:RegisteredToolchainsFunctionTest \
-            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:SingleToolchainResolutionFunctionTest
+            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:SingleToolchainResolutionFunctionTest \
+            //src/test/java/com/google/devtools/build/lib/events:EventsTests
 
       - name: Upload test logs
         if: always() && steps.setup.outcome == 'success'
