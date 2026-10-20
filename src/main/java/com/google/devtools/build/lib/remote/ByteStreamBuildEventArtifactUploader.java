@@ -501,7 +501,7 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
 
     FileBackedOutputStream buffer =
         new FileBackedOutputStream(STREAM_UPLOAD_MEMORY_THRESHOLD_BYTES, /* resetOnFinalize= */ true);
-    DigestOutputStream digestStream = combinedCache.digestUtil.newDigestOutputStream(buffer);
+    DigestOutputStream digestStream = combinedCache.digestUtil().newDigestOutputStream(buffer);
     SettableFuture<String> uriFuture = SettableFuture.create();
     CombinedCache retainedCache = combinedCache.retain();
     AtomicBoolean closed = new AtomicBoolean();
@@ -565,7 +565,7 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
       Digest digest,
       SettableFuture<String> uriFuture) {
     RequestMetadata metadata =
-        TracingMetadataUtils.buildMetadata(buildRequestId, commandId, "bes-stream-upload", null);
+        TracingMetadataUtils.buildMetadata(buildRequestId, commandId, "bes-stream-upload");
     RemoteActionExecutionContext context =
         RemoteActionExecutionContext.create(metadata)
             .withWriteCachePolicy(CachePolicy.REMOTE_CACHE_ONLY);
@@ -602,7 +602,7 @@ class ByteStreamBuildEventArtifactUploader extends AbstractReferenceCounted
   }
 
   private String toBytestreamUri(String remoteServerInstanceName, Digest digest) {
-    DigestFunction.Value digestFunction = combinedCache.digestUtil.getDigestFunction();
+    DigestFunction.Value digestFunction = combinedCache.digestUtil().getDigestFunction();
     if (isOldStyleDigestFunction(digestFunction)) {
       return String.format(
           "bytestream://%s/blobs/%s/%d",
