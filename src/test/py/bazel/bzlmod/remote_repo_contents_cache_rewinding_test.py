@@ -86,9 +86,9 @@ class RemoteRepoContentsCacheRewindingTest(
 
     # Build the other target: fails due to the lost input
     _, _, stderr = self.RunBazel(['build', '@my_repo//sub:sub'])
-    # First restart recovers @my_repo, the next one recovers @platforms.
+    # One restart recovers @my_repo and validates the other cached repositories.
     self.assertEqual(
-        2,
+        1,
         stderr.count(
             'Found transient remote cache error, retrying the build...'
         ),
@@ -264,15 +264,19 @@ class RemoteRepoContentsCacheRewindingTest(
     # Analysis is warm, so the eviction is only noticed while uploading the
     # inputs of the action.
     self.DeleteCasEntry(b'hello')
-    exit_code, _, stderr = self.RunBazel(args, allow_failure=True)
-    self.AssertExitCode(exit_code, 39, stderr)
+    _, _, stderr = self.RunBazel(args)
+    self.assertEqual(
+        1, stderr.count('Found transient remote cache error, retrying the build...')
+    )
     stderr = '\n'.join(stderr)
-    self.assertIn(
-        'Found transient remote cache error, retrying the build...', stderr
-    )
     self.assertRegex(
-        stderr, r'Lost inputs no longer available remotely: data.txt \(.*/5\)'
+        stderr,
+        r'external/[^/]+/data.txt with digest .*/5 is no longer available in the'
+        ' remote cache',
     )
+    self.assertIn('JUST FETCHED', stderr)
+    with open(self.Path('bazel-bin/main/out.txt')) as f:
+      self.assertEqual(f.read(), 'hello')
 
 
 if __name__ == '__main__':
