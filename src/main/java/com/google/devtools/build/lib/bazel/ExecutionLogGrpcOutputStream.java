@@ -83,11 +83,13 @@ final class ExecutionLogGrpcOutputStream extends OutputStream {
                     .setFormat("compact")
                     .setCompression("zstd"))
             .build());
-    flusher.scheduleAtFixedRate(
-        this::flushFromTimer,
-        MAX_CHUNK_DELAY_MILLIS,
-        MAX_CHUNK_DELAY_MILLIS,
-        TimeUnit.MILLISECONDS);
+    // flushFromTimer records failures for write/close; close shuts down the flusher.
+    var unused =
+        flusher.scheduleAtFixedRate(
+            this::flushFromTimer,
+            MAX_CHUNK_DELAY_MILLIS,
+            MAX_CHUNK_DELAY_MILLIS,
+            TimeUnit.MILLISECONDS);
   }
 
   @Override
