@@ -1410,8 +1410,8 @@ class RemoteRepoContentsCacheTest(
         'other_repo.bzl',
         [
             'def _other_repo_impl(rctx):',
-            # Reading my_repo's BUILD forces full materialization of my_repo.
-            '  rctx.file("BUILD", rctx.read(rctx.attr.build_file))',
+            # Resolving my_repo's BUILD as a path materializes all of my_repo.
+            '  rctx.file("BUILD", rctx.read(rctx.path(rctx.attr.build_file)))',
             # other is not reproducible, so it is always fetched and re-triggers
             # materialization of my_repo from the cache.
             '  return rctx.repo_metadata()',
@@ -1934,7 +1934,7 @@ class RemoteRepoContentsCacheTest(
         [
             'def _materializer_impl(rctx):',
             '  rctx.file("BUILD", "filegroup(name=\'haha\')")',
-            '  rctx.read(rctx.attr.dep_file)',
+            '  rctx.read(rctx.path(rctx.attr.dep_file))',
             '  return rctx.repo_metadata()',
             (
                 'materializer_rule = repository_rule(_materializer_impl,'
@@ -2528,11 +2528,11 @@ class RemoteRepoContentsCacheTest(
             'def _ext_impl(module_ctx):',
             (
                 '  extension = module_ctx.read('
-                'Label("@my_repo//:tool.txt"), watch="no")'
+                'module_ctx.path(Label("@my_repo//:tool.txt")), watch="no")'
             ),
             (
                 '  support = module_ctx.read('
-                'Label("@support_repo//:tool.txt"), watch="no")'
+                'module_ctx.path(Label("@support_repo//:tool.txt")), watch="no")'
             ),
             '  generated_repo(name="generated", contents=extension)',
             '  generated_repo(name="support_generated", contents=support)',
@@ -2879,7 +2879,7 @@ class RemoteRepoContentsCacheTest(
     # Analysis is warm, so eviction is first noticed while uploading inputs.
     self.ClearRemoteCache()
     exit_code, _, stderr = self.RunBazel(args, allow_failure=True)
-    self.AssertExitCode(exit_code, 34, stderr)
+    self.AssertExitCode(exit_code, 39, stderr)
     self.assertRegex(
         '\n'.join(stderr),
         r'external/[^/]+/data.txt with digest .*/.* no longer available in the'
