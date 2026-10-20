@@ -65,7 +65,7 @@ import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.testutil.TestThread;
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.testutil.TimestampGranularityUtils;
-import com.google.devtools.build.lib.unix.UnixFileSystem;
+import com.google.devtools.build.lib.vfs.util.FileSystems;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.StringEncoding;
 import com.google.devtools.build.lib.util.io.OutErr;
@@ -1533,7 +1533,7 @@ public final class FilesystemValueCheckerTest {
       @TestParameter boolean nonAscii)
       throws Exception {
     assumeTrue(OS.getCurrent() != OS.WINDOWS);
-    FileSystem realFs = new UnixFileSystem(DigestHashFunction.SHA256, "");
+    FileSystem realFs = FileSystems.getNativeFileSystem();
     Path root =
         realFs
             .getPath(TestUtils.tmpDir())
