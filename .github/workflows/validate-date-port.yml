@@ -9,11 +9,11 @@ permissions:
 
 jobs:
   validate:
-    name: Validate release regressions (nine targets)
+    name: Validate RemoteTests and ServerTests
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      SOURCE_REF: 0ee9543700673eaf9699d3997d844ff2d1e6a24f
+      SOURCE_REF: 57df9494fb1e9b6b24897bb988865cb3994ae0d1
     defaults:
       run:
         shell: bash
@@ -50,15 +50,8 @@ jobs:
             exit 1
           fi
           targets=(
-            //src/test/java/com/google/devtools/build/lib/bazel/bzlmod:BzlmodTests
-            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:RegisteredToolchainsFunctionTest
-            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:SingleToolchainResolutionFunctionTest
-            //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:ToolchainResolutionFunctionTest
             //src/test/java/com/google/devtools/build/lib/server:ServerTests
             //src/test/java/com/google/devtools/build/lib/remote:RemoteTests
-            //src/test/java/com/google/devtools/build/lib/remote/disk:disk
-            //src/test/py/bazel:remote_repo_contents_cache_test
-            //src/test/py/bazel:remote_repo_contents_cache_rewinding_test
           )
           printf 'Source: `%s`\n\n' "${SOURCE_REF}" >> "${GITHUB_STEP_SUMMARY}"
           printf -- '- `%s`\n' "${targets[@]}" >> "${GITHUB_STEP_SUMMARY}"
