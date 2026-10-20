@@ -396,9 +396,9 @@ public class CombinedCacheTest {
     getFromFuture(
         cache.uploadFile(
             remoteActionExecutionContext,
-            RemotePathResolver.createDefault(execRoot),
             digest,
             actionFs.getPath(source.asFragment()),
+            PathFragment.create("external/repo/source.txt"),
             /* force= */ false));
 
     assertThat(getFromFuture(cache.downloadBlob(remoteActionExecutionContext, digest)))

@@ -32,9 +32,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
+import com.google.devtools.build.lib.remote.util.InMemoryCacheClient;
 import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
 import com.google.devtools.build.lib.vfs.DetailedIOException;
-import com.google.devtools.build.lib.remote.util.InMemoryCacheClient;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -284,7 +284,7 @@ public final class RemoteExternalOverlayFileSystemTest {
     overlay.beforeCommand(
         new InMemoryCombinedCache(digestUtil),
         prefetcher,
-        new Reporter(new EventBus()),
+        new Reporter(),
         "build-request",
         "command",
         mock(MemoizingEvaluator.class),
@@ -307,7 +307,7 @@ public final class RemoteExternalOverlayFileSystemTest {
     overlay.beforeCommand(
         cache,
         prefetcher,
-        new Reporter(new EventBus()),
+        new Reporter(),
         "build-request",
         "command",
         evaluator,
