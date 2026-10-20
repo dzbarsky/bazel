@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      SOURCE_REF: 2ab9d0ed556f33e50396da2fa62c58b96f874491
+      SOURCE_REF: f47868751aa3264442bc7aef0a1551f3e798fb26
     defaults:
       run:
         shell: bash
