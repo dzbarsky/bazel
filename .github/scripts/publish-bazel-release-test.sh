@@ -117,8 +117,8 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
     (temporary / 'bin/gh').chmod(0o755)
     environment = dict(os.environ, PATH=str(temporary / 'bin') + os.pathsep + os.environ['PATH'],
                        GITHUB_REPOSITORY='dzbarsky/bazel', GITHUB_SHA='1' * 40,
-                       GITHUB_REF_NAME='dzbarsky-20.10.2026',
-                       RELEASE_TAG='10.0.0-dzbarsky20261020r17', GH_TOKEN='', GITHUB_TOKEN='')
+                       GITHUB_REF_NAME='release-10.0.0-pre.20261021.1rc1',
+                       RELEASE_TAG='10.0.0-pre.20261021.1', GH_TOKEN='', GITHUB_TOKEN='')
     cases = ['success', 'release_notes', 'missing_notes', 'wrong_remote_body',
              'existing_tag', 'existing_published', 'existing_draft',
              'tag_api_error', 'release_api_error', 'missing_local_asset', 'bad_checksum',
@@ -126,10 +126,12 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
              'wrong_remote_digest', 'wrong_remote_target', 'publish_error',
              'mutable_release', 'wrong_tag']
     invalid_publisher_tags = {
-        'wrong_release_date': '10.0.0-dzbarsky20261021',
-        'wrong_bazel_version': '9.4.0-dzbarsky20261020',
-        'bare_branch_tag': 'dzbarsky-20.10.2026',
-        'revision_one': '10.0.0-dzbarsky20261020r1',
+        'wrong_release_date': '10.0.0-pre.20261020.1',
+        'wrong_bazel_version': '11.0.0-pre.20261021.1',
+        'bare_branch_tag': 'release-10.0.0-pre.20261021.1rc1',
+        'mismatched_revision': '10.0.0-pre.20261021.2',
+        'old_fork_version': '10.0.0-dzbarsky20261021',
+        'tag_with_rc': '10.0.0-pre.20261021.1rc1',
     }
     cases.extend(invalid_publisher_tags)
     windows_failures = {
@@ -201,29 +203,25 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
     assert 'run: bash .github/scripts/bazel-release-tag.sh select' in workflow
     assert '--clobber' not in workflow
 
-    prefix = '10.0.0-dzbarsky20261020'
+    tag = environment['RELEASE_TAG']
     def release(tag, draft=False):
         return dict(id=17, tag_name=tag, draft=draft)
 
-    unrelated = [release('9.4.0-dzbarsky99'), release('10.0.0-dzbarsky20261019r20'),
-                 release('10.0.0-actiond99'), release(prefix + 'r500', draft=True),
-                 release(prefix + 'r01'), release(prefix + 'r1')]
+    unrelated = [release('9.4.0-dzbarsky3'), release('10.0.0-dzbarsky20261020'),
+                 release('10.0.0-pre.20261020.17')]
     selections = [
-        ('first', '', unrelated, prefix),
-        ('second', '', unrelated + [release(prefix)], prefix + 'r2'),
-        ('highest_published', '', unrelated + [release(prefix), release(prefix + 'r16'),
-                                               release(prefix + 'r3')], prefix + 'r17'),
-        ('manual_first', prefix, unrelated, prefix),
-        ('manual_revision', prefix + 'r2', unrelated, prefix + 'r2'),
-        ('different_date', '10.0.0-dzbarsky20261021', unrelated, None),
-        ('different_version', '9.4.0-dzbarsky20261020', unrelated, None),
-        ('wrong_prefix', '10.0.0-actiond20261020', unrelated, None),
-        ('branch_as_tag', 'dzbarsky-20.10.2026', unrelated, None),
-        ('zero_revision', prefix + 'r0', unrelated, None),
-        ('one_revision', prefix + 'r1', unrelated, None),
-        ('leading_zero_revision', prefix + 'r02', unrelated, None),
-        ('non_numeric_revision', prefix + 'rabc', unrelated, None),
-        ('unsafe_tag', prefix + '/../../master', unrelated, None),
+        ('first', '', unrelated, tag),
+        ('same_tag_after_publication', '', unrelated + [release(tag)], tag),
+        ('same_tag_after_draft', '', unrelated + [release(tag, draft=True)], tag),
+        ('manual_exact', tag, unrelated, tag),
+        ('manual_next_revision', '10.0.0-pre.20261021.2', unrelated, None),
+        ('different_date', '10.0.0-pre.20261022.1', unrelated, None),
+        ('different_version', '11.0.0-pre.20261021.1', unrelated, None),
+        ('fork_suffix', tag + '-dzbarsky', unrelated, None),
+        ('branch_as_tag', environment['GITHUB_REF_NAME'], unrelated, None),
+        ('tag_with_rc', tag + 'rc1', unrelated, None),
+        ('old_date_tag', '10.0.0-dzbarsky20261021', unrelated, None),
+        ('unsafe_tag', tag + '/../../master', unrelated, None),
     ]
     for name, input_tag, releases, expected in selections:
         directory = temporary / ('selection_' + name)
@@ -236,21 +234,34 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         events = (directory / 'events').read_text().splitlines() if (directory / 'events').exists() else []
         assert (result.returncode == 0) == (expected is not None), (name, result.stdout)
-        assert events == ([] if input_tag else ['releases']), (name, events)
+        assert events == [], (name, events)
         if expected is None:
             assert not output.exists(), (name, output.read_text())
         else:
             assert output.read_text() == 'release_tag=' + expected + '\n', (name, output.read_text())
         print('PASS selection_' + name)
 
-    for name, branch, version, expected in [
-        ('next_branch', 'dzbarsky-02.01.2027', '10.0.0-prerelease', '10.0.0-dzbarsky20270102'),
-        ('new_module_version', 'dzbarsky-20.10.2026', '11.0.0-prerelease', '11.0.0-dzbarsky20261020'),
-        ('stable_module_version', 'dzbarsky-20.10.2026', '10.1.2', '10.1.2-dzbarsky20261020'),
+    branches = [
+        ('next_branch', 'release-10.0.0-pre.20270102.1rc1', '10.0.0-prerelease', '10.0.0-pre.20270102.1'),
+        ('next_revision', 'release-10.0.0-pre.20261021.2rc1', '10.0.0-prerelease', '10.0.0-pre.20261021.2'),
+        ('double_digit_revision', 'release-10.0.0-pre.20261021.17rc1', '10.0.0-prerelease', '10.0.0-pre.20261021.17'),
+        ('new_module_version', 'release-11.0.0-pre.20261021.1rc1', '11.0.0-prerelease', '11.0.0-pre.20261021.1'),
+        ('wrong_module_major', 'release-10.0.0-pre.20261021.1rc1', '11.0.0-prerelease', None),
+        ('nonzero_module_minor', 'release-10.0.0-pre.20261021.1rc1', '10.1.0', None),
+        ('nonzero_module_patch', 'release-10.0.0-pre.20261021.1rc1', '10.0.1', None),
         ('invalid_branch', 'codex/bazel-9.4-jvm-buildbuddy-release', '10.0.0-prerelease', None),
-        ('invalid_date_format', 'dzbarsky-2026.10.20', '10.0.0-prerelease', None),
-        ('invalid_module_version', 'dzbarsky-20.10.2026', 'unversioned', None),
-    ]:
+        ('master', 'master', '10.0.0-prerelease', None),
+        ('old_branch', 'dzbarsky-20.10.2026', '10.0.0-prerelease', None),
+        ('invalid_date_format', 'release-10.0.0-pre.21.10.2026.1rc1', '10.0.0-prerelease', None),
+        ('invalid_module_version', 'release-10.0.0-pre.20261021.1rc1', 'unversioned', None),
+        ('nonrolling_branch', 'release-10.1.0-pre.20261021.1rc1', '10.1.0', None),
+        ('bare_version', '10.0.0-pre.20261021.1', '10.0.0-prerelease', None),
+        ('zero_revision', 'release-10.0.0-pre.20261021.0rc1', '10.0.0-prerelease', None),
+        ('leading_zero_revision', 'release-10.0.0-pre.20261021.01rc1', '10.0.0-prerelease', None),
+        ('wrong_rc', 'release-10.0.0-pre.20261021.1rc2', '10.0.0-prerelease', None),
+        ('missing_rc', 'release-10.0.0-pre.20261021.1', '10.0.0-prerelease', None),
+    ]
+    for name, branch, version, expected in branches:
         directory = temporary / ('selection_' + name)
         directory.mkdir()
         output = directory / 'github-output'
@@ -265,5 +276,5 @@ with tempfile.TemporaryDirectory(prefix='publication-test-', dir=root) as tempor
         else:
             assert output.read_text() == 'release_tag=' + expected + '\n', (name, output.read_text())
         print('PASS selection_' + name)
-print(f'All {len(cases) + len(selections) + 6} mocked publication checks passed; no network calls or GitHub mutations.')
+print(f'All {len(cases) + len(selections) + len(branches)} mocked publication checks passed; no network calls or GitHub mutations.')
 PY
