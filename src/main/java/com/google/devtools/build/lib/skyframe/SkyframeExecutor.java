@@ -3901,7 +3901,10 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
           packageOptions.checkOutputFiles,
           repoOptions != null && repoOptions.checkExternalRepositoryFiles,
           packageOptions.checkExternalOtherFiles,
-          fsvcThreads);
+          fsvcThreads,
+          buildRequestOptions == null
+              ? SyscallCache.StatBatchMode.OFF
+              : buildRequestOptions.inputStatBatch);
     } finally {
       if (scheduledExecutorService != null && diffCheckNotificationFuture != null) {
         diffCheckNotificationFuture.cancel(false);
@@ -4004,7 +4007,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       boolean checkOutputFiles,
       boolean checkExternalRepositoryFiles,
       boolean checkExternalOtherFiles,
-      int fsvcThreads)
+      int fsvcThreads,
+      SyscallCache.StatBatchMode inputStatBatch)
       throws InterruptedException, AbruptExitException {
 
     ExternalFilesKnowledge externalFilesKnowledge = externalFilesHelper.getExternalFilesKnowledge();
@@ -4031,7 +4035,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
               outputService == null
                   ? XattrProviderOverrider.NO_OVERRIDE
                   : outputService::getXattrProvider,
-              fsvcThreads);
+              fsvcThreads,
+              inputStatBatch);
 
       Set<Root> diffPackageRootsUnderWhichToCheck =
           getDiffPackageRootsUnderWhichToCheck(pathEntriesWithoutDiffInformation);
@@ -4107,7 +4112,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
               outputService == null
                   ? XattrProviderOverrider.NO_OVERRIDE
                   : outputService::getXattrProvider,
-              fsvcThreads);
+              fsvcThreads,
+              inputStatBatch);
       ImmutableBatchDirtyResult batchDirtyResult;
       try (SilentCloseable c = Profiler.instance().profile("fsvc.getDirtyExternalKeys")) {
         Map<SkyKey, SkyValue> externalDirtyNodes = new ConcurrentHashMap<>();

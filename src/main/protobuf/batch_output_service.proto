@@ -1,0 +1,92 @@
+// Copyright 2026 The Bazel Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package bazel_batch_output_service;
+
+option java_package = "com.google.devtools.build.lib.remote";
+option java_outer_classname = "BatchOutputServiceProto";
+
+// Optional acceleration of ordinary local filesystem operations. This service
+// does not manage output trees, build sessions, CAS objects, or remote outputs.
+// Paths are native filename bytes, and errors are positive Linux errno values.
+// Implementations must execute with the authenticated caller's filesystem
+// permissions and namespace. UNIMPLEMENTED means no operation was performed;
+// clients may then use ordinary local filesystem operations.
+service BatchOutputService {
+  rpc BatchStat(BatchStatRequest) returns (BatchStatResponse);
+  rpc BatchSymlink(BatchSymlinkRequest) returns (BatchSymlinkResponse);
+  rpc BatchMkdir(BatchMkdirRequest) returns (BatchMkdirResponse);
+}
+
+message BatchStatRequest {
+  // Absolute directory used to resolve relative paths. Absolute paths remain
+  // absolute, including the targets of intermediate symbolic links.
+  bytes directory = 1;
+  repeated bytes paths = 2;
+}
+
+message FileStat {
+  // Zero on success. Metadata fields must be ignored when error is nonzero.
+  // ENOENT and ENOTDIR mean absent; other errors must not be treated as absent.
+  int32 error = 1;
+  uint32 mode = 2;
+  uint64 inode = 3;
+  int64 size = 4;
+  int64 mtime_seconds = 5;
+  int64 ctime_seconds = 6;
+  uint32 mtime_nanos = 7;
+  uint32 ctime_nanos = 8;
+}
+
+message BatchStatResponse {
+  // One lstat result per requested path, in order. Each entry is an independent
+  // observation; the batch does not promise a filesystem snapshot.
+  repeated FileStat stats = 1;
+}
+
+message Symlink {
+  // Nonempty path relative to directory, without empty, dot, or dot-dot parts.
+  bytes path = 1;
+  // Literal target bytes. Never normalize this value or resolve its referent.
+  bytes target = 2;
+}
+
+message BatchSymlinkRequest {
+  bytes directory = 1;
+  // Parent directories already exist. Existing entries are never replaced.
+  repeated Symlink symlinks = 2;
+}
+
+message BatchSymlinkResponse {
+  // One result per request entry. An existing symlink with exactly the requested
+  // textual target is success. Batches can partially succeed. A lost response
+  // must not be interpreted as no writes.
+  repeated int32 errors = 1;
+}
+
+message BatchMkdirRequest {
+  bytes directory = 1;
+  // Normalized relative paths in ancestor-first order. Create with mode 0777
+  // masked by the caller's umask. Stop at the first error, including EEXIST;
+  // never traverse an existing entry before the caller reconciles it.
+  repeated bytes paths = 2;
+}
+
+message BatchMkdirResponse {
+  // Successfully created prefix, excluding the first failed entry. The caller
+  // reconciles the remainder locally. A lost response is ambiguous completion.
+  uint32 created_count = 1;
+}

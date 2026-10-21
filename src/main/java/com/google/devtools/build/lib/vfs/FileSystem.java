@@ -484,6 +484,11 @@ public abstract class FileSystem {
                 resolveSymbolicLinks(parentNode).asFragment(), path.getBaseName(), MAX_SYMLINKS));
   }
 
+  /** Returns whether an existing absolute path already names its canonical location. */
+  public boolean isCanonicalPath(PathFragment path) throws IOException {
+    return resolveSymbolicLinks(path).asFragment().equals(path);
+  }
+
   /** Returns the status of a file. See {@link Path#stat(Symlinks)} for specification. */
   public abstract FileStatus stat(PathFragment path, boolean followSymlinks) throws IOException;
 
@@ -510,6 +515,36 @@ public abstract class FileSystem {
     } catch (FileNotFoundException e) {
       return null;
     }
+  }
+
+  /**
+   * Optionally returns ordered nofollow stats, including available fast digests, for paths relative
+   * to {@code root}. Missing entries are null; a null list means batching is unsupported.
+   * Implementations may fall back to ordinary syscalls when {@code useIoctl} is unavailable.
+   */
+  @Nullable
+  public List<FileStatus> statBatch(PathFragment root, List<PathFragment> paths, boolean useIoctl)
+      throws IOException {
+    return null;
+  }
+
+  /**
+   * Creates ancestor-first directories, stopping at the first error. Returns the created prefix,
+   * or -1 when unsupported and no writes occurred. An exception may indicate partial completion.
+   */
+  public int createDirectoriesBatch(PathFragment root, List<PathFragment> paths)
+      throws IOException {
+    return -1;
+  }
+
+  /**
+   * Creates links independently and returns zero for each success or a nonzero error for each
+   * failure. Null means unsupported with no writes. An exception may indicate partial completion.
+   */
+  @Nullable
+  public int[] createSymlinksBatch(
+      PathFragment root, List<PathFragment> paths, List<PathFragment> targets) throws IOException {
+    return null;
   }
 
   /**

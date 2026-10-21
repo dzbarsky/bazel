@@ -21,6 +21,11 @@ import java.util.List;
  */
 public interface BatchStat {
 
+  /** Maximum concurrent batches, or zero to use individual local stats. */
+  default int getMaxConcurrentCalls() {
+    return Integer.MAX_VALUE;
+  }
+
   /**
    * Calls stat() on a set of paths.
    *

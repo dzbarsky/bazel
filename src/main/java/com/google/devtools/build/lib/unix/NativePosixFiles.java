@@ -41,6 +41,9 @@ final class NativePosixFiles {
    */
   static native String readlink(String path) throws IOException;
 
+  /** Returns 1 for a canonical path, 0 for a symlink in the path, or -1 for ordinary resolution. */
+  static native int isCanonicalPath(String path);
+
   /**
    * Native wrapper around POSIX chmod(2) syscall: Changes the file access permissions of 'path' to
    * 'mode'.
@@ -116,6 +119,14 @@ final class NativePosixFiles {
    * @throws IOException if the lstat() syscall failed.
    */
   private static native FileStatus lstat(String path, char errorHandling) throws IOException;
+
+  static native FileStatus[] statBatch(
+      String root, String[] paths, String digestXattr, boolean useIoctl) throws IOException;
+
+  static native int createDirectoriesBatch(String root, String[] paths) throws IOException;
+
+  static native int[] createSymlinksBatch(String root, String[] paths, String[] targets)
+      throws IOException;
 
   /**
    * Native wrapper around POSIX utimensat(2) syscall.

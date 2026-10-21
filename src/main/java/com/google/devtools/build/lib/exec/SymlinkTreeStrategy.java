@@ -120,6 +120,7 @@ public final class SymlinkTreeStrategy implements SymlinkTreeActionContext {
         actionExecutionContext.getInputPath(action.getInputManifest()),
         actionExecutionContext.getInputPath(action.getOutputManifest()),
         actionExecutionContext.getInputPath(action.getOutputManifest()).getParentDirectory(),
-        workspaceName);
+        workspaceName,
+        outputService.getBatchOperations());
   }
 }

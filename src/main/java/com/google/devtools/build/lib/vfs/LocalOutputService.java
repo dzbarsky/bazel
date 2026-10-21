@@ -40,8 +40,15 @@ import javax.annotation.Nullable;
  */
 public class LocalOutputService implements OutputService {
   private final BlazeDirectories directories;
+  @Nullable private final BatchOperations batchOperations;
 
   public LocalOutputService(BlazeDirectories directories) {
+    this(directories, null);
+  }
+
+  public LocalOutputService(
+      BlazeDirectories directories, @Nullable BatchOperations batchOperations) {
+    this.batchOperations = batchOperations;
     this.directories = checkNotNull(directories);
   }
 
@@ -94,7 +101,13 @@ public class LocalOutputService implements OutputService {
   @Nullable
   @Override
   public BatchStat getBatchStatter() {
-    return null;
+    return batchOperations;
+  }
+
+  @Override
+  @Nullable
+  public BatchOperations getBatchOperations() {
+    return batchOperations;
   }
 
   @Override

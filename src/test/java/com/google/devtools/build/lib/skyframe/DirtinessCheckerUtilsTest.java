@@ -114,6 +114,8 @@ public final class DirtinessCheckerUtilsTest {
 
     Assume.assumeTrue("Missing diff checker doesn't apply to external files", shouldCheck);
 
+    assertThat(underTest.getCacheablePath(rootedPath)).isEqualTo(rootedPath);
+
     assertThat(underTest.check(rootedPath, null, /* oldMtsv= */ null, spyCache, null))
         .isEqualTo(
             SkyValueDirtinessChecker.DirtyResult.dirtyWithNewValue(
@@ -133,23 +135,35 @@ public final class DirtinessCheckerUtilsTest {
   }
 
   @Test
-  public void skipsSyscallCacheForRepoFile_andDoesntReturnNewValue(
-      @TestParameter boolean externalChecker) throws Exception {
+  public void skipsSyscallCacheForMutableFile_andDoesntReturnNewValue(
+      @TestParameter boolean externalChecker, @TestParameter boolean externalRepo)
+      throws Exception {
     ExternalFilesHelper externalFilesHelper = this.externalFilesHelper;
     RootedPath rootedPath =
         RootedPath.toRootedPath(
             Root.fromPath(outputBase),
-            LabelConstants.EXTERNAL_REPOSITORY_LOCATION.getChild("extrepofile"));
+            externalRepo
+                ? LabelConstants.EXTERNAL_REPOSITORY_LOCATION.getChild("extrepofile")
+                : PathFragment.create("bin/output"));
     SkyValueDirtinessChecker underTest =
         externalChecker
             ? new DirtinessCheckerUtils.ExternalDirtinessChecker(
-                externalFilesHelper, EnumSet.of(ExternalFilesHelper.FileType.EXTERNAL_REPO))
+                externalFilesHelper,
+                EnumSet.of(
+                    ExternalFilesHelper.FileType.EXTERNAL_REPO,
+                    ExternalFilesHelper.FileType.OUTPUT))
             : new DirtinessCheckerUtils.MissingDiffDirtinessChecker(ImmutableSet.of(srcRoot));
 
     boolean shouldCheck = underTest.applies(rootedPath);
     assertThat(shouldCheck).isEqualTo(externalChecker);
 
     Assume.assumeTrue("Missing diff checker doesn't apply to external files", shouldCheck);
+
+    // The union must preserve the first matching checker's decision to bypass the cache.
+    underTest =
+        new UnionDirtinessChecker(
+            ImmutableList.of(underTest, new DirtinessCheckerUtils.FileDirtinessChecker()));
+    assertThat(underTest.getCacheablePath(rootedPath)).isNull();
 
     SyscallCache mockCache = mock(SyscallCache.class);
 

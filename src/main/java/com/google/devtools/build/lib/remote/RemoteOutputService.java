@@ -52,6 +52,7 @@ import javax.annotation.Nullable;
 public class RemoteOutputService implements OutputService {
 
   private final BlazeDirectories directories;
+  @Nullable private final BatchOperations batchOperations;
   private final boolean rewindLostInputs;
 
   private RewoundActionSynchronizer rewoundActionSynchronizer = RewoundActionSynchronizer.NOOP;
@@ -61,6 +62,14 @@ public class RemoteOutputService implements OutputService {
   @Nullable private LeaseService leaseService;
 
   RemoteOutputService(BlazeDirectories directories, boolean rewindLostInputs) {
+    this(directories, rewindLostInputs, null);
+  }
+
+  RemoteOutputService(
+      BlazeDirectories directories,
+      boolean rewindLostInputs,
+      @Nullable BatchOperations batchOperations) {
+    this.batchOperations = batchOperations;
     this.directories = checkNotNull(directories);
     this.rewindLostInputs = rewindLostInputs;
   }
@@ -190,7 +199,13 @@ public class RemoteOutputService implements OutputService {
   @Nullable
   @Override
   public BatchStat getBatchStatter() {
-    return null;
+    return batchOperations;
+  }
+
+  @Override
+  @Nullable
+  public BatchOperations getBatchOperations() {
+    return batchOperations;
   }
 
   @Override

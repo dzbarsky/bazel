@@ -44,6 +44,11 @@ public class DirtinessCheckerUtils {
   /** Checks dirtiness of file keys in the graph. */
   public static class FileDirtinessChecker extends SkyValueDirtinessChecker {
     @Override
+    public RootedPath getCacheablePath(SkyKey key) {
+      return (RootedPath) key.argument();
+    }
+
+    @Override
     public boolean applies(SkyKey skyKey) {
       return skyKey.functionName().equals(FILE_STATE);
     }
@@ -82,6 +87,12 @@ public class DirtinessCheckerUtils {
     }
 
     @Override
+    @Nullable
+    public RootedPath getCacheablePath(SkyKey key) {
+      return checker.getCacheablePath(key);
+    }
+
+    @Override
     public boolean applies(SkyKey key) {
       return checker.applies(key)
           && missingDiffPackageRoots.contains(((RootedPath) key.argument()).getRoot());
@@ -112,6 +123,14 @@ public class DirtinessCheckerUtils {
         ExternalFilesHelper externalFilesHelper, EnumSet<FileType> fileTypesToCheck) {
       this.externalFilesHelper = externalFilesHelper;
       this.fileTypesToCheck = fileTypesToCheck;
+    }
+
+    @Override
+    @Nullable
+    public RootedPath getCacheablePath(SkyKey key) {
+      return isCacheableType(externalFilesHelper.getAndNoteFileType((RootedPath) key.argument()))
+          ? checker.getCacheablePath(key)
+          : null;
     }
 
     @Override
@@ -198,6 +217,12 @@ public class DirtinessCheckerUtils {
 
     public UnionDirtinessChecker(Iterable<SkyValueDirtinessChecker> dirtinessCheckers) {
       this.dirtinessCheckers = dirtinessCheckers;
+    }
+
+    @Override
+    @Nullable
+    public RootedPath getCacheablePath(SkyKey key) {
+      return Preconditions.checkNotNull(getChecker(key), key).getCacheablePath(key);
     }
 
     @Nullable

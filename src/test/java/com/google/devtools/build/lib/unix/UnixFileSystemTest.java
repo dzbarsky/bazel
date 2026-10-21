@@ -17,14 +17,19 @@ import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assume.assumeTrue;
 
 import com.google.common.util.concurrent.Uninterruptibles;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.Dirent;
 import com.google.devtools.build.lib.vfs.FileAccessException;
+import com.google.devtools.build.lib.vfs.FileStatus;
+import com.google.devtools.build.lib.vfs.FileStatusWithDigest;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.SymlinkAwareFileSystemTest;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import java.io.FileInputStream;
@@ -32,6 +37,10 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.attribute.UserDefinedFileAttributeView;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Test;
@@ -41,7 +50,7 @@ public class UnixFileSystemTest extends SymlinkAwareFileSystemTest {
 
   @Override
   protected FileSystem getFreshFileSystem(DigestHashFunction digestHashFunction) {
-    return new UnixFileSystem(digestHashFunction, /*hashAttributeName=*/ "");
+    return new UnixFileSystem(digestHashFunction, /* hashAttributeName= */ "");
   }
 
   @Override
@@ -50,6 +59,112 @@ public class UnixFileSystemTest extends SymlinkAwareFileSystemTest {
   }
 
   // Most tests are just inherited from FileSystemTest.
+
+  @Test
+  public void nativeCreationRejectsInvalidPackedRequestsBeforeWrites() throws Exception {
+    assumeTrue(OS.getCurrent() == OS.LINUX);
+    Path root = absolutize("native-create-bounds");
+    root.createDirectory();
+    for (String invalid : List.of("bad\0path", "x".repeat(1024 * 1024))) {
+      assertThrows(
+          IOException.class,
+          () ->
+              NativePosixFiles.createSymlinksBatch(
+                  root.getPathString(),
+                  new String[] {"first", invalid},
+                  new String[] {"target", "target"}));
+      assertThat(root.getChild("first").exists(Symlinks.NOFOLLOW)).isFalse();
+    }
+    assertThrows(
+        IOException.class,
+        () -> NativePosixFiles.createDirectoriesBatch(root.getPathString(), new String[4097]));
+    assertThat(root.getDirectoryEntries()).isEmpty();
+  }
+
+  @Test
+  public void batchStatPreservesNoFollowMetadata() throws Exception {
+    Path root = absolutize("stat-batch");
+    root.createDirectory();
+    Path file = root.getChild("file");
+    FileSystemUtils.writeContentAsLatin1(file, "contents");
+    root.getChild("link").createSymbolicLink(PathFragment.create("file"));
+    root.getChild("dangling").createSymbolicLink(PathFragment.create("missing"));
+    List<PathFragment> paths =
+        List.of("file", "link", "dangling", "missing", "file/child").stream()
+            .map(PathFragment::create)
+            .toList();
+    for (boolean ioctl : List.of(false, true)) {
+      List<FileStatus> stats = root.getFileSystem().statBatch(root.asFragment(), paths, ioctl);
+      FileStatus scalar = file.stat(Symlinks.NOFOLLOW);
+      assertThat(stats.get(0).getNodeId()).isEqualTo(scalar.getNodeId());
+      assertThat(stats.get(0).getSize()).isEqualTo(scalar.getSize());
+      assertThat(stats.get(0).getLastModifiedTime()).isEqualTo(scalar.getLastModifiedTime());
+      assertThat(stats.get(0).getLastChangeTime()).isEqualTo(scalar.getLastChangeTime());
+      assertThat(stats.get(0).getPermissions()).isEqualTo(scalar.getPermissions());
+      assertThat(stats.get(0)).isNotInstanceOf(FileStatusWithDigest.class);
+      assertThat(stats.get(1).isSymbolicLink()).isTrue();
+      assertThat(stats.get(2).isSymbolicLink()).isTrue();
+      assertThat(stats.subList(3, 5)).containsExactly(null, null);
+    }
+    root.getChild("loop").createSymbolicLink(PathFragment.create("loop"));
+    assertThrows(
+        IOException.class,
+        () ->
+            root.getFileSystem()
+                .statBatch(root.asFragment(), List.of(PathFragment.create("loop/child")), true));
+  }
+
+  @Test
+  public void batchStatReadsFullConfiguredXattrs() throws Exception {
+    // The Java user-attribute view maps names to Linux's user.* namespace.
+    assumeTrue(OS.getCurrent() == OS.LINUX);
+    Path root = absolutize("stat-batch-xattr");
+    root.createDirectory();
+    Path file = root.getChild("file");
+    FileSystemUtils.writeContentAsLatin1(file, "contents");
+    var attrs =
+        Files.getFileAttributeView(
+            java.nio.file.Path.of(file.getPathString()), UserDefinedFileAttributeView.class);
+    for (int size : List.of(0, 16, 32, 64)) {
+      byte[] digest = new byte[size];
+      if (size > 0) {
+        digest[0] = 42;
+      }
+      attrs.write("batch-digest", ByteBuffer.wrap(digest));
+      for (boolean ioctl : List.of(false, true)) {
+        for (String attr : List.of("", "user.batch-digest", "user.absent-digest")) {
+          FileSystem fs = new UnixFileSystem(DigestHashFunction.SHA256, attr);
+          FileStatus stat =
+              fs.statBatch(root.asFragment(), List.of(PathFragment.create("file")), ioctl).get(0);
+          if (attr.equals("user.batch-digest")) {
+            assertThat(((FileStatusWithDigest) stat).getDigest()).isEqualTo(digest);
+          } else {
+            assertThat(stat).isNotInstanceOf(FileStatusWithDigest.class);
+          }
+          assertThat(fs.getFastDigest(file.asFragment()))
+              .isEqualTo(attr.equals("user.batch-digest") ? digest : null);
+        }
+      }
+    }
+  }
+
+  @Test
+  public void isCanonicalPathRejectsSymlinksInAnyComponent() throws Exception {
+    Path root = absolutize("canonical");
+    root.createDirectory();
+    root = root.resolveSymbolicLinks();
+    Path directory = root.getChild("directory");
+    directory.createDirectory();
+    FileSystemUtils.createEmptyFile(directory.getChild("file"));
+    Path alias = root.getChild("alias");
+    alias.createSymbolicLink(directory);
+    FileSystem fs = root.getFileSystem();
+
+    assertThat(fs.isCanonicalPath(directory.asFragment())).isTrue();
+    assertThat(fs.isCanonicalPath(directory.getChild("file").asFragment())).isTrue();
+    assertThat(fs.isCanonicalPath(alias.asFragment())).isFalse();
+    assertThat(fs.isCanonicalPath(alias.getChild("file").asFragment())).isFalse();
+  }
 
   @Test
   public void testPermissions() throws Exception {

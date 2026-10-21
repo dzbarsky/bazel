@@ -104,6 +104,7 @@ char* GetStringLatin1Chars(JNIEnv* env, jstring jstr) {
     }
     char* result = new char[len + 1];
     env->GetByteArrayRegion((jbyteArray)jvalue, 0, len, (jbyte*)result);
+    env->DeleteLocalRef(jvalue);
     result[len] = 0;
     return result;
   }

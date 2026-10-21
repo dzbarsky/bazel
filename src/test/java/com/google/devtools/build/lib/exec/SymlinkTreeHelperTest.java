@@ -17,6 +17,11 @@ package com.google.devtools.build.lib.exec;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.devtools.build.lib.testutil.TestConstants.WORKSPACE_NAME;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact;
@@ -26,15 +31,21 @@ import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
+import com.google.devtools.build.lib.vfs.FileStatusWithDigest;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
+import com.google.devtools.build.lib.vfs.OutputService.BatchOperations;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
+import java.io.IOException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -138,5 +149,195 @@ public final class SymlinkTreeHelperTest {
     assertThat(treeSymlink.isSymbolicLink()).isTrue();
     assertThat(treeSymlink.readSymbolicLink()).isEqualTo(PathFragment.create("/path/to/target"));
     assertThat(treeMissing.exists()).isFalse();
+  }
+
+  @Test
+  public void filesetChildReplacesConflictingParentLink(@TestParameter boolean existing)
+      throws Exception {
+    Path root = execRoot.getRelative("prefix.runfiles");
+    Path target = execRoot.getChild("target");
+    FileSystemUtils.writeContent(target, UTF_8, "preserved");
+    if (existing) {
+      root.createDirectoryAndParents();
+      root.getChild("parent").createSymbolicLink(target.asFragment());
+    }
+    BatchOperations batch = mock(BatchOperations.class);
+    var helper =
+        new SymlinkTreeHelper(
+            execRoot.getChild("manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME, batch);
+    helper.createFilesetSymlinks(
+        Map.of(
+            PathFragment.create("parent"), target.asFragment(),
+            PathFragment.create("parent/child"), target.asFragment()));
+
+    assertThat(root.getChild("parent").isDirectory()).isTrue();
+    assertThat(root.getRelative("parent/child").readSymbolicLink()).isEqualTo(target.asFragment());
+    assertThat(FileSystemUtils.readContent(target, UTF_8)).isEqualTo("preserved");
+    verifyNoInteractions(batch);
+  }
+
+  @Test
+  public void reconcilesDirectoryCreatedAfterParentListing() throws Exception {
+    PathFragment raced = PathFragment.create("/tree/raced");
+    FileSystem racingFs =
+        new InMemoryFileSystem(DigestHashFunction.SHA256) {
+          private boolean injected;
+
+          @Override
+          public boolean createDirectory(PathFragment path) throws IOException {
+            if (path.equals(raced) && !injected) {
+              injected = true;
+              super.createDirectory(path);
+              FileSystemUtils.createEmptyFile(getPath(path).getChild("obsolete"));
+              getPath(path).chmod(0000);
+              return false;
+            }
+            return super.createDirectory(path);
+          }
+        };
+    Path root = racingFs.getPath("/tree");
+    Artifact target = ActionsTestUtil.createArtifact(outputRoot, "target");
+    BatchOperations batch = mock(BatchOperations.class);
+    when(batch.createDirectories(any(), any())).thenReturn(-1);
+    doAnswer(
+            invocation -> {
+              Path directory = invocation.getArgument(0);
+              Map<PathFragment, PathFragment> links = invocation.getArgument(1);
+              for (var link : links.entrySet()) {
+                directory.getRelative(link.getKey()).createSymbolicLink(link.getValue());
+              }
+              return null;
+            })
+        .when(batch)
+        .createSymlinks(any(), any());
+    var helper =
+        new SymlinkTreeHelper(
+            racingFs.getPath("/manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME, batch);
+    helper.createRunfilesSymlinks(Map.of(PathFragment.create("raced/nested/link"), target));
+
+    assertThat(root.getRelative("raced/obsolete").exists()).isFalse();
+    assertThat(root.getRelative("raced/nested/link").readSymbolicLink())
+        .isEqualTo(target.getPath().asFragment());
+  }
+
+  private enum DirectoryConflict {
+    DIRECTORY,
+    FILE,
+    SYMLINK
+  }
+
+  @Test
+  public void reconcilesBatchDirectoryConflict(@TestParameter DirectoryConflict conflict)
+      throws Exception {
+    Path root = execRoot.getRelative("mkdir.runfiles");
+    Path outside = execRoot.getRelative("outside");
+    outside.createDirectoryAndParents();
+    FileSystemUtils.writeContent(outside.getChild("sentinel"), UTF_8, "preserved");
+    Artifact target = ActionsTestUtil.createArtifact(outputRoot, "target");
+    BatchOperations batch = mock(BatchOperations.class);
+    AtomicBoolean injected = new AtomicBoolean();
+    doAnswer(
+            invocation -> {
+              Path at = invocation.getArgument(0);
+              List<PathFragment> paths = invocation.getArgument(1);
+              if (injected.compareAndSet(false, true)) {
+                assertThat(paths)
+                    .containsExactly(
+                        PathFragment.create("first"),
+                        PathFragment.create("first/raced"),
+                        PathFragment.create("first/raced/nested"))
+                    .inOrder();
+                at.getRelative(paths.get(0)).createDirectory();
+                Path raced = at.getRelative(paths.get(1));
+                switch (conflict) {
+                  case DIRECTORY -> {
+                    raced.createDirectory();
+                    FileSystemUtils.createEmptyFile(raced.getChild("obsolete"));
+                    raced.chmod(0000);
+                  }
+                  case FILE -> FileSystemUtils.writeContent(raced, UTF_8, "obsolete");
+                  case SYMLINK -> raced.createSymbolicLink(outside.asFragment());
+                }
+                return 1;
+              }
+              for (PathFragment path : paths) {
+                assertThat(at.getRelative(path).createDirectory()).isTrue();
+              }
+              return paths.size();
+            })
+        .when(batch)
+        .createDirectories(any(), any());
+    doAnswer(
+            invocation -> {
+              Path at = invocation.getArgument(0);
+              Map<PathFragment, PathFragment> links = invocation.getArgument(1);
+              for (var link : links.entrySet()) {
+                at.getRelative(link.getKey()).createSymbolicLink(link.getValue());
+              }
+              return null;
+            })
+        .when(batch)
+        .createSymlinks(any(), any());
+    var helper =
+        new SymlinkTreeHelper(
+            execRoot.getChild("manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME, batch);
+    helper.createRunfilesSymlinks(Map.of(PathFragment.create("first/raced/nested/link"), target));
+    assertThat(root.getRelative("first/raced").isSymbolicLink()).isFalse();
+    assertThat(root.getRelative("first/raced/obsolete").exists()).isFalse();
+    assertThat(root.getRelative("first/raced/nested/link").readSymbolicLink())
+        .isEqualTo(target.getPath().asFragment());
+    assertThat(FileSystemUtils.readContent(outside.getChild("sentinel"), UTF_8))
+        .isEqualTo("preserved");
+    assertThat(outside.getChild("nested").exists()).isFalse();
+  }
+
+  @Test
+  public void batchesMissingLinksAcrossDirectoriesAfterReconciliation() throws Exception {
+    Path root = execRoot.getRelative("batch.runfiles");
+    Path manifest = root.getChild("MANIFEST");
+    PathFragment target = PathFragment.create("../literal-target");
+    Map<PathFragment, PathFragment> missing =
+        Map.of(
+            PathFragment.create("a/new"), target,
+            PathFragment.create("b/new"), target,
+            PathFragment.create("c/d/e/new"), target);
+    Artifact artifact = ActionsTestUtil.createUnresolvedSymlinkArtifact(outputRoot, "link");
+    artifact.getPath().createSymbolicLink(target);
+    var links = new HashMap<PathFragment, Artifact>();
+    missing.keySet().forEach(path -> links.put(path, artifact));
+    links.put(PathFragment.create("a/existing"), artifact);
+    links.put(PathFragment.create("b/empty"), null);
+    root.getRelative("a").createDirectoryAndParents();
+    root.getRelative("a/existing").createSymbolicLink(target);
+    FileSystemUtils.createEmptyFile(root.getChild("obsolete"));
+    var calls = new AtomicInteger();
+    BatchOperations batch =
+        new BatchOperations() {
+          @Override
+          public List<FileStatusWithDigest> batchStat(Iterable<PathFragment> paths) {
+            throw new AssertionError("Symlink creation must not batch stat");
+          }
+
+          @Override
+          public void createSymlinks(Path directory, Map<PathFragment, PathFragment> requested)
+              throws IOException {
+            calls.incrementAndGet();
+            assertThat(directory).isEqualTo(root);
+            assertThat(requested).containsExactlyEntriesIn(missing);
+            assertThat(root.getChild("obsolete").exists()).isFalse();
+            assertThat(root.getRelative("b/empty").isFile()).isTrue();
+            assertThat(manifest.exists()).isFalse();
+            for (var link : requested.entrySet()) {
+              directory.getRelative(link.getKey()).createSymbolicLink(link.getValue());
+            }
+          }
+        };
+    var helper =
+        new SymlinkTreeHelper(execRoot.getChild("manifest"), manifest, root, WORKSPACE_NAME, batch);
+    helper.createRunfilesSymlinks(links);
+    assertThat(calls.get()).isEqualTo(1);
+    for (var link : missing.entrySet()) {
+      assertThat(root.getRelative(link.getKey()).readSymbolicLink()).isEqualTo(link.getValue());
+    }
   }
 }

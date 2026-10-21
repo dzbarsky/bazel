@@ -50,6 +50,7 @@ import io.netty.channel.socket.nio.NioChannelOption;
 import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.util.concurrent.DefaultThreadFactory;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -210,10 +211,12 @@ public final class GoogleAuthUtils {
 
   private static synchronized EventLoopGroup getEventLoopGroup() throws IOException {
     if (currentEventLoopGroup == null) {
+      // Match gRPC's shared loops: idle workers must not keep a finished client JVM alive.
+      var factory = new DefaultThreadFactory("grpc-unix-worker", /* daemon= */ true);
       if (KQueue.isAvailable()) {
-        currentEventLoopGroup = new KQueueEventLoopGroup();
+        currentEventLoopGroup = new KQueueEventLoopGroup(0, factory);
       } else if (Epoll.isAvailable()) {
-        currentEventLoopGroup = new EpollEventLoopGroup();
+        currentEventLoopGroup = new EpollEventLoopGroup(0, factory);
       } else {
         throw new IOException("Creating event loop groups is unsupported on this platform");
       }
@@ -223,8 +226,11 @@ public final class GoogleAuthUtils {
 
   private static NettyChannelBuilder newUnixNettyChannelBuilder(String target) throws IOException {
     DomainSocketAddress address = new DomainSocketAddress(target.replaceFirst("^unix:", ""));
+    // Netty otherwise uses the socket pathname as :authority, which HTTP/2 servers reject.
     NettyChannelBuilder builder =
-        NettyChannelBuilder.forAddress(address).eventLoopGroup(getEventLoopGroup());
+        NettyChannelBuilder.forAddress(address)
+            .overrideAuthority("localhost")
+            .eventLoopGroup(getEventLoopGroup());
     if (KQueue.isAvailable()) {
       return builder.channelType(KQueueDomainSocketChannel.class);
     }

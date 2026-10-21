@@ -20,6 +20,7 @@ import javax.annotation.Nullable;
 /** An adapter from FileStatus to FileStatusWithDigest. */
 public class FileStatusWithDigestAdapter implements FileStatusWithDigest {
   private final FileStatus stat;
+  @Nullable private final byte[] digest;
 
   @Nullable
   public static FileStatusWithDigest maybeAdapt(@Nullable FileStatus stat) {
@@ -31,13 +32,19 @@ public class FileStatusWithDigestAdapter implements FileStatusWithDigest {
   }
 
   private FileStatusWithDigestAdapter(FileStatus stat) {
+    this(stat, null);
+  }
+
+  /** Attaches a digest obtained with a batch stat. Also called from Unix JNI. */
+  public FileStatusWithDigestAdapter(FileStatus stat, @Nullable byte[] digest) {
     this.stat = Preconditions.checkNotNull(stat);
+    this.digest = digest;
   }
 
   @Nullable
   @Override
   public byte[] getDigest() {
-    return null;
+    return digest;
   }
 
   @Override

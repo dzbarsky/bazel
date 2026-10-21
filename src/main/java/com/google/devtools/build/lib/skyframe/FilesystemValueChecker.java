@@ -33,6 +33,7 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.FileStateType;
+import com.google.devtools.build.lib.actions.FileStateValue;
 import com.google.devtools.build.lib.actions.OutputChecker;
 import com.google.devtools.build.lib.concurrent.ExecutorUtil;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
@@ -50,8 +51,10 @@ import com.google.devtools.build.lib.vfs.FileStatusWithDigest;
 import com.google.devtools.build.lib.vfs.ModifiedFileSet;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.lib.vfs.SyscallCache;
+import com.google.devtools.build.lib.vfs.SyscallCache.StatBatchMode;
 import com.google.devtools.build.lib.vfs.XattrProvider;
 import com.google.devtools.build.skyframe.Differencer;
 import com.google.devtools.build.skyframe.Differencer.DiffWithDelta.Delta;
@@ -65,6 +68,7 @@ import com.google.devtools.build.skyframe.Version;
 import com.google.devtools.build.skyframe.WalkableGraph;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -103,16 +107,27 @@ public class FilesystemValueChecker {
   private final SyscallCache syscallCache;
   private final XattrProviderOverrider xattrProviderOverrider;
   private final int numThreads;
+  private final StatBatchMode inputStatBatch;
 
   public FilesystemValueChecker(
       @Nullable TimestampGranularityMonitor tsgm,
       SyscallCache syscallCache,
       XattrProviderOverrider xattrProviderOverrider,
       int numThreads) {
+    this(tsgm, syscallCache, xattrProviderOverrider, numThreads, StatBatchMode.OFF);
+  }
+
+  public FilesystemValueChecker(
+      @Nullable TimestampGranularityMonitor tsgm,
+      SyscallCache syscallCache,
+      XattrProviderOverrider xattrProviderOverrider,
+      int numThreads,
+      StatBatchMode inputStatBatch) {
     this.tsgm = tsgm;
     this.syscallCache = syscallCache;
     this.xattrProviderOverrider = xattrProviderOverrider;
     this.numThreads = numThreads;
+    this.inputStatBatch = inputStatBatch;
   }
 
   /**
@@ -226,6 +241,10 @@ public class FilesystemValueChecker {
 
     logger.atInfo().log("Accumulating dirty actions and batching them into shards");
     int numShards = Runtime.getRuntime().availableProcessors() * 4;
+    boolean useBatchStat = batchStatter != null && batchStatter.getMaxConcurrentCalls() > 0;
+    if (useBatchStat) {
+      numShards = Math.min(numShards, batchStatter.getMaxConcurrentCalls());
+    }
     Collection<List<Map.Entry<SkyKey, ActionExecutionValue>>> actionKeyShards;
     try (SilentCloseable c =
         Profiler.instance().profile("getDirtyActionValues/filterAndBatchActions")) {
@@ -266,7 +285,7 @@ public class FilesystemValueChecker {
     try (SilentCloseable c = Profiler.instance().profile("getDirtyActionValues/statFiles")) {
       for (List<Map.Entry<SkyKey, ActionExecutionValue>> shard : actionKeyShards) {
         Runnable job =
-            (batchStatter == null)
+            !useBatchStat
                 ? outputStatJob(
                     dirtyKeys,
                     shard,
@@ -394,27 +413,13 @@ public class FilesystemValueChecker {
         ActionExecutionValue actionValue = keyAndValue.getValue();
         SkyKey key = keyAndValue.getKey();
         FileArtifactValue lastKnownData = actionValue.getExistingFileArtifactValue(artifact);
-        try {
-          FileArtifactValue newData =
-              ActionOutputMetadataStore.fileArtifactValueFromArtifact(
-                  artifact, stat, xattrProviderOverrider.getXattrProvider(syscallCache), tsgm);
-          if (newData.couldBeModifiedSince(lastKnownData)) {
-            long maybeModifiedTime = -1;
-            if (stat != null) {
-              try {
-                maybeModifiedTime = stat.getLastChangeTime();
-              } catch (UnsupportedOperationException ignored) {
-                // Not all filesystems support change time; falling back to -1.
-              }
-            }
-            modifiedOutputsReceiver.reportModifiedOutputFile(maybeModifiedTime, artifact);
-            dirtyKeys.add(key);
-          }
-        } catch (IOException e) {
-          logger.atWarning().withCause(e).log(
-              "Error for %s (%s %s %s)", artifact, stat, keyAndValue, lastKnownData);
-          // This is an unexpected failure getting a digest or symlink target.
-          modifiedOutputsReceiver.reportModifiedOutputFile(-1, artifact);
+        if (artifactIsDirty(
+            artifact,
+            lastKnownData,
+            stat,
+            /* knownMissing= */ stat == null,
+            outputChecker,
+            modifiedOutputsReceiver)) {
           dirtyKeys.add(key);
         }
       }
@@ -529,10 +534,38 @@ public class FilesystemValueChecker {
     if (file.isRunfilesTree() || !shouldCheckFile(knownModifiedOutputFiles, file)) {
       return false;
     }
+    return artifactIsDirty(
+        file,
+        lastKnownData,
+        null,
+        /* knownMissing= */ false,
+        outputChecker,
+        modifiedOutputsReceiver);
+  }
+
+  private boolean artifactIsDirty(
+      Artifact file,
+      FileArtifactValue lastKnownData,
+      @Nullable FileStatusWithDigest stat,
+      boolean knownMissing,
+      OutputChecker outputChecker,
+      ModifiedOutputsReceiver modifiedOutputsReceiver) {
     try {
+      // Validate a recorded, absent remote target before walking the output path only to
+      // discover that same absence. The exact raw link and canonical parent are checked below.
+      if (!file.isSymlink()
+          && !knownMissing
+          && (stat == null || stat.isSymbolicLink())
+          && canTrustDanglingSymlink(file, lastKnownData, outputChecker)) {
+        return false;
+      }
+      // A null batch result already established absence. Passing it to the metadata
+      // reader would perform the same stat again, since null there means "not queried".
       FileArtifactValue fileMetadata =
-          ActionOutputMetadataStore.fileArtifactValueFromArtifact(
-              file, null, xattrProviderOverrider.getXattrProvider(syscallCache), tsgm);
+          knownMissing && !file.isSymlink()
+              ? FileArtifactValue.MISSING_FILE_MARKER
+              : ActionOutputMetadataStore.fileArtifactValueFromArtifact(
+                  file, stat, xattrProviderOverrider.getXattrProvider(syscallCache), tsgm);
       // Remote metadata may record that the file has been materialized in the local filesystem as
       // a requested top-level output without its generating action having been reexecuted (e.g. by
       // the completion function after an action cache hit). If the file is missing now, the action
@@ -597,7 +630,8 @@ public class FilesystemValueChecker {
       while ((parentStat = parent.statIfFound(Symlinks.NOFOLLOW)) == null) {
         parent = parent.getParentDirectory();
       }
-      return parentStat.isDirectory() && parent.resolveSymbolicLinks().equals(parent);
+      return parentStat.isDirectory()
+          && parent.getFileSystem().isCanonicalPath(parent.asFragment());
     } catch (IOException e) {
       return false;
     }
@@ -732,6 +766,21 @@ public class FilesystemValueChecker {
       for (List<SkyKey> batch : Iterables.partition(applicableKeys, batchSize)) {
         executor.execute(
             () -> {
+              if (inputStatBatch != StatBatchMode.OFF
+                  && fetcher instanceof MapBackedValueFetcher mapFetcher) {
+                List<RootedPath> paths = new ArrayList<>();
+                for (SkyKey key : batch) {
+                  // Other states can often be checked from readdir without any stat at all.
+                  if (mapFetcher.get(key) instanceof FileStateValue oldFile
+                      && oldFile.getType() == FileStateType.REGULAR_FILE) {
+                    RootedPath path = checker.getCacheablePath(key);
+                    if (path != null) {
+                      paths.add(path);
+                    }
+                  }
+                }
+                syscallCache.prefetchStats(paths, inputStatBatch);
+              }
               for (SkyKey key : batch) {
                 SkyValue value;
                 try {

@@ -32,6 +32,7 @@ import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import javax.annotation.Nullable;
@@ -171,6 +172,25 @@ public interface OutputService {
 
   @Nullable
   BatchStat getBatchStatter();
+
+  /** Optional local filesystem RPCs, independent of output-tree ownership and remote metadata. */
+  interface BatchOperations extends BatchStat {
+    /**
+     * Creates ancestor-first directories below root, stopping at the first error (even EEXIST).
+     * Returns the created prefix length, or -1 if no operation was attempted.
+     */
+    default int createDirectories(Path root, List<PathFragment> directories) throws IOException {
+      return -1;
+    }
+
+    /** Creates missing links below an existing root; existing identical links are accepted. */
+    void createSymlinks(Path root, Map<PathFragment, PathFragment> symlinks) throws IOException;
+  }
+
+  @Nullable
+  default BatchOperations getBatchOperations() {
+    return null;
+  }
 
   /** Returns true iff {@link #createSymlinkTree} is available. */
   boolean canCreateSymlinkTree();
