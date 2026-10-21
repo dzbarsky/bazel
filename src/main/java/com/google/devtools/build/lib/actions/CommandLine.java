@@ -87,6 +87,15 @@ public abstract class CommandLine {
       InputMetadataProvider inputMetadataProvider, PathMapper pathMapper)
       throws CommandLineExpansionException, InterruptedException;
 
+  /** Expands with optional per-command reuse; implementations without reuse keep their behavior. */
+  public ArgChunk expand(
+      InputMetadataProvider inputMetadataProvider,
+      PathMapper pathMapper,
+      @Nullable ActionKeyContext actionKeyContext)
+      throws CommandLineExpansionException, InterruptedException {
+    return expand(inputMetadataProvider, pathMapper);
+  }
+
   /** Identical to calling {@code expand().arguments()}. */
   public abstract Iterable<String> arguments()
       throws CommandLineExpansionException, InterruptedException;
@@ -131,6 +140,20 @@ public abstract class CommandLine {
     SuffixedCommandLine(ImmutableList<String> executableArgs, CommandLine commandLine) {
       this.executableArgs = executableArgs;
       this.commandLine = commandLine;
+    }
+
+    @Override
+    public ArgChunk expand(
+        InputMetadataProvider inputMetadataProvider,
+        PathMapper pathMapper,
+        @Nullable ActionKeyContext actionKeyContext)
+        throws CommandLineExpansionException, InterruptedException {
+      return new SimpleArgChunk(
+          Iterables.concat(
+              commandLine
+                  .expand(inputMetadataProvider, pathMapper, actionKeyContext)
+                  .arguments(pathMapper),
+              executableArgs));
     }
 
     @Override
