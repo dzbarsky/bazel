@@ -3,11 +3,11 @@ name: Build and publish Bazel
 on:
   push:
     branches:
-      - 'dzbarsky-[0-9][0-9].[0-9][0-9].[0-9][0-9][0-9][0-9]'
+      - 'release-[0-9]+.0.0-pre.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].[0-9]+rc1'
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Optional tag matching this branch date (for example, 10.0.0-dzbarsky20261020r2)
+        description: Optional exact branch tag (for release-10.0.0-pre.20261021.1rc1, use 10.0.0-pre.20261021.1)
         required: false
         type: string
 
@@ -41,7 +41,6 @@ jobs:
       - name: Select release tag
         id: release_tag
         env:
-          GH_TOKEN: ${{ github.token }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: bash .github/scripts/bazel-release-tag.sh select
 
@@ -70,7 +69,7 @@ jobs:
             https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
           chmod +x "${RUNNER_TEMP}/bazelisk"
 
-      - name: Test module, toolchain, server, and repository cache regressions
+      - name: Test module, toolchain, server, repository cache, query, and Skycache regressions
         run: |
           set -euo pipefail
           if [[ -z "${BUILDBUDDY_API_KEY}" ]]; then
@@ -79,6 +78,9 @@ jobs:
           fi
           targets=(
             //src/test/java/com/google/devtools/build/lib/bazel/bzlmod:BzlmodTests
+            //src/test/java/com/google/devtools/build/lib/buildtool:GenAqueryIntegrationTest
+            //src/test/java/com/google/devtools/build/lib/buildtool:GenCqueryIntegrationTest
+            //src/test/java/com/google/devtools/build/lib/skyframe/serialization/analysis:BazelSkycacheIntegrationTest
             //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:RegisteredToolchainsFunctionTest
             //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:SingleToolchainResolutionFunctionTest
             //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:ToolchainResolutionFunctionTest
@@ -258,6 +260,34 @@ jobs:
           else
             (cd artifacts && shasum -a 256 "${asset_name}" > "${asset_name}.sha256")
           fi
+
+      - name: Verify bazel_features with the stamped Bazel binary
+        if: matrix.artifact_os == 'linux' && matrix.artifact_arch == 'x86_64'
+        run: |
+          set -euo pipefail
+          binary="${GITHUB_WORKSPACE}/artifacts/bazel-${RELEASE_TAG}-linux-x86_64"
+          smoke="$(mktemp -d)"
+          trap 'rm -rf "${smoke}"' EXIT
+          mkdir "${smoke}/workspace"
+          cat > "${smoke}/workspace/MODULE.bazel" <<'EOF'
+          module(name = "bazel_features_release_test")
+          bazel_dep(name = "bazel_features", version = "1.50.0")
+          EOF
+          cat > "${smoke}/workspace/check.bzl" <<'EOF'
+          load("@bazel_features//:features.bzl", "bazel_features")
+
+          def check(name):
+              if not bazel_features.cc.supports_path_variable_patterns:
+                  fail("bazel_features must recognize Bazel 10.0.0-pre.20260408.3 features")
+              native.filegroup(name = name)
+          EOF
+          cat > "${smoke}/workspace/BUILD.bazel" <<'EOF'
+          load(":check.bzl", "check")
+          check(name = "features")
+          EOF
+          cd "${smoke}/workspace"
+          "${binary}" --batch --output_base="${smoke}/output" --ignore_all_rc_files \
+            query //:features --color=no --curses=no
 
       - name: Verify and package Windows Bazel
         if: runner.os == 'Windows'
