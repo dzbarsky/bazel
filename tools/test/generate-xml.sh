@@ -71,7 +71,9 @@ function encode_stream {
   # Perl - We originally used Perl, but wanted to avoid the dependency.
   #        Recent versions of Perl now error on invalid utf-8 characters.
   # tr   - tr only replaces single-byte sequences, so cannot handle utf-8.
+  # Lines containing only allowed ASCII characters need no UTF-8 repair.
   LC_ALL=C sed -E \
+      -e "/^$(echo -e '[\x9\x20-\x7f]')*$/b cdata" \
       -e 's/.*/& /g' \
       -e 's/(('\
 "$(echo -e '[\x9\x20-\x7f]')|"\
@@ -82,6 +84,7 @@ function encode_stream {
 "$(echo -e '[\xf0][\x80-\x8f][\x80-\xbf][\x80-\xbf]')"\
 ')*)./\1?/g' \
       -e 's/(.*)\?/\1/g' \
+      -e ':cdata' \
       -e 's|]]>|]]>]]<![CDATA[>|g'
 }
 
