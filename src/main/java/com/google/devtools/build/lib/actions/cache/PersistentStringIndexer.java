@@ -78,6 +78,10 @@ final class PersistentStringIndexer implements StringIndexer {
   private final PersistentIndexMap stringToInt;
   private volatile AtomicReferenceArray<String> intToString;
 
+  // Only adding strings or clearing the index changes its persisted contents.
+  private int savedSize = -1;
+  private long savedBytes;
+
   private PersistentStringIndexer(
       PersistentIndexMap stringToInt, AtomicReferenceArray<String> intToString) {
     this.stringToInt = stringToInt;
@@ -88,6 +92,7 @@ final class PersistentStringIndexer implements StringIndexer {
   public void clear() {
     lock.lock();
     try {
+      savedSize = -1;
       stringToInt.clear();
       intToString = new AtomicReferenceArray<>(INITIAL_CAPACITY);
     } finally {
@@ -191,7 +196,12 @@ final class PersistentStringIndexer implements StringIndexer {
   long save() throws IOException {
     lock.lock();
     try {
-      return stringToInt.save();
+      int size = stringToInt.size();
+      if (size != savedSize) {
+        savedBytes = stringToInt.save();
+        savedSize = size;
+      }
+      return savedBytes;
     } finally {
       lock.unlock();
     }
@@ -201,7 +211,9 @@ final class PersistentStringIndexer implements StringIndexer {
   void flush() {
     lock.lock();
     try {
-      stringToInt.flush();
+      if (stringToInt.size() != savedSize) {
+        stringToInt.flush();
+      }
     } finally {
       lock.unlock();
     }
