@@ -220,6 +220,35 @@ public final class PersistentStringIndexerTest {
   }
 
   @Test
+  public void unchangedIndexIsNotRewritten() throws Exception {
+    setupTestContent();
+    long savedBytes = indexer.save();
+    dataPath.setLastModifiedTime(1L);
+
+    indexer.getOrCreateIndex(copyOf("abcdefghi"));
+    indexer.flush();
+    assertThat(indexer.save()).isEqualTo(savedBytes);
+
+    assertThat(dataPath.getLastModifiedTime()).isEqualTo(1L);
+    assertThat(journalPath.exists()).isFalse();
+  }
+
+  @Test
+  public void clearAndRefillWithSameSizeIsSaved() throws Exception {
+    indexer.getOrCreateIndex("before");
+    indexer.save();
+
+    indexer.clear();
+    indexer.getOrCreateIndex("after");
+    indexer.save();
+
+    var restored = PersistentStringIndexer.create(dataPath, journalPath, clock);
+    assertThat(restored.size()).isEqualTo(1);
+    assertThat(restored.getStringForIndex(0)).isEqualTo("after");
+    assertThat(restored.getIndex("before")).isNull();
+  }
+
+  @Test
   public void testNormalOperation() throws Exception {
     assertThat(dataPath.exists()).isFalse();
     assertThat(journalPath.exists()).isFalse();
