@@ -32,6 +32,7 @@ import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.BuildFailedException;
 import com.google.devtools.build.lib.actions.FileStateValue;
+import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.cache.ActionCache;
 import com.google.devtools.build.lib.actions.util.TestAction;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -42,6 +43,7 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.events.PrintingEventHandler;
+import com.google.devtools.build.lib.exec.SpawnExecException;
 import com.google.devtools.build.lib.server.FailureDetails.Crash;
 import com.google.devtools.build.lib.server.FailureDetails.Crash.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
@@ -57,6 +59,8 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
+import com.google.devtools.build.skyframe.EvaluationProgressReceiver;
+import com.google.devtools.build.skyframe.SkyKey;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -70,6 +74,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -279,6 +284,125 @@ public class ParallelBuilderTest extends TimestampBuilderTestCase {
   @Test
   public void cacheProbePrunesNestedInputRequestsAfterMiss() throws Exception {
     assertCacheProbePrunesInputRequests(/* nestedInputs= */ true);
+  }
+
+  @Test
+  public void cacheProbeUnchangedMissPrunesDirectConsumers() throws Exception {
+    assertCacheProbeUnchangedMissPrunesConsumers(/* nestedInputs= */ false);
+  }
+
+  @Test
+  public void cacheProbeUnchangedMissPrunesNestedConsumers() throws Exception {
+    assertCacheProbeUnchangedMissPrunesConsumers(/* nestedInputs= */ true);
+  }
+
+  private void assertCacheProbeUnchangedMissPrunesConsumers(boolean nestedInputs) throws Exception {
+    options.parse("--experimental_cache_probe_output=probe.json");
+    Artifact frontier = createDerivedArtifact("frontier");
+    Artifact intermediate = createDerivedArtifact("intermediate");
+    Artifact output = createDerivedArtifact("output");
+    AtomicInteger checks = new AtomicInteger();
+    AtomicBoolean available = new AtomicBoolean();
+    AtomicReference<String> runner = new AtomicReference<>("runner");
+    registerAction(
+        new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(frontier)) {
+          @Override
+          public ActionResult execute(ActionExecutionContext context)
+              throws ActionExecutionException, InterruptedException {
+            checks.incrementAndGet();
+            if (!available.get()) {
+              throw new SpawnExecException(
+                      "cache miss", new SpawnResult.CacheProbeMiss(runner.get()), false)
+                  .toActionExecutionException(this);
+            }
+            return super.execute(context);
+          }
+        });
+    NestedSet<Artifact> inputs = asNestedSet(frontier);
+    if (nestedInputs) {
+      Artifact sibling = createDerivedArtifact("sibling");
+      Artifact other = createDerivedArtifact("other");
+      registerAction(
+          new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(sibling)));
+      registerAction(new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(other)));
+      inputs =
+          NestedSetBuilder.<Artifact>stableOrder()
+              .add(other)
+              .addTransitive(asNestedSet(frontier, sibling))
+              .build();
+    }
+    registerAction(new TestAction(TestAction.NO_EFFECT, inputs, ImmutableSet.of(intermediate)));
+    registerAction(
+        new TestAction(TestAction.NO_EFFECT, asNestedSet(intermediate), ImmutableSet.of(output)));
+    AtomicInteger consumerComputations = new AtomicInteger();
+    EvaluationProgressReceiver progress =
+        new EvaluationProgressReceiver() {
+          @Override
+          public void stateStarting(SkyKey key, NodeState state) {
+            if (state == NodeState.COMPUTE
+                && (key.equals(Artifact.key(intermediate)) || key.equals(Artifact.key(output)))) {
+              consumerComputations.incrementAndGet();
+            }
+          }
+        };
+    reporter.removeHandler(failFastHandler);
+    BuilderWithResult builder = createBuilder(cache, DEFAULT_NUM_JOBS, true, progress);
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output));
+    assertThat(consumerComputations.get()).isGreaterThan(0);
+
+    for (int attempt = 2; attempt <= 3; attempt++) {
+      consumerComputations.set(0);
+      differencer.invalidateTransientErrors();
+      assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output));
+      assertThat(checks.get()).isEqualTo(attempt);
+      assertThat(consumerComputations.get()).isEqualTo(0);
+    }
+
+    // The visible message is unchanged, but a different runner is a different failure.
+    runner.set("different-runner");
+    differencer.invalidateTransientErrors();
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output));
+    assertThat(consumerComputations.get()).isGreaterThan(0);
+
+    available.set(true);
+    differencer.invalidateTransientErrors();
+    buildArtifacts(builder, output);
+    assertThat(checks.get()).isEqualTo(5);
+  }
+
+  @Test
+  public void cacheProbePrunedMissStillChecksDeletedMandatorySource() throws Exception {
+    options.parse("--experimental_cache_probe_output=probe.json");
+    Artifact frontier = createDerivedArtifact("frontier");
+    registerFailingAction(frontier, Spawn.Code.CACHE_PROBE_MISS);
+    Artifact sourceFile = createInputFile("source");
+    Artifact source =
+        new Artifact.SourceArtifact(
+            sourceFile.getRoot(),
+            sourceFile.getExecPath(),
+            () -> Label.parseCanonicalUnchecked("//:source"));
+    Artifact output = createDerivedArtifact("output");
+    registerAction(
+        new TestAction(TestAction.NO_EFFECT, asNestedSet(frontier, source), ImmutableSet.of(output)));
+    reporter.removeHandler(failFastHandler);
+    BuilderWithResult builder = createBuilder(cache, DEFAULT_NUM_JOBS, true);
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output));
+    differencer.invalidateTransientErrors();
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output));
+
+    source.getPath().delete();
+    differencer.invalidate(
+        List.of(
+            FileStateValue.key(
+                RootedPath.toRootedPath(source.getRoot().getRoot(), source.getRootRelativePath()))));
+    differencer.invalidateTransientErrors();
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, output));
+    ActionExecutionException failure =
+        (ActionExecutionException)
+            builder.getLatestResult().getError(Artifact.key(output)).getException();
+    assertThat(failure.isCacheProbeMiss()).isFalse();
+    assertThat(failure.getRootCauses().toList().getFirst().getLabel())
+        .isEqualTo(Label.parseCanonicalUnchecked("//:source"));
   }
 
   private void assertCacheProbePrunesInputRequests(boolean nestedInputs) throws Exception {
@@ -573,6 +697,10 @@ public class ParallelBuilderTest extends TimestampBuilderTestCase {
   }
 
   private static ActionExecutionException cacheProbeFailure(Action action, Spawn.Code code) {
+    if (code == Spawn.Code.CACHE_PROBE_MISS) {
+      return new SpawnExecException("cache miss", new SpawnResult.CacheProbeMiss("test"), false)
+          .toActionExecutionException(action);
+    }
     return new ActionExecutionException(
         code.toString(),
         action,
