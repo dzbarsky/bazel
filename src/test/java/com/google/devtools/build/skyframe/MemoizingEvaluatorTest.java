@@ -5009,6 +5009,143 @@ public abstract class MemoizingEvaluatorTest {
   }
 
   // Tests that we have a sane implementation of error transience.
+  private static final class ComparableTestException extends SomeErrorException
+      implements ValueWithMetadata.ComparableError {
+    private final int detail;
+
+    ComparableTestException(int detail) {
+      super("same message");
+      this.detail = detail;
+    }
+
+    @Override
+    public Object errorEqualityKey() {
+      return detail;
+    }
+  }
+
+  @Test
+  public void comparableTransientErrorRetriesFrontierAndPrunesConsumers() throws Exception {
+    SkyKey frontier = skyKey("frontier");
+    SkyKey consumer = skyKey("consumer");
+    AtomicReference<EvaluationProgressReceiver.EvaluationState> frontierState = new AtomicReference<>();
+    initializeTester(
+        new TrackingProgressReceiver(false) {
+          @Override
+          public void evaluated(
+              SkyKey key,
+              EvaluationState state,
+              @Nullable SkyValue value,
+              @Nullable ErrorInfo error,
+              @Nullable GroupedDeps directDeps) {
+            super.evaluated(key, state, value, error, directDeps);
+            if (key.equals(frontier)) {
+              frontierState.set(state);
+            }
+          }
+        });
+    initializeReporter();
+    AtomicInteger checks = new AtomicInteger();
+    AtomicInteger computations = new AtomicInteger();
+    AtomicInteger detail = new AtomicInteger();
+    AtomicReference<String> event = new AtomicReference<>("first error");
+    AtomicBoolean available = new AtomicBoolean();
+    StringValue success = new StringValue("hit");
+    tester
+        .getOrCreate(frontier)
+        .setBuilder(
+            (key, env) -> {
+              checks.incrementAndGet();
+              if (available.get()) {
+                return success;
+              }
+              env.getListener().handle(Event.error(event.get()));
+              throw new GenericFunctionException(
+                  new ComparableTestException(detail.get()), Transience.TRANSIENT);
+            });
+    tester
+        .getOrCreate(consumer)
+        .setBuilder(
+            (key, env) -> {
+              computations.incrementAndGet();
+              try {
+                return env.getValueOrThrow(frontier, SomeErrorException.class);
+              } catch (SomeErrorException e) {
+                throw new GenericFunctionException(e, Transience.PERSISTENT);
+              }
+            });
+    assertThat(tester.eval(/* keepGoing= */ true, consumer).hasError()).isTrue();
+    for (int attempt = 2; attempt <= 3; attempt++) {
+      computations.set(0);
+      eventCollector.clear();
+      emittedEventState.clear();
+      tester.invalidateTransientErrors();
+      assertThat(tester.eval(/* keepGoing= */ true, consumer).hasError()).isTrue();
+      assertThat(checks.get()).isEqualTo(attempt);
+      assertThat(computations.get()).isEqualTo(0);
+      assertThat(frontierState.get().versionChanged()).isFalse();
+      assertThatEvents(eventCollector).containsExactly("first error");
+    }
+
+    // Full diagnostic identity matters, even when exception type and message do not change.
+    detail.incrementAndGet();
+    tester.invalidateTransientErrors();
+    assertThat(tester.eval(/* keepGoing= */ true, consumer).hasError()).isTrue();
+    assertThat(computations.get()).isGreaterThan(0);
+    assertThat(frontierState.get().versionChanged()).isTrue();
+
+    computations.set(0);
+    event.set("changed error");
+    eventCollector.clear();
+    emittedEventState.clear();
+    tester.invalidateTransientErrors();
+    assertThat(tester.eval(/* keepGoing= */ true, consumer).hasError()).isTrue();
+    assertThat(computations.get()).isGreaterThan(0);
+    assertThatEvents(eventCollector).containsExactly("changed error");
+
+    tester.invalidateTransientErrors();
+    assertThat(tester.eval(/* keepGoing= */ false, consumer).hasError()).isTrue();
+    available.set(true);
+    tester.invalidateTransientErrors();
+    EvaluationResult<SkyValue> result = tester.eval(/* keepGoing= */ true, consumer);
+    assertThat(result.hasError()).isFalse();
+    assertThat(result.get(consumer)).isEqualTo(success);
+  }
+
+  @Test
+  public void comparableTransientErrorFailFastDoesNotReuseRecoveredValue() throws Exception {
+    SkyKey frontier = skyKey("frontier");
+    SkyKey recoveringParent = skyKey("recoveringParent");
+    SkyKey root = skyKey("root");
+    StringValue recovered = new StringValue("recovered");
+    tester
+        .getOrCreate(frontier)
+        .setBuilder(
+            (key, env) -> {
+              throw new GenericFunctionException(
+                  new ComparableTestException(0), Transience.TRANSIENT);
+            });
+    tester
+        .getOrCreate(recoveringParent)
+        .setBuilder(
+            (key, env) -> {
+              try {
+                return env.getValueOrThrow(frontier, SomeErrorException.class);
+              } catch (SomeErrorException e) {
+                return recovered;
+              }
+            });
+    tester.getOrCreate(root).addDependency(recoveringParent).setComputedValue(COPY);
+    assertThat(tester.evalAndGet(/* keepGoing= */ true, root)).isEqualTo(recovered);
+
+    tester.invalidateTransientErrors();
+    assertThat(tester.evalAndGetError(/* keepGoing= */ false, root).getException())
+        .isInstanceOf(ComparableTestException.class);
+
+    tester.invalidateTransientErrors();
+    assertThat(tester.evalAndGet(/* keepGoing= */ true, root)).isEqualTo(recovered);
+  }
+
   @Test
   public void errorTransienceBug() throws Exception {
     tester.getOrCreate("key").setHasTransientError(true);

@@ -19,6 +19,7 @@ import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.exec.Protos.Digest;
+import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.shell.ExecutionStatistics;
 import com.google.devtools.build.lib.shell.TerminationStatus;
@@ -476,6 +477,25 @@ public interface SpawnResult {
     @Override
     public Digest getDigest() {
       return digest;
+    }
+  }
+
+  /** A probe's synthetic miss, with no execution result or mutable diagnostic payload. */
+  final class CacheProbeMiss extends DelegateSpawnResult {
+    public CacheProbeMiss(String runnerName) {
+      super(
+          new Builder()
+              .setStatus(Status.EXECUTION_DENIED)
+              .setExitCode(1)
+              .setFailureMessage("No reusable cached result for cache probe")
+              .setFailureDetail(
+                  FailureDetail.newBuilder()
+                      .setSpawn(
+                          FailureDetails.Spawn.newBuilder()
+                              .setCode(FailureDetails.Spawn.Code.CACHE_PROBE_MISS))
+                      .build())
+              .setRunnerName(runnerName)
+              .build());
     }
   }
 

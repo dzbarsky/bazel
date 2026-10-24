@@ -29,7 +29,7 @@ public interface EvaluationProgressReceiver {
     SUCCESS_VERSION_CHANGED(true, true),
     SUCCESS_VERSION_UNCHANGED(true, false),
     FAIL_VERSION_CHANGED(false, true),
-    FAIL_VERSION_UNCHANGED(false, true);
+    FAIL_VERSION_UNCHANGED(false, false);
 
     static EvaluationState get(@Nullable SkyValue valueMaybeWithMetadata, boolean versionChanged) {
       boolean success = ValueWithMetadata.justValue(valueMaybeWithMetadata) != null;

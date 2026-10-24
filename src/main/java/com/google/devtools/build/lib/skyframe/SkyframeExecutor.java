@@ -3235,7 +3235,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       ModifiedFileSet modifiedOutputFiles,
       @Nullable Range<Long> lastExecutionTimeRange,
       OutputChecker outputChecker,
-      int fsvcThreads)
+      int fsvcThreads,
+      boolean cacheProbe)
       throws AbruptExitException, InterruptedException;
 
   /**

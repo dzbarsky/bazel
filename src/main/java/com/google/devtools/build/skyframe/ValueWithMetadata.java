@@ -26,6 +26,16 @@ import javax.annotation.Nullable;
 public abstract class ValueWithMetadata implements SkyValue {
   protected final SkyValue value;
 
+  /**
+   * Opts a directly thrown exception into change pruning, without changing its transience.
+   *
+   * <p>The immutable key must describe the complete observable failure, excluding stack traces.
+   * Equal keys allow Skyframe to retain the previous exception and skip its consumers.
+   */
+  public interface ComparableError {
+    Object errorEqualityKey();
+  }
+
   private static final NestedSet<Reportable> NO_EVENTS =
       NestedSetBuilder.emptySet(Order.STABLE_ORDER);
 
@@ -54,7 +64,15 @@ public abstract class ValueWithMetadata implements SkyValue {
           ? value
           : ValueWithEvents.createValueWithEvents(value, transitiveEvents);
     }
-    return new ErrorInfoValue(errorInfo, value, transitiveEvents);
+    if (value == null
+        && errorInfo.isDirectlyTransient()
+        && !errorInfo.isCatastrophic()
+        && errorInfo.getCycleInfo().isEmpty()
+        && errorInfo.getException() instanceof ComparableError comparableError) {
+      return new ComparableErrorInfoValue(
+          errorInfo, transitiveEvents, comparableError.errorEqualityKey());
+    }
+    return new NotComparableErrorInfoValue(errorInfo, value, transitiveEvents);
   }
 
   public boolean hasError() {
@@ -144,13 +162,8 @@ public abstract class ValueWithMetadata implements SkyValue {
     }
   }
 
-  /**
-   * Implementation of {@link ValueWithMetadata} for the error case.
-   *
-   * <p>Mark NotComparableSkyValue because it's unlikely that re-evaluation gives the same error.
-   */
-  private static final class ErrorInfoValue extends ValueWithMetadata
-      implements NotComparableSkyValue {
+  /** Implementation of {@link ValueWithMetadata} for the error case. */
+  private abstract static class ErrorInfoValue extends ValueWithMetadata {
 
     private final ErrorInfo errorInfo;
     private final NestedSet<Reportable> transitiveEvents;
@@ -218,6 +231,35 @@ public abstract class ValueWithMetadata implements SkyValue {
         result.append("Error: ").append(errorInfo);
       }
       return result.toString();
+    }
+  }
+
+  private static final class NotComparableErrorInfoValue extends ErrorInfoValue
+      implements NotComparableSkyValue {
+    NotComparableErrorInfoValue(
+        ErrorInfo errorInfo, @Nullable SkyValue value, NestedSet<Reportable> events) {
+      super(errorInfo, value, events);
+    }
+  }
+
+  private static final class ComparableErrorInfoValue extends ErrorInfoValue {
+    private final Object equalityKey;
+
+    ComparableErrorInfoValue(
+        ErrorInfo errorInfo, NestedSet<Reportable> events, Object equalityKey) {
+      super(errorInfo, null, events);
+      this.equalityKey = Preconditions.checkNotNull(equalityKey);
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      return super.equals(other)
+          && equalityKey.equals(((ComparableErrorInfoValue) other).equalityKey);
+    }
+
+    @Override
+    public int hashCode() {
+      return 31 * super.hashCode() + equalityKey.hashCode();
     }
   }
 
