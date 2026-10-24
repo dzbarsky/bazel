@@ -514,15 +514,15 @@ public final class IncrementalArtifactConflictFinder {
               new CheckForConflictsUnderKey(depKey, actionCheckingFutures, badActionMap, dedupSet));
         }
       }
-      var finalValue = value;
       // The value can be a non ActionLookupValue e.g. NonRuleConfiguredTargetValue.
-      if (!(finalValue instanceof ActionLookupValue)) {
+      if (!(value instanceof ActionLookupValue actionLookupValue)
+          || actionLookupValue.getActions().isEmpty()) {
         return;
       }
       Callable<Void> goThroughActions =
           () ->
               actionRegistration(
-                  (ActionLookupValue) finalValue,
+                  actionLookupValue,
                   threadSafeMutableActionGraph,
                   pathFragmentTrieRoot,
                   badActionMap);
