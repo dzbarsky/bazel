@@ -18,6 +18,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.devtools.build.lib.skyframe.SkyValueRetrieverUtils.retrieveRemoteSkyValue;
 
+import com.google.common.base.Equivalence;
 import com.google.common.base.Joiner;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Predicates;
@@ -54,9 +55,11 @@ import com.google.devtools.build.lib.actions.PackageRootResolver;
 import com.google.devtools.build.lib.actions.RichArtifactData;
 import com.google.devtools.build.lib.actions.RichDataProducingAction;
 import com.google.devtools.build.lib.actions.SpawnMetrics;
+import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.bugreport.BugReporter;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId;
 import com.google.devtools.build.lib.causes.Cause;
 import com.google.devtools.build.lib.causes.LabelCause;
 import com.google.devtools.build.lib.clock.BlazeClock;
@@ -67,6 +70,7 @@ import com.google.devtools.build.lib.collect.nestedset.ArtifactNestedSetKey;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
+import com.google.devtools.build.lib.exec.SpawnExecException;
 import com.google.devtools.build.lib.io.InconsistentFilesystemException;
 import com.google.devtools.build.lib.packages.BuildFileNotFoundException;
 import com.google.devtools.build.lib.profiler.Profiler;
@@ -99,9 +103,11 @@ import com.google.devtools.build.skyframe.MemoizingEvaluator;
 import com.google.devtools.build.skyframe.NodeEntry;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
+import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
+import com.google.devtools.build.skyframe.ValueWithMetadata.ComparableError;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -338,7 +344,11 @@ public class ActionExecutionFunction implements SkyFunction {
         try {
           checkedInputs = checkInputs(env, action, inputDepsResult, allInputs, inputDepKeys);
         } catch (ActionExecutionException e) {
-          throw new ActionExecutionFunctionException(e);
+          throw new ActionExecutionFunctionException(
+              e,
+              skyframeActionExecutor.isCacheProbe() && e.isCacheProbeMiss()
+                  ? Transience.PERSISTENT
+                  : Transience.TRANSIENT);
         }
       }
       if (env.valuesMissing()) {
@@ -421,7 +431,10 @@ public class ActionExecutionFunction implements SkyFunction {
       // done it in SkyframeActionExecutor.reportErrorIfNotAbortingMode() method. That method
       // prints the error in the top-level reporter and also dumps the recorded StdErr for the
       // action. Label can be null in the case of, e.g., the SystemActionOwner (for build-info.txt).
-      throw new ActionExecutionFunctionException(new AlreadyReportedActionExecutionException(e));
+      throw new ActionExecutionFunctionException(
+          skyframeActionExecutor.isCacheProbe() && ComparableCacheProbeMiss.isCanonical(e)
+              ? new ComparableCacheProbeMiss(e)
+              : new AlreadyReportedActionExecutionException(e));
     } finally {
       skyframeActionExecutor.releaseActionExecutionSemaphore();
     }
@@ -1451,7 +1464,11 @@ public class ActionExecutionFunction implements SkyFunction {
       // distinguish non-transient errors (e.g. compilation error from a deterministic compiler)
       // from transient ones (e.g. IO error).
       // TODO(bazel-team): Have ActionExecutionExceptions declare their transience.
-      super(e, Transience.TRANSIENT);
+      this(e, Transience.TRANSIENT);
+    }
+
+    ActionExecutionFunctionException(ActionExecutionException e, Transience transience) {
+      super(e, transience);
       this.actionException = e;
     }
 
@@ -1460,6 +1477,62 @@ public class ActionExecutionFunction implements SkyFunction {
       return actionException.isCatastrophe();
     }
   }
+
+  /** Only the constructor-fixed probe result has a stable, fully described failure payload. */
+  private static final class ComparableCacheProbeMiss extends AlreadyReportedActionExecutionException
+      implements ComparableError {
+    private final Object equalityKey;
+
+    static boolean isCanonical(ActionExecutionException failure) {
+      return failure.isCacheProbeMiss()
+          && failure.getSuppressed().length == 0
+          && failure.getCause() != null
+          && failure.getCause().getClass() == SpawnExecException.class
+          && failure.getCause().getCause() == null
+          && failure.getCause().getSuppressed().length == 0
+          && !((SpawnExecException) failure.getCause()).isCatastrophic()
+          && ((SpawnExecException) failure.getCause()).getSpawnResult()
+              instanceof SpawnResult.CacheProbeMiss;
+    }
+
+    ComparableCacheProbeMiss(ActionExecutionException failure) {
+      super(failure);
+      SpawnExecException cause = (SpawnExecException) failure.getCause();
+      // Action identity also covers its owner/location and prevents pruning across reanalysis.
+      equalityKey =
+          new CacheProbeMissKey(
+              Equivalence.identity().wrap(failure.getAction()),
+              failure.getMessage(),
+              failure.getDetailedExitCode(),
+              failure.getRootCauses().toList().stream()
+                  .map(
+                      rootCause ->
+                          new CacheProbeRootCauseKey(
+                              rootCause.getClass(),
+                              rootCause.getIdProto(),
+                              rootCause.getLabel(),
+                              rootCause.getDetailedExitCode()))
+                  .collect(ImmutableList.toImmutableList()),
+              cause.getMessage(),
+              cause.getSpawnResult().getRunnerName());
+    }
+
+    @Override
+    public Object errorEqualityKey() {
+      return equalityKey;
+    }
+  }
+
+  private record CacheProbeRootCauseKey(
+      Class<?> type, BuildEventId id, @Nullable Label label, @Nullable DetailedExitCode code) {}
+
+  private record CacheProbeMissKey(
+      Equivalence.Wrapper<?> action,
+      @Nullable String message,
+      DetailedExitCode code,
+      ImmutableList<CacheProbeRootCauseKey> rootCauses,
+      @Nullable String causeMessage,
+      String runnerName) {}
 
   /**
    * Thrown when all direct dependencies are available but {@link #lookupInput} returns {@code null}

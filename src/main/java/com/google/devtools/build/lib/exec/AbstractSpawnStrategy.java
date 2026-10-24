@@ -131,17 +131,7 @@ public abstract class AbstractSpawnStrategy implements SandboxedSpawnStrategy {
       if (cacheHandle.hasResult()) {
         spawnResult = Preconditions.checkNotNull(cacheHandle.getResult());
       } else if (executionOptions.getCacheProbeOutput() != null) {
-        spawnResult =
-            new SpawnResult.Builder()
-                .setStatus(Status.EXECUTION_DENIED)
-                .setExitCode(1)
-                .setFailureMessage("No reusable cached result for cache probe")
-                .setFailureDetail(
-                    FailureDetail.newBuilder()
-                        .setSpawn(FailureDetails.Spawn.newBuilder().setCode(Code.CACHE_PROBE_MISS))
-                        .build())
-                .setRunnerName(spawnRunner.getName())
-                .build();
+        spawnResult = new SpawnResult.CacheProbeMiss(spawnRunner.getName());
       } else {
         Instant startTime =
             Instant.ofEpochMilli(actionExecutionContext.getClock().currentTimeMillis());

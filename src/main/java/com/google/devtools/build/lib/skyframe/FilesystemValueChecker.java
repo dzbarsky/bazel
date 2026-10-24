@@ -219,6 +219,23 @@ public class FilesystemValueChecker {
       OutputChecker outputChecker,
       ModifiedOutputsReceiver modifiedOutputsReceiver)
       throws InterruptedException {
+    return getDirtyActionValues(
+        valuesMap,
+        batchStatter,
+        modifiedOutputFiles,
+        outputChecker,
+        /* checkMissingActionValues= */ true,
+        modifiedOutputsReceiver);
+  }
+
+  Collection<SkyKey> getDirtyActionValues(
+      Map<SkyKey, SkyValue> valuesMap,
+      @Nullable final BatchStat batchStatter,
+      ModifiedFileSet modifiedOutputFiles,
+      OutputChecker outputChecker,
+      boolean checkMissingActionValues,
+      ModifiedOutputsReceiver modifiedOutputsReceiver)
+      throws InterruptedException {
     if (modifiedOutputFiles == ModifiedFileSet.NOTHING_MODIFIED) {
       logger.atInfo().log("Not checking for dirty actions since nothing was modified");
       return ImmutableList.of();
@@ -229,7 +246,7 @@ public class FilesystemValueChecker {
     Collection<List<Map.Entry<SkyKey, ActionExecutionValue>>> actionKeyShards;
     try (SilentCloseable c =
         Profiler.instance().profile("getDirtyActionValues/filterAndBatchActions")) {
-      actionKeyShards = batchActionKeysIntoShards(numShards, valuesMap);
+      actionKeyShards = batchActionKeysIntoShards(numShards, valuesMap, checkMissingActionValues);
     }
 
     ExecutorService executor =
@@ -302,11 +319,12 @@ public class FilesystemValueChecker {
 
   @SuppressWarnings("unchecked")
   private Collection<List<Map.Entry<SkyKey, ActionExecutionValue>>> batchActionKeysIntoShards(
-      int numShards, Map<SkyKey, SkyValue> valuesMap) {
+      int numShards, Map<SkyKey, SkyValue> valuesMap, boolean checkMissingActionValues) {
     return (Collection)
         valuesMap.entrySet().stream()
             .parallel()
             .filter(e -> ACTION_FILTER.apply(e.getKey()))
+            .filter(e -> checkMissingActionValues || e.getValue() != null)
             .map(e -> (Map.Entry<?, ?>) e)
             .collect(groupingByConcurrent(k -> ThreadLocalRandom.current().nextInt(numShards)))
             .values();

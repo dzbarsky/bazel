@@ -523,7 +523,8 @@ public class SequencedSkyframeExecutor extends SkyframeExecutor {
       ModifiedFileSet modifiedOutputFiles,
       @Nullable Range<Long> lastExecutionTimeRange,
       OutputChecker outputChecker,
-      int fsvcThreads)
+      int fsvcThreads,
+      boolean cacheProbe)
       throws InterruptedException {
     long startTime = System.nanoTime();
     FilesystemValueChecker fsvc =
@@ -533,12 +534,14 @@ public class SequencedSkyframeExecutor extends SkyframeExecutor {
             outputService::getXattrProvider,
             fsvcThreads);
     BatchStat batchStatter = outputService.getBatchStatter();
+    // Probe misses are rechecked through Skyframe, not through nonexistent output values.
     recordingDiffer.invalidate(
         fsvc.getDirtyActionValues(
             memoizingEvaluator.getValues(),
             batchStatter,
             modifiedOutputFiles,
             outputChecker,
+            /* checkMissingActionValues= */ !cacheProbe,
             (maybeModifiedTime, artifact) -> {
               modifiedFiles.incrementAndGet();
               int dirtyOutputsCount = outputDirtyFiles.incrementAndGet();
