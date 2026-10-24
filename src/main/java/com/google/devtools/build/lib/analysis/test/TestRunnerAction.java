@@ -726,6 +726,11 @@ public class TestRunnerAction extends AbstractAction
   }
 
   @Override
+  public boolean canDeferOutputPreparationForCacheProbe() {
+    return true;
+  }
+
+  @Override
   public boolean allowsStrategyRegexpMatching() {
     return false;
   }
@@ -1079,6 +1084,7 @@ public class TestRunnerAction extends AbstractAction
           throw e;
         }
 
+        actionExecutionContext.prepareOutputFiles();
         testRunnerSpawn.finalizeCancelledTest(failedAttempts);
         createEmptyOutputs(testRunnerSpawn.getActionExecutionContext());
         return ActionResult.create(spawnResults);

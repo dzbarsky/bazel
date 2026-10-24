@@ -1335,6 +1335,10 @@ public class RemoteExecutionService {
         result.getOrParseActionResultMetadata(
             combinedCache, digestUtil, context, action.getRemotePathResolver());
 
+    // Cache-only probes defer cleanup until they have reusable output metadata. Prepare before
+    // injecting that metadata: cleanup also removes entries from the action's in-memory filesystem.
+    action.getSpawnExecutionContext().prepareOutputFiles();
+
     // The expiration time for remote cache entries.
     var expirationTime = Instant.now().plus(remoteOptions.getRemoteCacheTtl());
 

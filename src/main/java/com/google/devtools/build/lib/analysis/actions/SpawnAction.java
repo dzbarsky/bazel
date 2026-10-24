@@ -267,6 +267,11 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     return executeUnconditionally();
   }
 
+  @Override
+  public boolean canDeferOutputPreparationForCacheProbe() {
+    return true;
+  }
+
   /** Hook for subclasses to perform work before the spawn is executed. */
   protected void beforeExecute(ActionExecutionContext actionExecutionContext)
       throws ExecException {}

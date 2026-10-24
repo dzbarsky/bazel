@@ -918,4 +918,105 @@ function test_shared_cache_fill_invalidates_probe_miss() {
   assert_equals "$server_pid" "$(cat "${probe_output_base}/server/server.pid.txt")"
 }
 
+function test_probe_miss_preserves_existing_output() {
+  write_build_fixture
+  bazel build --spawn_strategy=standalone --disk_cache= //pkg:producer \
+    >& "$TEST_log" || fail "Initial build failed"
+  rm "$marker"
+  echo changed > pkg/input.txt
+
+  run_probe build --disk_cache= //pkg:producer
+  assert_affected //pkg:producer
+  assert_equals original "$(cat bazel-bin/pkg/produced.txt)"
+  assert_not_exists "$marker"
+
+  bazel build --spawn_strategy=standalone --disk_cache= //pkg:producer \
+    >& "$TEST_log" || fail "Build after probe failed"
+  assert_equals changed "$(cat bazel-bin/pkg/produced.txt)"
+  assert_equals producer "$(cat "$marker")"
+}
+
+function test_probe_cache_hit_removes_stale_tree_contents() {
+  mkdir -p pkg
+  cat > pkg/tree.bzl <<'EOF'
+def _tree_impl(ctx):
+    tree = ctx.actions.declare_directory(ctx.label.name)
+    ctx.actions.run_shell(
+        outputs = [tree],
+        arguments = [tree.path, ctx.attr.marker],
+        command = 'mkdir -p "$1"; echo original > "$1/live"; echo executed >> "$2"',
+    )
+    return [DefaultInfo(files = depset([tree]))]
+
+tree = rule(implementation = _tree_impl, attrs = {"marker": attr.string()})
+EOF
+  cat > pkg/BUILD <<EOF
+load(":tree.bzl", "tree")
+tree(name = "out", marker = "${marker}")
+EOF
+  local cache="${control_dir}/tree-cache"
+  bazel build --spawn_strategy=standalone --disk_cache="$cache" //pkg:out \
+    >& "$TEST_log" || fail "Initial tree build failed"
+  rm "$marker"
+  chmod -R u+w bazel-bin/pkg/out
+  echo stale > bazel-bin/pkg/out/extra
+  echo changed > bazel-bin/pkg/out/live
+
+  run_probe build --disk_cache="$cache" //pkg:out
+  assert_affected
+  assert_not_exists bazel-bin/pkg/out/extra
+  assert_not_exists bazel-bin/pkg/out/live
+  assert_not_exists "$marker"
+
+  bazel build --spawn_strategy=standalone --disk_cache="$cache" \
+    --remote_download_outputs=all //pkg:out >& "$TEST_log" || fail "Build after probe failed"
+  assert_not_exists bazel-bin/pkg/out/extra
+  assert_equals original "$(cat bazel-bin/pkg/out/live)"
+  assert_not_exists "$marker"
+}
+
+function test_probe_test_miss_preserves_old_result_without_reusing_it() {
+  write_test_fixture
+  bazel test --spawn_strategy=standalone --test_strategy=standalone --disk_cache= \
+    //pkg:test >& "$TEST_log" || fail "Initial test failed"
+  cp bazel-testlogs/pkg/test/test.cache_status "${control_dir}/old-status"
+  cp bazel-testlogs/pkg/test/test.log "${control_dir}/old-log"
+  rm "$marker"
+  sed -i.bak 's/^exit 0$/exit 1/' pkg/test.sh
+
+  run_probe test --disk_cache= //pkg:test
+  assert_affected //pkg:test
+  cmp "${control_dir}/old-status" bazel-testlogs/pkg/test/test.cache_status \
+    || fail "Probe changed the old test status"
+  cmp "${control_dir}/old-log" bazel-testlogs/pkg/test/test.log \
+    || fail "Probe changed the old test log"
+  assert_not_exists "$marker"
+
+  if bazel test --spawn_strategy=standalone --test_strategy=standalone --disk_cache= \
+    //pkg:test >& "$TEST_log"; then
+    fail "Changed failing test reused the old success"
+  fi
+  assert_equals test "$(cat "$marker")"
+}
+
+function test_probe_cached_test_removes_stale_outputs() {
+  write_test_fixture
+  local cache="${control_dir}/test-cache"
+  bazel test --spawn_strategy=standalone --test_strategy=standalone --disk_cache="$cache" \
+    //pkg:test >& "$TEST_log" || fail "Initial cached test failed"
+  cp bazel-testlogs/pkg/test/test.log "${control_dir}/old-log"
+  rm "$marker" bazel-testlogs/pkg/test/test.cache_status
+  chmod -R u+w bazel-testlogs/pkg/test
+  echo stale > bazel-testlogs/pkg/test/test.log
+  mkdir -p bazel-testlogs/pkg/test/test.outputs
+  echo stale > bazel-testlogs/pkg/test/test.outputs/extra
+
+  run_probe test --disk_cache="$cache" --remote_download_outputs=all //pkg:test
+  assert_affected
+  assert_not_exists bazel-testlogs/pkg/test/test.outputs/extra
+  cmp "${control_dir}/old-log" bazel-testlogs/pkg/test/test.log \
+    || fail "Probe did not restore the cached test log"
+  assert_not_exists "$marker"
+}
+
 run_suite "Bazel native cache probe tests"
