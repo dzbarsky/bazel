@@ -145,7 +145,6 @@ cc_test(
         ":tw_lib",
         "//src/main/cpp/util:filesystem",
         "//third_party/ijar:zip",
-        "//src/test/cpp/util:windows_test_util",
         "@com_google_googletest//:gtest_main",
     ] + select({
         "@bazel_tools//src/conditions:windows": [
