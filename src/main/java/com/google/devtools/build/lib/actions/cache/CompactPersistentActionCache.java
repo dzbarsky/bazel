@@ -274,7 +274,8 @@ public class CompactPersistentActionCache implements ActionCache {
       // We must first flush the journal to get an accurate measure of its size.
       flushJournal();
       try {
-        return journalSize() * 100 < cacheSize();
+        // Rewriting the entire cache for small updates is costly in large builds.
+        return journalSize() * 10 < cacheSize();
       } catch (IOException e) {
         return false;
       }
