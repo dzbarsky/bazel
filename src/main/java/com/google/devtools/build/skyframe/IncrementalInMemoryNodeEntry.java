@@ -418,6 +418,9 @@ public class IncrementalInMemoryNodeEntry extends AbstractInMemoryNodeEntry<Dirt
     if (dirtyBuildingState == null) {
       return ImmutableSet.of();
     }
+    if (directDeps == null && getResetDirectDeps().isEmpty()) {
+      return dirtyBuildingState.getAllRemainingDirtyDirectDeps(/* preservePosition= */ false);
+    }
     return ImmutableSet.<SkyKey>builder()
         .addAll(getTemporaryDirectDeps().getAllElementsAsIterable())
         .addAll(dirtyBuildingState.getAllRemainingDirtyDirectDeps(/* preservePosition= */ false))
