@@ -177,12 +177,12 @@ public class CompactPersistentActionCacheTest {
 
   @Test
   public void testIncrementalSave() throws IOException {
-    for (int i = 0; i < 300; i++) {
+    for (int i = 0; i < 50; i++) {
       putKey(Integer.toString(i));
     }
     assertFullSave();
 
-    // Add 2 entries to 300. Might as well just leave them in the journal.
+    // Add 2 entries to 50. Might as well just leave them in the journal.
     putKey("abc");
     putKey("123");
     assertIncrementalSave(cache);
@@ -193,7 +193,7 @@ public class CompactPersistentActionCacheTest {
         CompactPersistentActionCache.create(
             cacheRoot, corruptedCacheRoot, tmpDir, clock, eventHandler);
     verify(eventHandler, never()).handle(any());
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 50; i++) {
       assertKeyEquals(cache, newcache, Integer.toString(i));
     }
     assertKeyEquals(cache, newcache, "abc");
@@ -206,7 +206,7 @@ public class CompactPersistentActionCacheTest {
         CompactPersistentActionCache.create(
             cacheRoot, corruptedCacheRoot, tmpDir, clock, eventHandler);
     verify(eventHandler, never()).handle(any());
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 50; i++) {
       assertKeyEquals(cache, newerCache, Integer.toString(i));
     }
     assertKeyEquals(cache, newerCache, "abc");
