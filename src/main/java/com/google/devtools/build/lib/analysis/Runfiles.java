@@ -275,11 +275,14 @@ public final class Runfiles implements RunfilesApi {
       Artifact symlink = entry.getValue();
       // drop nested entries; warn if this changes anything
       int n = source.segmentCount();
-      ArrayList<PathFragment> parents = new ArrayList<>(n);
+      ArrayList<PathFragment> parents = null;
       for (int j = 1; j < n; ++j) {
         PathFragment prefix = source.subFragment(0, n - j);
         if (noFurtherObstructions.contains(prefix)) {
           break;
+        }
+        if (parents == null) {
+          parents = new ArrayList<>(n);
         }
         parents.add(prefix);
         Artifact ancestor = workingManifest.get(prefix);
@@ -305,7 +308,9 @@ public final class Runfiles implements RunfilesApi {
           continue outer;
         }
       }
-      noFurtherObstructions.addAll(parents);
+      if (parents != null) {
+        noFurtherObstructions.addAll(parents);
+      }
       newManifest.put(entry.getKey(), entry.getValue());
     }
     return newManifest;
