@@ -351,10 +351,12 @@ public class StandaloneTestStrategy extends TestStrategy {
     }
   }
 
-  private static void addExistingLogInput(
+  private static void addLogInput(
       ActionExecutionContext context, Path path, ImmutableList.Builder<ActionInput> inputs)
       throws IOException {
-    if (path.exists()) {
+    // Empty streams may be absent on cache hits; they must not change the XML action's inputs.
+    FileStatus stat = path.statIfFound();
+    if (stat != null && stat.getSize() > 0) {
       inputs.add(ActionInputHelper.fromPath(path.relativeTo(context.getExecRoot())));
     }
   }
@@ -897,14 +899,12 @@ public class StandaloneTestStrategy extends TestStrategy {
       // uploaded or staged independently; the XML spawn must not depend on a locally merged file.
       if (!xmlOutputPath.exists()) {
         ImmutableList.Builder<ActionInput> logInputsBuilder = ImmutableList.builder();
-        addExistingLogInput(actionExecutionContext, fileOutErr.getOutputPath(), logInputsBuilder);
+        addLogInput(actionExecutionContext, fileOutErr.getOutputPath(), logInputsBuilder);
         if (coverageOutErr != null) {
-          addExistingLogInput(
-              actionExecutionContext, coverageOutErr.getErrorPath(), logInputsBuilder);
-          addExistingLogInput(
-              actionExecutionContext, coverageOutErr.getOutputPath(), logInputsBuilder);
+          addLogInput(actionExecutionContext, coverageOutErr.getErrorPath(), logInputsBuilder);
+          addLogInput(actionExecutionContext, coverageOutErr.getOutputPath(), logInputsBuilder);
         }
-        addExistingLogInput(actionExecutionContext, fileOutErr.getErrorPath(), logInputsBuilder);
+        addLogInput(actionExecutionContext, fileOutErr.getErrorPath(), logInputsBuilder);
         ImmutableList<ActionInput> logInputs = logInputsBuilder.build();
         Spawn xmlGeneratingSpawn =
             createXmlGeneratingSpawn(

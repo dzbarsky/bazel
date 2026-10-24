@@ -2967,6 +2967,7 @@ EOF
   CACHEDIR=$(mktemp -d)
 
   bazel test \
+    --remote_download_stdouterr=true \
     --disk_cache=$CACHEDIR \
     //a:test >& $TEST_log || fail "Failed to build //a:test"
 
@@ -2975,6 +2976,7 @@ EOF
   bazel clean
 
   bazel test \
+    --remote_download_stdouterr=true \
     --disk_cache=$CACHEDIR \
     //a:test >& $TEST_log || fail "Failed to build //a:test"
 

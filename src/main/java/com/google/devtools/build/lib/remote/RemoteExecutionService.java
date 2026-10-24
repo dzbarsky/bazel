@@ -1300,7 +1300,7 @@ public class RemoteExecutionService {
    *
    * <p>For a successful action, the {@link RemoteOutputChecker} is consulted to determine which of
    * the outputs should be downloaded. For a failed action, all outputs are downloaded. The action
-   * stdout and stderr are downloaded by default, but may be deferred until read when requested. The
+   * stdout and stderr may be deferred until read, according to the log download policy. The
    * in-memory output when present is always downloaded. Any outputs that are not downloaded have
    * their metadata injected into the {@link RemoteActionFileSystem}.
    *
