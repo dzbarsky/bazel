@@ -466,6 +466,30 @@ public abstract class MemoizingEvaluatorTest {
   }
 
   @Test
+  public void deleteMatchingPreservesUnrelatedDirtyNodes() throws Exception {
+    SkyKey leaf = nonHermeticKey("leaf");
+    tester.set(leaf, new StringValue("old"));
+    tester.getOrCreate("kept").addDependency(leaf).setComputedValue(CONCATENATE);
+    tester.getOrCreate("removed").addDependency(leaf).setComputedValue(CONCATENATE);
+    tester.getOrCreate("parent").addDependency("removed").setComputedValue(CONCATENATE);
+    tester.eval(true, "kept", "parent");
+
+    tester.set(leaf, new StringValue("new"));
+    tester.invalidate();
+    String[] noKeys = {};
+    tester.eval(true, noKeys);
+
+    tester.evaluator.deleteMatching(Predicates.equalTo(skyKey("removed")));
+    tester.eval(true, noKeys);
+
+    assertThat(tester.getDeletedKeys()).containsExactly(skyKey("removed"), skyKey("parent"));
+    assertThat(tester.evaluator.getInMemoryGraph().getIfPresent(leaf).isDirty()).isTrue();
+    assertThat(tester.evaluator.getInMemoryGraph().getIfPresent(skyKey("kept")).isDirty()).isTrue();
+    assertThat(tester.evalAndGet("kept")).isEqualTo(new StringValue("new"));
+    assertThat(tester.evalAndGet("parent")).isEqualTo(new StringValue("new"));
+  }
+
+  @Test
   public void deleteOldNodesTest() throws Exception {
     SkyKey d2Key = nonHermeticKey("d2");
     tester

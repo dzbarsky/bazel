@@ -68,6 +68,12 @@ public interface MemoizingEvaluator {
   void delete(BiPredicate<SkyKey, SkyValue> pred);
 
   /**
+   * Queues matching keys and their transitive dependents for deletion on the next evaluation.
+   * Unrelated dirty nodes are not selected for deletion.
+   */
+  void deleteMatching(Predicate<SkyKey> pred);
+
+  /**
    * Marks dirty values for deletion if they have been dirty for at least as many graph versions as
    * the specified limit.
    *
