@@ -33,6 +33,7 @@ import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
 import com.google.devtools.build.lib.actions.ActionInputPrefetcher;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
+import com.google.devtools.build.lib.actions.ActionOutputDirectoryHelper;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.DiscoveredModulesPruner;
 import com.google.devtools.build.lib.actions.InputMetadataProvider;
@@ -75,6 +76,7 @@ import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.SyscallCache;
 import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
 import com.google.devtools.build.lib.view.test.TestStatus.TestResultData;
@@ -287,7 +289,24 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
 
   @Test
   public void testRunTestOnce() throws Exception {
+    runTestOnce(/* cacheProbe= */ false, /* existingTmpDir= */ true);
+  }
+
+  @Test
+  public void cacheProbeDoesNotCreateScratchDirectories() throws Exception {
+    runTestOnce(/* cacheProbe= */ true, /* existingTmpDir= */ false);
+  }
+
+  @Test
+  public void cacheProbePreservesExistingScratchDirectories() throws Exception {
+    runTestOnce(/* cacheProbe= */ true, /* existingTmpDir= */ true);
+  }
+
+  private void runTestOnce(boolean cacheProbe, boolean existingTmpDir) throws Exception {
     ExecutionOptions executionOptions = Options.getDefaults(ExecutionOptions.class);
+    if (cacheProbe) {
+      executionOptions.setCacheProbeOutput(PathFragment.create("probe.json"));
+    }
     TestSummaryOptions testSummaryOptions = TestSummaryOptions.DEFAULTS;
     Path tmpDirRoot = TestStrategy.getTmpRoot(rootDirectory, outputBase, executionOptions);
     TestedStandaloneTestStrategy standaloneTestStrategy =
@@ -306,6 +325,12 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
         )
         """);
     TestRunnerAction testRunnerAction = getTestAction("//standalone:simple_test");
+    Path tmpDir = tmpDirRoot.getChild(TestStrategy.getTmpDirName(testRunnerAction));
+    Path staleFile = tmpDir.getChild("stale");
+    if (existingTmpDir) {
+      tmpDir.createDirectoryAndParents();
+      FileSystemUtils.writeContentAsLatin1(staleFile, "previous attempt");
+    }
 
     SpawnResult expectedSpawnResult =
         new SpawnResult.Builder()
@@ -319,10 +344,21 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
         new FakeActionExecutionContext(
             createTempOutErr(tmpDirRoot), inputMetadataFor(testRunnerAction), spawnStrategy);
 
+    // Match the executor, which prepares declared outputs before the test strategy.
+    ActionOutputDirectoryHelper.createForTesting()
+        .createOutputDirectories(testRunnerAction.getOutputs());
+
     // actual StandaloneTestStrategy execution
     ImmutableList<SpawnResult> spawnResults =
         execute(testRunnerAction, actionExecutionContext, standaloneTestStrategy);
 
+    assertThat(tmpDir.exists()).isEqualTo(!cacheProbe || existingTmpDir);
+    assertThat(staleFile.exists()).isEqualTo(cacheProbe && existingTmpDir);
+    var paths = testRunnerAction.resolve(getExecRoot());
+    assertThat(paths.getUndeclaredOutputsAnnotationsDir().exists()).isEqualTo(!cacheProbe);
+    assertThat(paths.getSplitLogsDir().exists()).isEqualTo(!cacheProbe);
+    verify(actionExecutionContext.getOutputMetadataStore())
+        .resetOutputs(testRunnerAction.getOutputs());
     assertThat(spawnResults).contains(expectedSpawnResult);
     TestResult result = standaloneTestStrategy.postedResult;
     assertThat(result).isNotNull();
