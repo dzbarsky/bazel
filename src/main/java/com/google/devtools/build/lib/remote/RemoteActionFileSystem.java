@@ -589,10 +589,9 @@ public class RemoteActionFileSystem extends FileSystem {
     }
 
     if (isOutput(path)) {
-      try {
-        return remoteOutputTree.getPath(path).readSymbolicLink();
-      } catch (FileNotFoundException e) {
-        // Intentionally ignored.
+      PathFragment target = remoteOutputTree.readSymbolicLinkIfFound(path);
+      if (target != null) {
+        return target;
       }
     }
 
