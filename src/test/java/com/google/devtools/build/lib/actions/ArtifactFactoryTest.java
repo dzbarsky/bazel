@@ -353,6 +353,27 @@ public class ArtifactFactoryTest {
   }
 
   @Test
+  public void testCaseInsensitiveLookupRetainsInternalPaths() {
+    artifactFactory.noteAnalysisStarting();
+    // UTF-8 bytes for the Kelvin sign, whose Unicode case fold matches ASCII k.
+    PathFragment unicodePath = PathFragment.create("foo/\u00e2\u0084\u00aa.h");
+    PathFragment asciiPath = PathFragment.create("foo/k.h");
+    var unicodeArtifact = artifactFactory.getSourceArtifact(unicodePath, clientRoot);
+    var asciiArtifact = artifactFactory.getSourceArtifact(asciiPath, clientRoot);
+
+    assertThat(unicodeArtifact.getExecPath()).isEqualTo(unicodePath);
+    assertThat(asciiArtifact.getExecPath()).isEqualTo(asciiPath);
+    assertThat(artifactFactory.resolveSourceArtifact(unicodePath, MAIN))
+        .isSameInstanceAs(unicodeArtifact);
+    assertThat(artifactFactory.resolveSourceArtifact(asciiPath, MAIN))
+        .isSameInstanceAs(asciiArtifact);
+
+    artifactFactory.noteAnalysisStarting();
+    assertThat(artifactFactory.resolveSourceArtifactsAsciiCaseInsensitively(asciiPath, MAIN))
+        .containsExactly(unicodeArtifact, asciiArtifact);
+  }
+
+  @Test
   public void testResolveSourceArtifactCaseInsensitively_derivedPathReturnsEmpty() {
     artifactFactory.noteAnalysisStarting();
     PathFragment derivedPath = PathFragment.create("bazel-out/x/bin/foo/header.h");
