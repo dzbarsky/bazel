@@ -54,7 +54,7 @@ function encode {
 }
 
 function test_simple_ascii() {
-  assert_equals 'Simple ascii' "$(encode "Simple ascii")"
+  assert_equals 'Simple ascii ]]>]]<![CDATA[>' "$(encode "Simple ascii ]]>")"
 }
 
 function test_ascii_cdata_escape() {
