@@ -299,23 +299,43 @@ public final class SymlinkTreeHelper {
         }
       }
 
-      createMissingEntries(at, targetPathFn);
+      createMissingEntries(at, targetPathFn, fileSymlinksAreCopies);
     }
 
-    void createMissingEntries(Path at, TargetPathFunction<T> targetPathFn) throws IOException {
+    void createMissingEntries(
+        Path at, TargetPathFunction<T> targetPathFn, boolean fileSymlinksAreCopies)
+        throws IOException {
       for (Map.Entry<String, T> entry : symlinks.entrySet()) {
         Path next = at.getChild(entry.getKey());
         T value = entry.getValue();
         if (value == null) {
           FileSystemUtils.createEmptyFile(next);
         } else {
-          next.createSymbolicLink(targetPathFn.get(value));
+          PathFragment target = targetPathFn.get(value);
+          try {
+            // Skip the readlink and parent checks for an entry known to be missing.
+            next.createSymbolicLink(target);
+          } catch (IOException e) {
+            // An entry or its parent may have changed since the directory was examined.
+            FileSystemUtils.ensureSymbolicLink(next, target);
+          }
         }
       }
       for (Map.Entry<String, Directory<T>> entry : directories.entrySet()) {
         Path next = at.getChild(entry.getKey());
-        next.createDirectory();
-        entry.getValue().createMissingEntries(next, targetPathFn);
+        boolean created;
+        try {
+          created = next.createDirectory();
+        } catch (IOException e) {
+          // Filesets can contain both a symlink and entries below that symlink.
+          created = false;
+        }
+        if (created) {
+          // Only a directory created by this call can skip reconciliation.
+          entry.getValue().createMissingEntries(next, targetPathFn, fileSymlinksAreCopies);
+        } else {
+          entry.getValue().syncTreeRecursively(next, targetPathFn, fileSymlinksAreCopies);
+        }
       }
     }
   }
