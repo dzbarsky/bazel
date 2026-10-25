@@ -531,7 +531,18 @@ public class InMemoryFileSystem extends FileSystem {
 
   @Override
   public PathFragment readSymbolicLink(PathFragment path) throws IOException {
-    InMemoryContentInfo status = inodeStat(path, false);
+    return getSymlinkTarget(inodeStat(path, /* followSymlinks= */ false), path);
+  }
+
+  /** Like {@link #readSymbolicLink}, but returns null if the path cannot be found. */
+  @Nullable
+  public PathFragment readSymbolicLinkIfFound(PathFragment path) throws IOException {
+    FileStatus status = statIfFound(path, /* followSymlinks= */ false);
+    return status != null ? getSymlinkTarget(status, path) : null;
+  }
+
+  private static PathFragment getSymlinkTarget(FileStatus status, PathFragment path)
+      throws IOException {
     if (status.isSymbolicLink()) {
       Preconditions.checkState(status instanceof InMemoryLinkInfo, status);
       return ((InMemoryLinkInfo) status).getLinkContent();
