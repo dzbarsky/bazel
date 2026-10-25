@@ -18,6 +18,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.analysis.config.StarlarkDefinedConfigTransition.Settings;
 import com.google.devtools.build.lib.analysis.config.transitions.ConfigurationTransition;
 import com.google.devtools.build.lib.analysis.config.transitions.TransitionUtil;
@@ -175,6 +176,21 @@ public final class StarlarkTransitionCache {
       throw new TransitionException("Errors encountered while applying Starlark transition");
     }
     result = StarlarkTransition.validate(transition, details, flagsAliases, result);
+    // Adding and then removing default Starlark values can leave a copy of the input options.
+    // Compare the values before interning would serialize every option to compute its checksum.
+    ImmutableMap.Builder<String, BuildOptions> reusedOptions =
+        ImmutableMap.builderWithExpectedSize(result.size());
+    for (var entry : result.entrySet()) {
+      BuildOptions options = entry.getValue();
+      if (options != fromOptions
+          && options.getStarlarkOptions().equals(fromOptions.getStarlarkOptions())
+          && options.getScopeTypeMap().equals(fromOptions.getScopeTypeMap())
+          && Iterables.elementsEqual(options.getNativeOptions(), fromOptions.getNativeOptions())) {
+        options = fromOptions;
+      }
+      reusedOptions.put(entry.getKey(), options);
+    }
+    result = reusedOptions.buildOrThrow();
     // If the transition errored (like bad Starlark code), this method already exited with an
     // exception so the results won't go into the cache. We still want to collect non-error events
     // like print() output.
