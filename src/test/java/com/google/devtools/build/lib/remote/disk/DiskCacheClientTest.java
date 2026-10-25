@@ -18,6 +18,7 @@ import static com.google.devtools.build.lib.remote.util.Utils.getFromFuture;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assume.assumeNotNull;
+import static org.junit.Assume.assumeTrue;
 
 import build.bazel.remote.execution.v2.ActionResult;
 import build.bazel.remote.execution.v2.Digest;
@@ -33,6 +34,7 @@ import com.google.devtools.build.lib.remote.common.LazyFileOutputStream;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.ActionKey;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.testutil.TestUtils;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
@@ -104,6 +106,82 @@ public class DiskCacheClientTest {
     } finally {
       reader.close();
     }
+  }
+
+  @Test
+  public void captureFile_whenHardLinksUnsupported_usesRename() throws Exception {
+    assumeTrue(OS.getCurrent() == OS.LINUX);
+    var noLinksFs =
+        new InMemoryFileSystem(DigestHashFunction.SHA256) {
+          @Override
+          public void createFSDependentHardLink(PathFragment linkPath, PathFragment originalPath)
+              throws IOException {
+            throw new IOException("Hard links are not supported");
+          }
+        };
+    var noLinksClient =
+        new DiskCacheClient(
+            noLinksFs.getPath("/disk_cache"), DIGEST_UTIL, /* checkActionResultIntegrity= */ true);
+    try {
+      Path source = noLinksClient.getTempPath();
+      FileSystemUtils.writeContent(source, UTF_8, "contents");
+      Digest digest = getDigest("contents");
+
+      noLinksClient.captureFile(source, digest, Store.CAS);
+
+      assertThat(FileSystemUtils.readContent(noLinksClient.toPath(digest, Store.CAS), UTF_8))
+          .isEqualTo("contents");
+      assertThat(source.exists()).isFalse();
+    } finally {
+      noLinksClient.close();
+    }
+  }
+
+  @Test
+  public void captureFile_whenConcurrentWriterPublishes_keepsExistingBlob() throws Exception {
+    assumeTrue(OS.getCurrent() == OS.LINUX);
+    var raceFs =
+        new InMemoryFileSystem(DigestHashFunction.SHA256) {
+          @Override
+          public void createFSDependentHardLink(PathFragment linkPath, PathFragment originalPath)
+              throws IOException {
+            // Different contents make replacement observable; real CAS writers use the same blob.
+            FileSystemUtils.writeContent(getPath(linkPath), UTF_8, "existing contents");
+            // Native hard-link failures, including EEXIST, are generic IOExceptions.
+            throw new IOException("File exists");
+          }
+        };
+    var raceClient =
+        new DiskCacheClient(
+            raceFs.getPath("/disk_cache"), DIGEST_UTIL, /* checkActionResultIntegrity= */ true);
+    try {
+      Path source = raceClient.getTempPath();
+      FileSystemUtils.writeContent(source, UTF_8, "contents");
+      Digest digest = getDigest("contents");
+
+      raceClient.captureFile(source, digest, Store.CAS);
+
+      assertThat(FileSystemUtils.readContent(raceClient.toPath(digest, Store.CAS), UTF_8))
+          .isEqualTo("existing contents");
+      assertThat(source.exists()).isFalse();
+    } finally {
+      raceClient.close();
+    }
+  }
+
+  @Test
+  public void captureFile_whenPublicationFails_keepsSource() throws Exception {
+    Path source = client.getTempPath();
+    FileSystemUtils.writeContent(source, UTF_8, "contents");
+    Digest digest = getDigest("contents");
+    Path target = client.toPath(digest, Store.CAS);
+    target.getParentDirectory().createDirectoryAndParents();
+    target.getParentDirectory().setWritable(false);
+
+    assertThrows(IOException.class, () -> client.captureFile(source, digest, Store.CAS));
+
+    assertThat(FileSystemUtils.readContent(source, UTF_8)).isEqualTo("contents");
+    assertThat(target.exists()).isFalse();
   }
 
   @Test
