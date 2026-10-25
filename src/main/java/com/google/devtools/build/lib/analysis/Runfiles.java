@@ -268,6 +268,7 @@ public final class Runfiles implements RunfilesApi {
     Map<PathFragment, Artifact> newManifest =
         Maps.newHashMapWithExpectedSize(workingManifest.size());
     Set<PathFragment> noFurtherObstructions = new HashSet<>();
+    ArrayList<PathFragment> parents = new ArrayList<>();
 
     outer:
     for (Map.Entry<PathFragment, Artifact> entry : workingManifest.entrySet()) {
@@ -275,7 +276,7 @@ public final class Runfiles implements RunfilesApi {
       Artifact symlink = entry.getValue();
       // drop nested entries; warn if this changes anything
       int n = source.segmentCount();
-      ArrayList<PathFragment> parents = new ArrayList<>(n);
+      parents.clear();
       for (int j = 1; j < n; ++j) {
         PathFragment prefix = source.subFragment(0, n - j);
         if (noFurtherObstructions.contains(prefix)) {
