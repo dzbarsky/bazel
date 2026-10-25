@@ -20,6 +20,7 @@ import static java.util.Comparator.comparing;
 
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
+import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
@@ -74,6 +75,25 @@ public final class RepoMappingManifestAction extends AbstractFileWriteAction
                           fp.addString(canonicalName.getName());
                         });
                     return fp.hexDigestAndReset();
+                  });
+
+  // Repository mappings are shared across actions. Index their canonical names once.
+  private static final LoadingCache<
+          ImmutableMap<String, RepositoryName>,
+          ImmutableListMultimap<String, Entry<String, RepositoryName>>>
+      entriesByCanonicalRepoCache =
+          Caffeine.newBuilder()
+              .weakKeys()
+              .build(
+                  mappingEntries -> {
+                    var entries =
+                        ImmutableListMultimap.<String, Entry<String, RepositoryName>>builder();
+                    for (var entry : mappingEntries.entrySet()) {
+                      if (!entry.getKey().isEmpty()) {
+                        entries.put(entry.getValue().getName(), entry);
+                      }
+                    }
+                    return entries.build();
                   });
 
   // Uses MapFn's args parameter just like Fingerprint#addString to compute a cacheable fingerprint
@@ -295,18 +315,26 @@ public final class RepoMappingManifestAction extends AbstractFileWriteAction
   private static List<Entry<String, RepositoryName>> computeRelevantEntries(
       ImmutableSet<String> reposInRunfilesPaths,
       ImmutableMap<String, RepositoryName> mappingEntries) {
-    // TODO: If this becomes a hotspot, consider iterating over reposInRunfilesPaths and looking
-    //  up the apparent name in the inverse of mappingEntries, which ensures that the runtime is
-    //  always linear in the number of entries ultimately emitted into the manifest and independent
-    //  of the size of the individual mappings. This requires making RepositoryMapping#entries() an
-    //  ImmutableBiMap, or even ImmutableMultimap since repositories can have multiple apparent
-    //  names.
+    if (reposInRunfilesPaths.isEmpty()) {
+      return List.of();
+    }
     var entries = new ArrayList<Entry<String, RepositoryName>>();
-    for (var entry : mappingEntries.entrySet()) {
-      // Skip empty apparent names, which Rlocation paths cannot reference, and repos that do
-      // not appear in runfiles paths.
-      if (!entry.getKey().isEmpty() && reposInRunfilesPaths.contains(entry.getValue().getName())) {
-        entries.add(entry);
+    // Tiny mappings and dense selections cost less to scan than to look up in the index.
+    if (mappingEntries.size() >= 16 && reposInRunfilesPaths.size() < mappingEntries.size() / 2) {
+      var entriesByCanonicalRepo = entriesByCanonicalRepoCache.get(mappingEntries);
+      for (String repo : reposInRunfilesPaths) {
+        var matchingEntries = entriesByCanonicalRepo.get(repo);
+        for (int i = 0; i < matchingEntries.size(); i++) {
+          entries.add(matchingEntries.get(i));
+        }
+      }
+    } else {
+      for (var entry : mappingEntries.entrySet()) {
+        // Skip empty apparent names, which Rlocation paths cannot reference, and repos that do
+        // not appear in runfiles paths.
+        if (!entry.getKey().isEmpty() && reposInRunfilesPaths.contains(entry.getValue().getName())) {
+          entries.add(entry);
+        }
       }
     }
     entries.sort(Entry.comparingByKey());
