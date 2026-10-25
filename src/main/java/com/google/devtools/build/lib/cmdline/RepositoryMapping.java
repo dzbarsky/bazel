@@ -65,8 +65,9 @@ public class RepositoryMapping {
   public boolean equals(Object o) {
     return this == o
         || (o instanceof RepositoryMapping that
-            && Objects.equal(entries, that.entries)
-            && Objects.equal(contextRepo, that.contextRepo));
+            && hashCode == that.hashCode
+            && Objects.equal(contextRepo, that.contextRepo)
+            && Objects.equal(entries, that.entries));
   }
 
   @Override
