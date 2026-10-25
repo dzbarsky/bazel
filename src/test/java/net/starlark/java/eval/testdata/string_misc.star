@@ -35,6 +35,8 @@ assert_eq("".capitalize(), "")
 assert_eq("12 lower UPPER 34".capitalize(), "12 lower upper 34")
 
 # replace
+assert_eq("banana".replace("x", "y"), "banana")
+assert_eq("".replace("x", "y"), "")
 assert_eq("banana".replace("a", "e"), "benene")
 assert_eq("banana".replace("a", "$()"), "b$()n$()n$()")
 assert_eq("banana".replace("a", "$"), "b$n$n$")
