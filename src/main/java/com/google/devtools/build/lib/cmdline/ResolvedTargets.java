@@ -88,7 +88,7 @@ public final class ResolvedTargets<T> {
 
   /** A builder for {@link ResolvedTargets}. */
   public static final class Builder<T> {
-    private Set<T> targets = new LinkedHashSet<>();
+    private final Set<T> targets = new LinkedHashSet<>();
     private final Set<T> filteredTargets = new LinkedHashSet<>();
     private volatile boolean hasError = false;
 
@@ -136,13 +136,11 @@ public final class ResolvedTargets<T> {
 
     @CanIgnoreReturnValue
     public Builder<T> filter(Predicate<T> predicate) {
-      Set<T> oldTargets = targets;
-      targets = new LinkedHashSet<>();
-      for (T target : oldTargets) {
-        if (predicate.apply(target)) {
-          add(target);
-        } else {
-          remove(target);
+      for (var iterator = targets.iterator(); iterator.hasNext(); ) {
+        T target = iterator.next();
+        if (!predicate.apply(target)) {
+          iterator.remove();
+          filteredTargets.add(target);
         }
       }
       return this;
