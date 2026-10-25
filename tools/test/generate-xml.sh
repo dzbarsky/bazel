@@ -78,6 +78,7 @@ function encode_stream {
   # LC_ALL is set via env since restoring its own locale after a temporary
   # assignment can crash bash builds that use libintl, such as Homebrew's, in
   # subshells.
+  # Lines containing only allowed ASCII characters need no UTF-8 repair.
   env LC_ALL=C sed -E \
       -e "/^$(echo -e '[\x9\x20-\x7f]')*$/b cdata" \
       -e 's/.*/& /g' \
