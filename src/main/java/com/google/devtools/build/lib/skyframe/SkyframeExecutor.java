@@ -2679,7 +2679,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
     // Remove top-level action-conflict detection values for memory efficiency. Non-top-level ones
     // are removed below. We are OK with this mini-phase being non-incremental as the failure mode
     // of action conflict is rare.
-    memoizingEvaluator.delete(
+    memoizingEvaluator.deleteMatching(
         SkyFunctionName.functionIs(SkyFunctions.TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING));
     return new TopLevelActionConflictReport(result, topLevelArtifactContext);
   }
@@ -2731,7 +2731,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
    * in keep_going evaluations.
    */
   void resetActionConflictsStoredInSkyframe() {
-    memoizingEvaluator.delete(
+    memoizingEvaluator.deleteMatching(
         SkyFunctionName.functionIs(SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING));
   }
 

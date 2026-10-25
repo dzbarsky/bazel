@@ -214,13 +214,22 @@ public abstract class AbstractInMemoryMemoizingEvaluator implements MemoizingEva
 
   @Override
   public final void delete(BiPredicate<SkyKey, SkyValue> deletePredicate) {
+    deleteEntries(e -> e.isDirty() || deletePredicate.test(e.getKey(), e.getValue()));
+  }
+
+  @Override
+  public final void deleteMatching(Predicate<SkyKey> deletePredicate) {
+    deleteEntries(e -> deletePredicate.test(e.getKey()));
+  }
+
+  private void deleteEntries(Predicate<InMemoryNodeEntry> deletePredicate) {
     try (AutoProfiler ignored =
         GoogleAutoProfilerUtils.logged("deletion marking", MIN_TIME_TO_LOG_DELETION)) {
       Set<SkyKey> toDelete = Sets.newConcurrentHashSet();
       getInMemoryGraph()
           .parallelForEach(
               e -> {
-                if (e.isDirty() || deletePredicate.test(e.getKey(), e.getValue())) {
+                if (deletePredicate.test(e)) {
                   toDelete.add(e.getKey());
                 }
               });
