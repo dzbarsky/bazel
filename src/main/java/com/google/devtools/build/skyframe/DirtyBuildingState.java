@@ -254,20 +254,15 @@ public abstract class DirtyBuildingState {
    */
   final ImmutableSet<SkyKey> getAllRemainingDirtyDirectDeps(boolean preservePosition)
       throws InterruptedException {
-    if (getLastBuildDirectDeps() == null) {
+    GroupedDeps deps = getLastBuildDirectDeps();
+    if (deps == null) {
       return ImmutableSet.of();
     }
-    ImmutableSet.Builder<SkyKey> result =
-        dirtyDirectDepIndex == 0
-            ? ImmutableSet.builderWithExpectedSize(getLastBuildDirectDeps().numElements())
-            : ImmutableSet.builder();
-    for (int ind = dirtyDirectDepIndex; ind < getNumOfGroupsInLastBuildDirectDeps(); ind++) {
-      result.addAll(getLastBuildDirectDeps().getDepGroup(ind));
-    }
+    ImmutableSet<SkyKey> result = deps.toSet(dirtyDirectDepIndex);
     if (!preservePosition) {
       dirtyDirectDepIndex = getNumOfGroupsInLastBuildDirectDeps();
     }
-    return result.build();
+    return result;
   }
 
   ImmutableSet<SkyKey> getResetDirectDeps() {
