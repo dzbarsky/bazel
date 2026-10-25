@@ -1601,7 +1601,9 @@ public final class FilesystemValueCheckerTest {
       metadata =
           createRemoteMetadata(
               "remote-content",
-              invalidation == RemoteSymlinkInvalidation.EXPIRED_METADATA ? Instant.EPOCH : null);
+              invalidation == RemoteSymlinkInvalidation.EXPIRED_METADATA
+                  ? Instant.ofEpochMilli(1)
+                  : null);
     }
     if (invalidation != RemoteSymlinkInvalidation.NO_RESOLVED_PATH) {
       metadata = FileArtifactValue.createFromExistingWithResolvedPath(metadata, target.asFragment());
