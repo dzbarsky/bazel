@@ -134,9 +134,9 @@ public final class CacheProbe implements AutoCloseable {
 
   @Subscribe
   public void targets(TargetParsingCompleteEvent event) {
-    if (!event.getFailedTargetPatterns().isEmpty()) {
-      incomplete.compareAndSet(
-          null, "Cache probe could not load target patterns: " + event.getFailedTargetPatterns());
+    // Recursive patterns can contain broken packages without a failed pattern entry.
+    if (event.hasError()) {
+      incomplete.compareAndSet(null, "Cache probe could not finish target-pattern loading");
     }
     excluded =
         ImmutableSet.<Label>builder()

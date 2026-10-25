@@ -82,6 +82,7 @@ public final class TargetParsingCompleteEvent implements BuildEventWithOrderCons
   private final ImmutableSet<ThinTarget> expandedTargets;
   private final ImmutableSetMultimap<String, Label> originalPatternsToLabels;
   private final ImmutableMap<Label, ImmutableSet<Label>> testSuiteExpansions;
+  private final boolean hasError;
 
   public TargetParsingCompleteEvent(
       Collection<Target> targets,
@@ -91,7 +92,8 @@ public final class TargetParsingCompleteEvent implements BuildEventWithOrderCons
       Collection<Target> expandedTargets,
       ImmutableList<String> failedTargetPatterns,
       ImmutableSetMultimap<String, Label> originalPatternsToLabels,
-      ImmutableMap<Label, ImmutableSet<Label>> testSuiteExpansions) {
+      ImmutableMap<Label, ImmutableSet<Label>> testSuiteExpansions,
+      boolean hasError) {
     this.targets = asThinTargets(targets);
     this.filteredTargets = asThinTargets(filteredTargets);
     this.testFilteredTargets = asThinTargets(testFilteredTargets);
@@ -100,6 +102,7 @@ public final class TargetParsingCompleteEvent implements BuildEventWithOrderCons
     this.failedTargetPatterns = Preconditions.checkNotNull(failedTargetPatterns);
     this.originalPatternsToLabels = Preconditions.checkNotNull(originalPatternsToLabels);
     this.testSuiteExpansions = Preconditions.checkNotNull(testSuiteExpansions);
+    this.hasError = hasError;
   }
 
   public ImmutableList<String> getOriginalTargetPattern() {
@@ -108,6 +111,10 @@ public final class TargetParsingCompleteEvent implements BuildEventWithOrderCons
 
   public ImmutableList<String> getFailedTargetPatterns() {
     return failedTargetPatterns;
+  }
+
+  public boolean hasError() {
+    return hasError;
   }
 
   /** @return the parsed targets, which will subsequently be loaded */
