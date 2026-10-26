@@ -518,6 +518,7 @@ java_library(
         ":bzl_visibility",
         "//src/main/java/com/google/devtools/build/lib/analysis:rule_definition_environment",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
+        "//src/main/java/com/google/devtools/build/lib/supplier",
         "//src/main/java/net/starlark/java/eval",
         "//third_party/java/error_prone:annotations",
         "//third_party/java/guava:collect",
