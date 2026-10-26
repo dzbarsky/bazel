@@ -179,10 +179,11 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
       return;
     }
     ImmutableList<RepoRecordedInput.WithValue> recordedInputValues;
+    String markerFileContent;
     try {
+      markerFileContent = FileSystemUtils.readContent(fetchedRepoMarkerFile, ISO_8859_1);
       var maybeRecordedInputValues =
-          DigestWriter.readMarkerFile(
-              FileSystemUtils.readContent(fetchedRepoMarkerFile, ISO_8859_1), predeclaredInputHash);
+          DigestWriter.readMarkerFile(markerFileContent, predeclaredInputHash);
       if (maybeRecordedInputValues.isEmpty()) {
         return;
       }
@@ -201,22 +202,30 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
       var action = buildAction(finalHash);
       var actionKey = new ActionKey(cache.digestUtil().compute(action));
       var remotePathResolver = new RepoRemotePathResolver(fetchedRepoMarkerFile, fetchedRepoDir);
-      var unused =
+      var manifest =
           UploadManifest.create(
-                  cache.getRemoteCacheCapabilities(),
-                  cache.digestUtil(),
-                  remotePathResolver,
-                  actionKey,
-                  action,
-                  COMMAND,
-                  ImmutableList.of(fetchedRepoMarkerFile, fetchedRepoDir),
-                  /* outErr= */ null,
-                  /* exitCode= */ 0,
-                  /* startTime= */ Instant.now(),
-                  /* wallTimeInMs= */ 0,
-                  /* preserveExecutableBit= */ true)
-              .upload(context, cache, reporter, /* force= */ false);
+              cache.getRemoteCacheCapabilities(),
+              cache.digestUtil(),
+              remotePathResolver,
+              actionKey,
+              action,
+              COMMAND,
+              ImmutableList.of(fetchedRepoMarkerFile, fetchedRepoDir),
+              /* outErr= */ null,
+              /* exitCode= */ 0,
+              /* startTime= */ Instant.now(),
+              /* wallTimeInMs= */ 0,
+              /* preserveExecutableBit= */ true);
+      var result = manifest.upload(context, cache, reporter, /* force= */ false);
       remoteFs.repoContentsUploaded(repoName);
+      // Relative repository-root symlinks have no directory Tree to install.
+      if (result.getOutputDirectoriesCount() != 1) {
+        return;
+      }
+      remoteFs.injectUploadedRepo(
+          repoName,
+          manifest.getDirectoryTree(result.getOutputDirectories(0).getTreeDigest()),
+          markerFileContent);
     } catch (ExecException | IOException e) {
       reporter.handle(
           Event.warn(
