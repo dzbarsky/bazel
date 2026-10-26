@@ -130,6 +130,9 @@ public abstract sealed class Artifact
 
   public static final Depset.ElementType TYPE = Depset.ElementType.of(Artifact.class);
 
+  private static final String EXTERNAL_PATH_PREFIX_WITH_SEPARATOR =
+      LabelConstants.EXTERNAL_PATH_PREFIX.getPathString() + PathFragment.SEPARATOR_CHAR;
+
   /** Compares artifact according to their exec paths. Sorts null values first. */
   @SerializationConstant
   @SuppressWarnings("ReferenceEquality") // "a == b" is an optimization
@@ -664,15 +667,27 @@ public abstract sealed class Artifact
    * runfiles libraries accept.
    */
   public final PathFragment getRlocationPath() {
-    PathFragment runfilesPath = getRunfilesPath();
-    return runfilesPath.startsWith(LabelConstants.EXTERNAL_RUNFILES_PATH_PREFIX)
-        ? runfilesPath.relativeTo(LabelConstants.EXTERNAL_RUNFILES_PATH_PREFIX)
-        : PathFragment.create(LabelConstants.MAIN_REPO_DIR_NAME).getRelative(runfilesPath);
+    return PathFragment.createAlreadyNormalized(getRlocationPathString());
   }
 
   @Override
   public final String getRlocationPathString() {
-    return getRlocationPath().getPathString();
+    String execPathString = execPath.getPathString();
+    if (root.isSourceRoot()) {
+      if (root.isExternal()) {
+        // Drop the leading "external" or ".." segment.
+        return execPathString.substring(execPathString.indexOf(PathFragment.SEPARATOR_CHAR) + 1);
+      }
+      return LabelConstants.MAIN_REPO_DIR_NAME + PathFragment.SEPARATOR_CHAR + execPathString;
+    }
+    int rootRelativePathStart = root.getExecPath().getPathString().length() + 1;
+    if (execPathString.startsWith(EXTERNAL_PATH_PREFIX_WITH_SEPARATOR, rootRelativePathStart)) {
+      return execPathString.substring(
+          rootRelativePathStart + EXTERNAL_PATH_PREFIX_WITH_SEPARATOR.length());
+    }
+    return LabelConstants.MAIN_REPO_DIR_NAME
+        + PathFragment.SEPARATOR_CHAR
+        + execPathString.substring(rootRelativePathStart);
   }
 
   public final String prettyPrint() {
