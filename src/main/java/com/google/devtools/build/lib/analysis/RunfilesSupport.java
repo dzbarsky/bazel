@@ -39,7 +39,6 @@ import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue.Run
 import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.analysis.config.RunUnder;
 import com.google.devtools.build.lib.analysis.config.RunUnder.LabelRunUnder;
-import com.google.devtools.build.lib.analysis.test.TestActionBuilder;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
@@ -259,28 +258,6 @@ public final class RunfilesSupport {
   private final FlatCommandLine args;
   private final ActionEnvironment actionEnvironment;
 
-  // Only cache mappings if there is a chance that more than one action will use it within a single
-  // build. This helps reduce peak memory usage, especially when the value of --jobs is high, but
-  // avoids the additional overhead of a weak reference when it is not needed.
-  private static boolean cacheRunfilesMappings(RuleContext ruleContext) {
-    if (!TargetUtils.isTestRule(ruleContext.getTarget())) {
-      // Runfiles trees of non-test rules are tools and can thus be used by multiple actions.
-      return true;
-    }
-
-    // Test runfiles are only used by a single test runner action unless there are multiple runs or
-    // shards.
-    if (TestActionBuilder.getRunsPerTest(ruleContext) > 1) {
-      return true;
-    }
-
-    if (TestActionBuilder.getShardCount(ruleContext) > 1) {
-      return true;
-    }
-
-    return false;
-  }
-
   /**
    * Creates the RunfilesSupport helper with the given executable and runfiles.
    *
@@ -344,7 +321,8 @@ public final class RunfilesSupport {
             repoMappingManifest,
             preferTargetConfigurationRunfiles ? runfilesTreeArtifact.getRoot() : null,
             buildRunfileLinks,
-            cacheRunfilesMappings(ruleContext),
+            // Both the runfiles digest and its consuming spawn need this mapping.
+            /* cacheMapping= */ true,
             runfileSymlinksMode);
 
     createRunfilesTreeArtifactAction(
