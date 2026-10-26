@@ -852,6 +852,11 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
   }
 
   @Override
+  public boolean hasExactSymlinkTarget(PathFragment path, PathFragment target) throws IOException {
+    return fsForPath(path).hasExactSymlinkTarget(path, target);
+  }
+
+  @Override
   public boolean exists(PathFragment path, boolean followSymlinks) {
     return fsForPath(path).exists(path, followSymlinks);
   }
