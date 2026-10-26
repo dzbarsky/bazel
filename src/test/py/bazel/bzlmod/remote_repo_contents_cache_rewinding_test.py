@@ -84,7 +84,7 @@ class RemoteRepoContentsCacheRewindingTest(
     # Lose all remote files.
     self.ClearRemoteCache()
 
-    # Build the other target: fails due to the lost input
+    # Building the other target recovers the lost input by retrying.
     _, _, stderr = self.RunBazel(['build', '@my_repo//sub:sub'])
     # One restart recovers @my_repo and validates the other cached repositories.
     self.assertEqual(
@@ -119,8 +119,8 @@ class RemoteRepoContentsCacheRewindingTest(
   def testLostRemoteFile_build_evaluatorReplaced(self):
     # The first command that tracks incremental state after one that doesn't
     # replaces the Skyframe evaluator while it is running. The fetch of a repo
-    # with lost files has to be invalidated in the new evaluator for the next
-    # command to fetch the repo again. Otherwise, that only happens if the
+    # with lost files has to be invalidated in the new evaluator for the retry
+    # to fetch the repo again. Otherwise, that only happens if the
     # files of external repos are checked for changes.
     self.ScratchFile(
         '.bazelrc',
@@ -193,22 +193,25 @@ class RemoteRepoContentsCacheRewindingTest(
     self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
     self.assertTrue(os.path.exists(blob_path))
 
-    # Build the other target: fails due to the lost file
-    exit_code, _, stderr = self.RunBazel(
-        ['build', '@deleter//:sub'], allow_failure=True
+    # The retry must invalidate @my_repo in the replacement evaluator.
+    _, _, stderr = self.RunBazel(['build', '@deleter//:sub'])
+    self.assertEqual(
+        1, stderr.count('Found transient remote cache error, retrying the build...')
     )
-    self.AssertExitCode(exit_code, 1, stderr)
     stderr = '\n'.join(stderr)
-    self.assertNotIn('JUST FETCHED', stderr)
+    self.assertIn('JUST FETCHED', stderr)
     self.assertIn(
         'sub/BUILD with digest %s/%d is no longer available in the remote cache'
         % (digest, len(sub_build)),
         stderr,
     )
 
-    # The next build fetches the repo again.
+    self.assertTrue(os.path.exists(os.path.join(repo_dir, 'sub/BUILD')))
+
+    # Recovery must not leave the new evaluator with a stale @my_repo.
     _, _, stderr = self.RunBazel(['build', '@deleter//:sub'])
-    self.assertIn('JUST FETCHED', '\n'.join(stderr))
+    self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
+    self.assertNotIn('Found transient remote cache error, retrying the build...', stderr)
     self.assertTrue(os.path.exists(os.path.join(repo_dir, 'sub/BUILD')))
 
   def testLostRemoteFile_remoteExecutionUpload(self):
