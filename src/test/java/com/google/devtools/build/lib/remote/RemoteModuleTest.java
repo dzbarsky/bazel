@@ -109,10 +109,10 @@ import org.junit.runners.JUnit4;
 /** Tests for {@link RemoteModule}. */
 @RunWith(JUnit4.class)
 public final class RemoteModuleTest {
-  private static final String EXECUTION_SERVER_NAME = "execution-server";
-  private static final String CACHE_SERVER_NAME = "cache-server";
-  private static final String DOWNLOADER_SERVER_NAME = "downloader-server";
-  private static final String OUTPUT_SERVICE_SERVER_NAME = "output-service";
+  private final String executionServerName = InProcessServerBuilder.generateName();
+  private final String cacheServerName = InProcessServerBuilder.generateName();
+  private final String downloaderServerName = InProcessServerBuilder.generateName();
+  private final String outputServiceServerName = InProcessServerBuilder.generateName();
   private static final ServerCapabilities CACHE_ONLY_CAPS =
       ServerCapabilities.newBuilder()
           .setLowApiVersion(ApiVersion.low.toSemVer())
@@ -293,12 +293,12 @@ public final class RemoteModuleTest {
   @Test
   public void remoteGrpcServiceConfig_passesRemoteTimeoutConfigToChannelFactory() throws Exception {
     CapabilitiesImpl cacheCapabilitiesImpl = new CapabilitiesImpl(CACHE_ONLY_CAPS);
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, cacheCapabilitiesImpl);
+    Server cacheServer = createFakeServer(cacheServerName, cacheCapabilitiesImpl);
     cacheServer.start();
 
     try {
       remoteOptions =
-          parseRemoteOptions("--remote_cache=" + CACHE_SERVER_NAME, "--remote_timeout=123s");
+          parseRemoteOptions("--remote_cache=" + cacheServerName, "--remote_timeout=123s");
 
       beforeCommand();
 
@@ -308,7 +308,7 @@ public final class RemoteModuleTest {
                   .getCombinedCache()
                   .getRemoteCacheCapabilities())
           .isEqualTo(CACHE_ONLY_CAPS.getCacheCapabilities());
-      assertThat(serviceConfigsByTarget.get(CACHE_SERVER_NAME))
+      assertThat(serviceConfigsByTarget.get(cacheServerName))
           .isEqualTo(RemoteGrpcServiceConfig.create(Duration.ofSeconds(123)));
     } finally {
       cacheServer.shutdownNow();
@@ -320,13 +320,13 @@ public final class RemoteModuleTest {
   public void remoteGrpcServiceConfig_passesUserSuppliedJsonFileToChannelFactory()
       throws Exception {
     CapabilitiesImpl cacheCapabilitiesImpl = new CapabilitiesImpl(CACHE_ONLY_CAPS);
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, cacheCapabilitiesImpl);
+    Server cacheServer = createFakeServer(cacheServerName, cacheCapabilitiesImpl);
     cacheServer.start();
 
     try {
       remoteOptions =
           parseRemoteOptions(
-              "--remote_cache=" + CACHE_SERVER_NAME,
+              "--remote_cache=" + cacheServerName,
               "--remote_grpc_service_config=service_config.json");
 
       beforeCommand(
@@ -350,7 +350,7 @@ public final class RemoteModuleTest {
                   .getCombinedCache()
                   .getRemoteCacheCapabilities())
           .isEqualTo(CACHE_ONLY_CAPS.getCacheCapabilities());
-      assertThat(serviceConfigsByTarget.get(CACHE_SERVER_NAME))
+      assertThat(serviceConfigsByTarget.get(cacheServerName))
           .containsExactly(
               "methodConfig",
               ImmutableList.of(
@@ -371,16 +371,16 @@ public final class RemoteModuleTest {
     // Regression test for https://github.com/bazelbuild/bazel/issues/20342.
     CapabilitiesImpl executionServerCapabilitiesImpl = new CapabilitiesImpl(EXEC_AND_CACHE_CAPS);
     Server executionServer =
-        createFakeServer(EXECUTION_SERVER_NAME, executionServerCapabilitiesImpl);
+        createFakeServer(executionServerName, executionServerCapabilitiesImpl);
     executionServer.start();
 
     CapabilitiesImpl cacheCapabilitiesImpl = new CapabilitiesImpl(CACHE_ONLY_CAPS);
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, cacheCapabilitiesImpl);
+    Server cacheServer = createFakeServer(cacheServerName, cacheCapabilitiesImpl);
     cacheServer.start();
 
     try {
-      remoteOptions.setRemoteExecutor(EXECUTION_SERVER_NAME);
-      remoteOptions.setRemoteDownloader(CACHE_SERVER_NAME);
+      remoteOptions.setRemoteExecutor(executionServerName);
+      remoteOptions.setRemoteDownloader(cacheServerName);
 
       beforeCommand();
 
@@ -415,11 +415,11 @@ public final class RemoteModuleTest {
   public void testVerifyCapabilities_executionAndCacheForSingleEndpoint() throws Exception {
     CapabilitiesImpl executionServerCapabilitiesImpl = new CapabilitiesImpl(EXEC_AND_CACHE_CAPS);
     Server executionServer =
-        createFakeServer(EXECUTION_SERVER_NAME, executionServerCapabilitiesImpl);
+        createFakeServer(executionServerName, executionServerCapabilitiesImpl);
     executionServer.start();
 
     try {
-      remoteOptions.setRemoteExecutor(EXECUTION_SERVER_NAME);
+      remoteOptions.setRemoteExecutor(executionServerName);
 
       beforeCommand();
 
@@ -447,11 +447,11 @@ public final class RemoteModuleTest {
   @Test
   public void testVerifyCapabilities_cacheOnlyEndpoint() throws Exception {
     CapabilitiesImpl cacheServerCapabilitiesImpl = new CapabilitiesImpl(CACHE_ONLY_CAPS);
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, cacheServerCapabilitiesImpl);
+    Server cacheServer = createFakeServer(cacheServerName, cacheServerCapabilitiesImpl);
     cacheServer.start();
 
     try {
-      remoteOptions.setRemoteCache(CACHE_SERVER_NAME);
+      remoteOptions.setRemoteCache(cacheServerName);
 
       beforeCommand();
 
@@ -474,16 +474,16 @@ public final class RemoteModuleTest {
   public void testVerifyCapabilities_executionAndCacheForDifferentEndpoints() throws Exception {
     CapabilitiesImpl executionServerCapabilitiesImpl = new CapabilitiesImpl(EXEC_AND_CACHE_CAPS);
     Server executionServer =
-        createFakeServer(EXECUTION_SERVER_NAME, executionServerCapabilitiesImpl);
+        createFakeServer(executionServerName, executionServerCapabilitiesImpl);
     executionServer.start();
 
     CapabilitiesImpl cacheServerCapabilitiesImpl = new CapabilitiesImpl(EXEC_AND_CACHE_CAPS);
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, cacheServerCapabilitiesImpl);
+    Server cacheServer = createFakeServer(cacheServerName, cacheServerCapabilitiesImpl);
     cacheServer.start();
 
     try {
-      remoteOptions.setRemoteExecutor(EXECUTION_SERVER_NAME);
-      remoteOptions.setRemoteCache(CACHE_SERVER_NAME);
+      remoteOptions.setRemoteExecutor(executionServerName);
+      remoteOptions.setRemoteCache(cacheServerName);
 
       beforeCommand();
 
@@ -516,16 +516,16 @@ public final class RemoteModuleTest {
   public void testVerifyCapabilities_executionOnlyAndCacheOnlyEndpoints() throws Exception {
     CapabilitiesImpl executionServerCapabilitiesImpl = new CapabilitiesImpl(EXEC_ONLY_CAPS);
     Server executionServer =
-        createFakeServer(EXECUTION_SERVER_NAME, executionServerCapabilitiesImpl);
+        createFakeServer(executionServerName, executionServerCapabilitiesImpl);
     executionServer.start();
 
     CapabilitiesImpl cacheServerCapabilitiesImpl = new CapabilitiesImpl(CACHE_ONLY_CAPS);
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, cacheServerCapabilitiesImpl);
+    Server cacheServer = createFakeServer(cacheServerName, cacheServerCapabilitiesImpl);
     cacheServer.start();
 
     try {
-      remoteOptions.setRemoteExecutor(EXECUTION_SERVER_NAME);
-      remoteOptions.setRemoteCache(CACHE_SERVER_NAME);
+      remoteOptions.setRemoteExecutor(executionServerName);
+      remoteOptions.setRemoteCache(cacheServerName);
 
       beforeCommand();
 
@@ -585,11 +585,11 @@ public final class RemoteModuleTest {
   @Test
   public void testCacheCapabilities_propagatedToRemoteCache() throws Exception {
     CapabilitiesImpl cacheServerCapabilitiesImpl = new CapabilitiesImpl(CACHE_ONLY_CAPS);
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, cacheServerCapabilitiesImpl);
+    Server cacheServer = createFakeServer(cacheServerName, cacheServerCapabilitiesImpl);
     cacheServer.start();
 
     try {
-      remoteOptions.setRemoteCache(CACHE_SERVER_NAME);
+      remoteOptions.setRemoteCache(cacheServerName);
 
       beforeCommand();
 
@@ -609,11 +609,11 @@ public final class RemoteModuleTest {
   public void testCacheCapabilities_propagatedToRemoteExecutionCache() throws Exception {
     CapabilitiesImpl executionServerCapabilitiesImpl = new CapabilitiesImpl(EXEC_AND_CACHE_CAPS);
     Server executionServer =
-        createFakeServer(EXECUTION_SERVER_NAME, executionServerCapabilitiesImpl);
+        createFakeServer(executionServerName, executionServerCapabilitiesImpl);
     executionServer.start();
 
     try {
-      remoteOptions.setRemoteExecutor(EXECUTION_SERVER_NAME);
+      remoteOptions.setRemoteExecutor(executionServerName);
 
       beforeCommand();
 
@@ -634,11 +634,11 @@ public final class RemoteModuleTest {
       throws Exception {
     CapabilitiesImpl executionServerCapabilitiesImpl = new CapabilitiesImpl(EXEC_AND_CACHE_CAPS);
     Server executionServer =
-        createFakeServer(EXECUTION_SERVER_NAME, executionServerCapabilitiesImpl);
+        createFakeServer(executionServerName, executionServerCapabilitiesImpl);
     executionServer.start();
 
     try {
-      remoteOptions.setRemoteExecutor(EXECUTION_SERVER_NAME);
+      remoteOptions.setRemoteExecutor(executionServerName);
       remoteOptions.setCircuitBreakerStrategy(RemoteOptions.CircuitBreakerStrategy.FAILURE);
 
       beforeCommand();
@@ -661,11 +661,11 @@ public final class RemoteModuleTest {
   @Test
   public void testVerifyCapabilities_cacheOnlyEndpointWithCircuitBreaker() throws Exception {
     CapabilitiesImpl cacheServerCapabilitiesImpl = new CapabilitiesImpl(CACHE_ONLY_CAPS);
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, cacheServerCapabilitiesImpl);
+    Server cacheServer = createFakeServer(cacheServerName, cacheServerCapabilitiesImpl);
     cacheServer.start();
 
     try {
-      remoteOptions.setRemoteCache(CACHE_SERVER_NAME);
+      remoteOptions.setRemoteCache(cacheServerName);
       remoteOptions.setCircuitBreakerStrategy(RemoteOptions.CircuitBreakerStrategy.FAILURE);
 
       beforeCommand();
@@ -687,9 +687,9 @@ public final class RemoteModuleTest {
 
   @Test
   public void bazelOutputService_noRemoteCache_exit() throws Exception {
-    Server outputServiceService = createFakeServer(OUTPUT_SERVICE_SERVER_NAME);
+    Server outputServiceService = createFakeServer(outputServiceServerName);
     try {
-      remoteOptions.setRemoteOutputService(OUTPUT_SERVICE_SERVER_NAME);
+      remoteOptions.setRemoteOutputService(outputServiceServerName);
 
       var exception = Assert.assertThrows(AbruptExitException.class, this::beforeCommand);
 
@@ -779,7 +779,7 @@ public final class RemoteModuleTest {
 
   @Test
   public void nonExecutingCommand_keepsOutputCheckerOfLastExecutingCommand() throws Exception {
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, new CapabilitiesImpl(CACHE_ONLY_CAPS));
+    Server cacheServer = createFakeServer(cacheServerName, new CapabilitiesImpl(CACHE_ONLY_CAPS));
     cacheServer.start();
 
     try {
@@ -787,7 +787,7 @@ public final class RemoteModuleTest {
 
       remoteOptions =
           parseRemoteOptions(
-              "--remote_cache=" + CACHE_SERVER_NAME, "--remote_download_outputs=minimal");
+              "--remote_cache=" + cacheServerName, "--remote_download_outputs=minimal");
       CommandEnvironment buildEnv = beforeCommand(workspace, BuildCommand.class);
       RemoteOutputChecker buildChecker = remoteModule.getRemoteOutputChecker();
       assertThat(buildChecker).isNotNull();
@@ -796,13 +796,13 @@ public final class RemoteModuleTest {
       // The remote options of a command that executes nothing are irrelevant for completed
       // targets.
       remoteOptions =
-          parseRemoteOptions("--remote_cache=" + CACHE_SERVER_NAME, "--remote_download_outputs=all");
+          parseRemoteOptions("--remote_cache=" + cacheServerName, "--remote_download_outputs=all");
       CommandEnvironment infoEnv = beforeCommand(workspace, InfoCommand.class);
       afterCommand(infoEnv);
 
       remoteOptions =
           parseRemoteOptions(
-              "--remote_cache=" + CACHE_SERVER_NAME, "--remote_download_outputs=minimal");
+              "--remote_cache=" + cacheServerName, "--remote_download_outputs=minimal");
       CommandEnvironment nextBuildEnv = beforeCommand(workspace, BuildCommand.class);
       assertThat(remoteModule.getRemoteOutputChecker().getLastRemoteOutputChecker())
           .isSameInstanceAs(buildChecker);
@@ -852,14 +852,14 @@ public final class RemoteModuleTest {
 
   @Test
   public void successiveCommands_keepOnlyPreviousOutputChecker() throws Exception {
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, new CapabilitiesImpl(CACHE_ONLY_CAPS));
+    Server cacheServer = createFakeServer(cacheServerName, new CapabilitiesImpl(CACHE_ONLY_CAPS));
     cacheServer.start();
 
     try {
       BlazeWorkspace workspace = createTestWorkspace(remoteModule, scratch -> {});
       remoteOptions =
           parseRemoteOptions(
-              "--remote_cache=" + CACHE_SERVER_NAME, "--remote_download_outputs=toplevel");
+              "--remote_cache=" + cacheServerName, "--remote_download_outputs=toplevel");
       var execRoot =
           ArtifactRoot.asDerivedRoot(
               new InMemoryFileSystem(DigestHashFunction.SHA256).getPath("/execroot"),
@@ -909,14 +909,14 @@ public final class RemoteModuleTest {
 
   @Test
   public void remoteDownloader_separateEndpoint_channelsAreClosedAfterCommand() throws Exception {
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, new CapabilitiesImpl(CACHE_ONLY_CAPS));
+    Server cacheServer = createFakeServer(cacheServerName, new CapabilitiesImpl(CACHE_ONLY_CAPS));
     cacheServer.start();
-    Server downloaderServer = createFakeServer(DOWNLOADER_SERVER_NAME);
+    Server downloaderServer = createFakeServer(downloaderServerName);
     downloaderServer.start();
 
     try {
-      remoteOptions.setRemoteCache(CACHE_SERVER_NAME);
-      remoteOptions.setRemoteDownloader(DOWNLOADER_SERVER_NAME);
+      remoteOptions.setRemoteCache(cacheServerName);
+      remoteOptions.setRemoteDownloader(downloaderServerName);
 
       var env = beforeCommand();
       awaitChannelsConnected();
@@ -938,12 +938,12 @@ public final class RemoteModuleTest {
   @Test
   public void remoteDownloader_sharedEndpoint_channelIsClosedOnceCacheIsReleased()
       throws Exception {
-    Server cacheServer = createFakeServer(CACHE_SERVER_NAME, new CapabilitiesImpl(CACHE_ONLY_CAPS));
+    Server cacheServer = createFakeServer(cacheServerName, new CapabilitiesImpl(CACHE_ONLY_CAPS));
     cacheServer.start();
 
     try {
-      remoteOptions.setRemoteCache(CACHE_SERVER_NAME);
-      remoteOptions.setRemoteDownloader(CACHE_SERVER_NAME);
+      remoteOptions.setRemoteCache(cacheServerName);
+      remoteOptions.setRemoteDownloader(cacheServerName);
 
       var env = beforeCommand();
       awaitChannelsConnected();
