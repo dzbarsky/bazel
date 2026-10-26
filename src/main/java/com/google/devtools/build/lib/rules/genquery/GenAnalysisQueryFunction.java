@@ -202,7 +202,7 @@ public final class GenAnalysisQueryFunction implements SkyFunction {
           var source = request.formatter();
           try {
             formatter =
-                ParserInput.fromCharArray(
+                ParserInput.fromString(
                     FileSystemUtils.readContentAsLatin1(source.getPath()),
                     source.getExecPathString());
           } catch (IOException e) {
