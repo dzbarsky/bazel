@@ -3754,6 +3754,38 @@ public abstract class MemoizingEvaluatorTest {
   }
 
   @Test
+  public void transientErrorRetrySkipsObsoleteDependencies() throws Exception {
+    SkyKey leaf = nonHermeticKey("leaf");
+    SkyKey top = skyKey("top");
+    tester.set(leaf, new StringValue("leaf"));
+    tester.getOrCreate(top).addDependency(leaf).setHasTransientError(true);
+    assertThatEvaluationResult(tester.eval(/* keepGoing= */ false, top)).hasError();
+
+    AtomicBoolean obsoleteDependencyEvaluated = new AtomicBoolean();
+    tester
+        .getOrCreate(leaf, /* markAsModified= */ true)
+        .unsetConstantValue()
+        .setBuilder(
+            (key, env) -> {
+              obsoleteDependencyEvaluated.set(true);
+              return new StringValue("leaf");
+            });
+    StringValue recovered = new StringValue("recovered");
+    tester
+        .getOrCreate(top, /* markAsModified= */ false)
+        .removeDependency(leaf)
+        .setHasTransientError(false)
+        .setConstantValue(recovered);
+    tester.invalidate();
+    tester.invalidateTransientErrors();
+
+    EvaluationResult<StringValue> result = tester.eval(/* keepGoing= */ false, top);
+    assertThatEvaluationResult(result).hasNoError();
+    assertThatEvaluationResult(result).hasEntryThat(top).isEqualTo(recovered);
+    assertThat(obsoleteDependencyEvaluated.get()).isFalse();
+  }
+
+  @Test
   public void singleValueDependsOnManyDirtyValues() throws Exception {
     SkyKey[] values = new SkyKey[TEST_NODE_COUNT];
     StringBuilder expected = new StringBuilder();

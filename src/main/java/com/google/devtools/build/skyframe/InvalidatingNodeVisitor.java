@@ -155,6 +155,8 @@ public abstract class InvalidatingNodeVisitor<GraphT extends QueryableGraph> {
   enum InvalidationType {
     /** The node is dirty and must be recomputed. */
     CHANGED,
+    /** A directly transient error must be retried, including for hermetic functions. */
+    TRANSIENT_ERROR,
     /** The node is dirty, but may be marked clean later during change pruning. */
     DIRTIED,
     /** The node is deleted. */
@@ -453,17 +455,18 @@ public abstract class InvalidatingNodeVisitor<GraphT extends QueryableGraph> {
         int depthForOverflowCheck,
         @Nullable SkyKey enqueueingKeyForExistenceCheck) {
       // Code from here until pendingVisitations#add is called below must be uninterruptible.
-      boolean isChanged = (invalidationType == InvalidationType.CHANGED);
+      boolean isChanged = invalidationType != InvalidationType.DIRTIED;
       Set<SkyKey> setToCheck = isChanged ? changed : dirtied;
       ArrayList<SkyKey> keysToGet = new ArrayList<>(keys.size());
       for (SkyKey key : keys) {
+        if (invalidationType == InvalidationType.CHANGED
+            && key.functionName().getHermeticity() == FunctionHermeticity.HERMETIC) {
+          throw new IllegalStateException(
+              "Nodes with hermetic functions cannot be marked 'changed': "
+                  + "%s function:%s hermeticity:%s"
+                      .formatted(key, key.functionName(), key.functionName().getHermeticity()));
+        }
         if (setToCheck.add(key)) {
-          if (isChanged && key.functionName().getHermeticity() == FunctionHermeticity.HERMETIC) {
-            throw new IllegalStateException(
-                "Nodes with hermetic functions cannot be marked 'changed': "
-                    + "%s function:%s hermeticity:%s"
-                        .formatted(key, key.functionName(), key.functionName().getHermeticity()));
-          }
           keysToGet.add(key);
         }
       }
@@ -522,7 +525,7 @@ public abstract class InvalidatingNodeVisitor<GraphT extends QueryableGraph> {
         return;
       }
 
-      boolean isChanged = invalidationType == InvalidationType.CHANGED;
+      boolean isChanged = invalidationType != InvalidationType.DIRTIED;
       if (entry.isChanged() || (!isChanged && entry.isDirty())) {
         // If this node is already marked changed, or we are only marking this node
         // dirty, and it already is, move along.
@@ -552,11 +555,13 @@ public abstract class InvalidatingNodeVisitor<GraphT extends QueryableGraph> {
       progressReceiver.dirtied(key, dirtyType);
       pendingVisitations.remove(Pair.of(key, invalidationType));
 
-      // Propagate dirtiness upwards and mark this node dirty/changed. Reverse deps should
-      // only be marked dirty (because only a dependency of theirs has changed).
+      // Transient errors must be retried regardless of their other dependencies. Skip
+      // checking those dependencies for change pruning; their parents can still be pruned.
       visit(
           markedDirtyResult.getReverseDepsUnsafe(),
-          InvalidationType.DIRTIED,
+          key.equals(ErrorTransienceValue.KEY)
+              ? InvalidationType.TRANSIENT_ERROR
+              : InvalidationType.DIRTIED,
           depthForOverflowCheck,
           key);
     }
