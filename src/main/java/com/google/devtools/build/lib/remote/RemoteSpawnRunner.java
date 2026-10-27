@@ -72,7 +72,6 @@ import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.io.FileOutErr;
-import com.google.devtools.build.lib.vfs.DetailedIOException;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.longrunning.Operation;
 import com.google.protobuf.Any;
@@ -84,7 +83,6 @@ import io.grpc.Status.Code;
 import io.grpc.protobuf.StatusProto;
 import java.io.IOException;
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -299,21 +297,10 @@ public class RemoteSpawnRunner implements SpawnRunner {
                 // Lost repository files need an invocation retry; they cannot be rewound as
                 // generated action inputs. Preserve permanent errors when uploads fail for mixed
                 // reasons.
-                var suppressed = e.getSuppressed();
-                if (suppressed.length > 0
-                    && Arrays.stream(suppressed)
-                        .allMatch(
-                            t ->
-                                t instanceof DetailedIOException detailed
-                                    && detailed
-                                            .getDetailedExitCode()
-                                            .getFailureDetail()
-                                            .getFilesystem()
-                                            .getCode()
-                                        == FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED)) {
-                  var detailed = (DetailedIOException) suppressed[0];
+                var eviction = e.getLostRepoFile();
+                if (eviction != null) {
                   throw new EnvironmentalExecException(
-                      e, detailed.getDetailedExitCode().getFailureDetail());
+                      e, eviction.getDetailedExitCode().getFailureDetail());
                 }
                 throw e;
               }
