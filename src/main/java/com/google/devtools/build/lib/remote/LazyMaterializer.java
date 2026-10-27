@@ -39,6 +39,10 @@ public interface LazyMaterializer {
   void ensureMaterialized(RepositoryName repo, @Nullable String requester)
       throws IOException, InterruptedException;
 
+  /** Returns the download error for an input backed by the overlay, or null for other inputs. */
+  @Nullable
+  IOException getRepoInputError(PathFragment path, IOException cause);
+
   /** Returns the recorded file permissions, or the default for a path outside the overlay. */
   int getMaterializationPermissions(PathFragment path, int defaultPermissions) throws IOException;
 
