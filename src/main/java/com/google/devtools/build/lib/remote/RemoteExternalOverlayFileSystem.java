@@ -480,7 +480,7 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
 
   @Override
   @Nullable
-  public IOException getRepoInputError(PathFragment path, IOException cause) {
+  public IOException getRepoDownloadError(PathFragment path, IOException cause) {
     if (fsForPath(path) != externalFs) {
       return null;
     }
@@ -581,15 +581,9 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
       // target.
       prefetch(symlinks);
     } catch (BulkTransferException e) {
-      if (e.allCausedByCacheNotFoundException()) {
-        var lostArtifacts = e.getLostArtifacts(ActionInputHelper::fromPath);
-        if (!lostArtifacts.isEmpty()) {
-          // We don't track the particular lost artifacts since the repo needs to be refetched,
-          // which recovers all of them anyway.
-          var anyLostArtifact = lostArtifacts.byDigest().entries().iterator().next();
-          var relativePath = anyLostArtifact.getValue().getExecPath().relativeTo(externalDirectory);
-          throw lostRemoteFile(relativePath, DigestUtil.fromString(anyLostArtifact.getKey()), e);
-        }
+      var eviction = e.getLostRepoFile();
+      if (eviction != null) {
+        throw eviction;
       }
       throw e;
     }

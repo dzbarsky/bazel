@@ -22,9 +22,9 @@ import javax.annotation.Nullable;
  * storage, and that supports materializing them to the local file system on demand.
  */
 public interface SubtreeMaterializer {
-  /** Returns the download error for an input backed by the overlay, or null for other inputs. */
+  /** Returns the download error for a file backed by the overlay, or null for other paths. */
   @Nullable
-  IOException getRepoInputError(PathFragment path, IOException cause);
+  IOException getRepoDownloadError(PathFragment path, IOException cause);
 
   /** Returns the recorded file permissions, or the default for a path outside the overlay. */
   int getMaterializationPermissions(PathFragment path, int defaultPermissions) throws IOException;
