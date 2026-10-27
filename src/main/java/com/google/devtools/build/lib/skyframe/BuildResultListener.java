@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.skyframe;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 
 import com.google.common.base.Stopwatch;
+import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -46,13 +47,17 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
 /**
  * Listens to the various status events of the top level targets/aspects.
  *
- * <p>WARNING: For consistency, the getter methods should only be used after the execution phase is
- * finished.
+ * <p>{@link #getAnalyzedTargets()}, {@link #getAnalyzedAspects()}, and {@link #getSkippedTargets()}
+ * return memoized snapshots and must only be read after all top-level analysis has concluded or
+ * evaluation has stopped. Other result getters require execution to finish or stop.
+ *
+ * <p>Lifetime: one command attempt.
  */
 @ThreadSafety.ThreadSafe
 public class BuildResultListener {
@@ -69,6 +74,17 @@ public class BuildResultListener {
       new ConcurrentHashMap<>();
   private final Map<AspectKey, NestedSet<Cause>> aspectRootCauses = new ConcurrentHashMap<>();
   private final AtomicBoolean hasSandboxedActionFailures = new AtomicBoolean(false);
+
+  private final Supplier<ImmutableSet<ConfiguredTarget>> analyzedTargetsSnapshot =
+      Suppliers.memoize(() -> sortedCopyOf(ConfiguredTarget.ORDERING, analyzedTargets));
+  private final Supplier<ImmutableMap<AspectKey, ConfiguredAspect>> analyzedAspectsSnapshot =
+      Suppliers.memoize(
+          () ->
+              analyzedAspects.entrySet().stream()
+                  .sorted(Map.Entry.comparingByKey(AspectKey.ORDERING))
+                  .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue)));
+  private final Supplier<ImmutableSet<ConfiguredTarget>> skippedTargetsSnapshot =
+      Suppliers.memoize(() -> sortedCopyOf(ConfiguredTarget.ORDERING, skippedTargets));
 
   @GuardedBy("this")
   @Nullable
@@ -115,7 +131,7 @@ public class BuildResultListener {
   }
 
   public ImmutableSet<ConfiguredTarget> getAnalyzedTargets() {
-    return sortedCopyOf(ConfiguredTarget.ORDERING, analyzedTargets);
+    return analyzedTargetsSnapshot.get();
   }
 
   public ImmutableSet<ConfiguredTarget> getAnalyzedTests() {
@@ -123,13 +139,11 @@ public class BuildResultListener {
   }
 
   public ImmutableMap<AspectKey, ConfiguredAspect> getAnalyzedAspects() {
-    return analyzedAspects.entrySet().stream()
-        .sorted(Map.Entry.comparingByKey(AspectKey.ORDERING))
-        .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
+    return analyzedAspectsSnapshot.get();
   }
 
   public ImmutableSet<ConfiguredTarget> getSkippedTargets() {
-    return sortedCopyOf(ConfiguredTarget.ORDERING, skippedTargets);
+    return skippedTargetsSnapshot.get();
   }
 
   public ImmutableSet<ConfiguredTargetKey> getBuiltTargets() {
