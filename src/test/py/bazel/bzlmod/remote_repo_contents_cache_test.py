@@ -2863,6 +2863,15 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     self.doTestLostRemoteFile_analysisMaterialization(keep_going=True)
 
   def testLostRemoteFile_remoteExecutionUpload(self):
+    self.doTestLostActionInput([
+        '--spawn_strategy=remote',
+        '--remote_executor=grpc://localhost:' + str(self._worker_port),
+    ])
+
+  def testLostRemoteFile_localActionPrefetch(self):
+    self.doTestLostActionInput(['--spawn_strategy=local'])
+
+  def doTestLostActionInput(self, strategy_args):
     self.ScratchFile(
         'MODULE.bazel',
         [
@@ -2897,8 +2906,7 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     args = [
         'build',
         '//main:use_data',
-        '--spawn_strategy=remote',
-        '--remote_executor=grpc://localhost:' + str(self._worker_port),
+        *strategy_args,
         '--experimental_remote_cache_eviction_retries=0',
     ]
     self.RunBazel(args + ['--nobuild'])
@@ -2907,7 +2915,7 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
     self.assertFalse(os.path.exists(os.path.join(repo_dir, 'data.txt')))
 
-    # Analysis is warm, so eviction is first noticed while uploading inputs.
+    # Evict after analysis, so the action is the first to encounter the missing input.
     self.ClearRemoteCache()
     exit_code, _, stderr = self.RunBazel(args, allow_failure=True)
     self.AssertExitCode(exit_code, 39, stderr)

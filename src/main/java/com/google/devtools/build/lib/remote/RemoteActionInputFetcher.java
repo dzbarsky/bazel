@@ -99,6 +99,7 @@ public class RemoteActionInputFetcher extends AbstractActionInputPrefetcher {
       Reporter reporter,
       ActionInput input,
       Path tempPath,
+      Path finalPath,
       FileArtifactValue metadata,
       Priority priority,
       Reason reason)
@@ -136,17 +137,21 @@ public class RemoteActionInputFetcher extends AbstractActionInputPrefetcher {
                 input.getExecPathString(),
                 digest.getSizeBytes())),
         IOException.class,
-        e ->
-            immediateFailedFuture(
-                switch (e) {
-                  case CacheNotFoundException cacheNotFoundException -> cacheNotFoundException;
-                  default -> {
-                    var cacheNotFoundException =
-                        new CacheNotFoundException(digest, input.getExecPath());
-                    cacheNotFoundException.addSuppressed(e);
-                    yield cacheNotFoundException;
-                  }
-                }),
+        e -> {
+          if (action != null
+              && execRoot.getFileSystem() instanceof SubtreeMaterializer materializer) {
+            var repoError = materializer.getRepoInputError(finalPath.asFragment(), e);
+            if (repoError != null) {
+              return immediateFailedFuture(repoError);
+            }
+          }
+          if (e instanceof CacheNotFoundException) {
+            return immediateFailedFuture(e);
+          }
+          var cacheNotFoundException = new CacheNotFoundException(digest, input.getExecPath());
+          cacheNotFoundException.addSuppressed(e);
+          return immediateFailedFuture(cacheNotFoundException);
+        },
         directExecutor());
   }
 }

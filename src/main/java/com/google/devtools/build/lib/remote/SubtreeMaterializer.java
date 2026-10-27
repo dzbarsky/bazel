@@ -15,12 +15,17 @@ package com.google.devtools.build.lib.remote;
 
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
+import javax.annotation.Nullable;
 
 /**
  * A file system that may keep the contents of certain directory trees in memory, backed by remote
  * storage, and that supports materializing them to the local file system on demand.
  */
 public interface SubtreeMaterializer {
+  /** Returns the download error for an input backed by the overlay, or null for other inputs. */
+  @Nullable
+  IOException getRepoInputError(PathFragment path, IOException cause);
+
   /** Returns the recorded file permissions, or the default for a path outside the overlay. */
   int getMaterializationPermissions(PathFragment path, int defaultPermissions) throws IOException;
 

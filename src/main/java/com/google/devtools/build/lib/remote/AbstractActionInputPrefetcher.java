@@ -323,6 +323,7 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
       Reporter reporter,
       ActionInput input,
       Path tempPath,
+      Path finalPath,
       FileArtifactValue metadata,
       Priority priority,
       Reason reason)
@@ -741,6 +742,7 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
                                 reporter,
                                 input,
                                 tempPath.forHostFileSystem(),
+                                finalPath,
                                 metadata,
                                 priority,
                                 reason),

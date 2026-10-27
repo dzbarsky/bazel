@@ -284,6 +284,7 @@ java_library(
     srcs = ["SubtreeMaterializer.java"],
     deps = [
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
+        "//third_party:jsr305",
     ],
 )
 

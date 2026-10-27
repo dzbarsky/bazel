@@ -333,6 +333,7 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
               Reporter reporter,
               ActionInput input,
               Path tempPath,
+              Path finalPath,
               FileArtifactValue metadata,
               Priority priority,
               Reason reason)
