@@ -40,6 +40,7 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.remote.common.BulkTransferException;
+import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
@@ -559,13 +560,25 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem implements
     markerFileSibling.renameTo(markerFile);
   }
 
+  @Override
+  @Nullable
+  public IOException getRepoInputError(PathFragment path, IOException cause) {
+    if (fsForPath(path) != externalFs) {
+      return null;
+    }
+    // Only the repository rule can recreate these bytes. Never hand them to action rewinding.
+    return cause instanceof CacheNotFoundException missing
+        ? lostRemoteFile(path.relativeTo(externalDirectory), missing.getMissingDigest(), missing)
+        : cause;
+  }
+
   /**
    * Records that the given file in a repo has been lost from the remote cache and returns an
    * exception that results in a the special exit code that triggers an automatic retry of the
    * build.
    */
   private DetailedIOException lostRemoteFile(
-      PathFragment relativePath, Digest digest, BulkTransferException cause) {
+      PathFragment relativePath, Digest digest, IOException cause) {
     reposWithLostFiles.add(relativePath.getSegment(0));
     return new DetailedIOException(
         "%s/%s with digest %s is no longer available in the remote cache"
