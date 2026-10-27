@@ -58,6 +58,7 @@ import com.google.devtools.build.lib.buildtool.buildevent.ConvenienceSymlinksIde
 import com.google.devtools.build.lib.buildtool.buildevent.ExecutionPhaseCompleteEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.ExecutionProgressReceiverAvailableEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.ExecutionStartingEvent;
+import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.EventKind;
@@ -273,6 +274,7 @@ public class ExecutionTool {
     SkyframeExecutor skyframeExecutor = env.getSkyframeExecutor();
 
     try (SilentCloseable c = Profiler.instance().profile("preparingExecroot")) {
+      boolean allowExternalRepositories = runtime.getWorkspace().doesAllowExternalRepositories();
       incrementalPackageRoots =
           IncrementalPackageRoots.createAndRegisterToEventBus(
               getExecRoot(),
@@ -281,7 +283,12 @@ public class ExecutionTool {
               env.getEventBus(),
               env.getDirectories().getProductName() + "-",
               skyframeExecutor.getIgnoredPaths(),
-              runtime.getWorkspace().doesAllowExternalRepositories(),
+              allowExternalRepositories,
+              buildRequestOptions.getUseSingleExternalSymlink() && allowExternalRepositories
+                  ? env.getDirectories()
+                      .getOutputBase()
+                      .getRelative(LabelConstants.EXTERNAL_REPOSITORY_LOCATION)
+                  : null,
               skyframeExecutor::getRootForDonePackage);
       incrementalPackageRoots.eagerlyPlantSymlinksToSingleSourceRoot();
 

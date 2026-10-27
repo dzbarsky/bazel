@@ -26,6 +26,60 @@ function set_up() {
   write_default_bazelrc
 }
 
+function test_single_external_symlink_preserves_repository_changes() {
+  local repositories
+  repositories="$(mktemp -d "${TEST_TMPDIR}/single-external.XXXXXXXX")"
+  local repository
+  for repository in first second; do
+    mkdir "${repositories}/${repository}"
+    touch "${repositories}/${repository}/REPO.bazel"
+    echo 'exports_files(["input.txt"])' > "${repositories}/${repository}/BUILD"
+  done
+  cat >> MODULE.bazel <<EOF
+local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
+local_repository(name = "linked", path = "${repositories}/first")
+EOF
+  cat > BUILD <<'EOF'
+genrule(
+    name = "copied",
+    srcs = ["@linked//:input.txt"],
+    outs = ["copied.txt"],
+    cmd = "cat $< > $@",
+)
+EOF
+  local exec_root output_base
+  exec_root="$(bazel info execution_root)" || fail "Could not find execution root"
+  output_base="$(bazel info output_base)" || fail "Could not find output base"
+  local enabled expected
+  local iteration=0
+  for enabled in true false true; do
+    for repository in first second; do
+      iteration=$((iteration + 1))
+      expected="${repository}-${iteration}"
+      echo "$expected" > "${repositories}/${repository}/input.txt"
+      bazel build --experimental_single_external_symlink="$enabled" \
+        --override_repository="linked=${repositories}/${repository}" //:copied \
+        > "$TEST_log" 2>&1 || fail "Build with external directory link=$enabled failed"
+      assert_equals "$expected" "$(cat bazel-bin/copied.txt)"
+      assert_equals "$expected" \
+        "$(cat "${exec_root}/external/+local_repository+linked/input.txt")"
+      if [[ "$enabled" == true ]]; then
+        [[ "${exec_root}/external" -ef "${output_base}/external" ]] \
+          || fail "External directory does not point to repository directory"
+      else
+        [[ ! "${exec_root}/external" -ef "${output_base}/external" ]] \
+          || fail "External directory link was not replaced"
+      fi
+    done
+  done
+  bazel build --experimental_single_external_symlink --notrack_incremental_state \
+    --override_repository="linked=${repositories}/second" //:copied \
+    > "$TEST_log" 2>&1 || fail "Build without retained package values failed"
+  assert_equals "$expected" "$(cat bazel-bin/copied.txt)"
+  assert_exists "${repositories}/first/BUILD"
+  assert_exists "${repositories}/second/BUILD"
+}
+
 function test_glob_local_repository_dangling_symlink() {
   create_new_workspace
   r=$TEST_TMPDIR/r
