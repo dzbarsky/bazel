@@ -160,6 +160,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Random;
 import java.util.SortedMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -3400,7 +3401,8 @@ public class RemoteExecutionServiceTest {
             execRoot.asFragment(),
             artifactRoot.getRoot().asPath().relativeTo(execRoot).getPathString(),
             new ActionInputMap(0),
-            actionInputFetcher);
+            actionInputFetcher,
+            ConcurrentHashMap.newKeySet());
 
     return new FakeSpawnExecutionContext(
         spawn, fakeFileCache, execRoot, outErr, ImmutableClassToInstanceMap.of(), actionFileSystem);

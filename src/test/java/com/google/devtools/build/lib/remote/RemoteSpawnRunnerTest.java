@@ -129,6 +129,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
@@ -312,7 +313,8 @@ public class RemoteSpawnRunnerTest {
             execRoot.asFragment(),
             artifactRoot.getRoot().asPath().relativeTo(execRoot).getPathString(),
             new ActionInputMap(0),
-            actionInputFetcher);
+            actionInputFetcher,
+            ConcurrentHashMap.newKeySet());
 
     return new FakeSpawnExecutionContext(
         spawn, fakeFileCache, execRoot, outErr, actionContextRegistry, actionFileSystem);

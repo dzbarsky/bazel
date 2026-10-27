@@ -389,7 +389,8 @@ public class CombinedCacheTest {
             execRoot.asFragment(),
             "outputs",
             StaticInputMetadataProvider.empty(),
-            mock(RemoteActionInputFetcher.class));
+            mock(RemoteActionInputFetcher.class),
+            ConcurrentHashMap.newKeySet());
     var cache = newRemoteExecutionCache(new InMemoryCacheClient());
     Digest digest = digestUtil.computeAsUtf8("content");
 
