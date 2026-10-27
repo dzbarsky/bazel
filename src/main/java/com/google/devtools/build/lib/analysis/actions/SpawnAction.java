@@ -384,7 +384,8 @@ public class SpawnAction extends AbstractAction implements CommandAction {
             actionExecutionContext.getInputMetadataProvider(),
             getPrimaryOutput().getExecPath(),
             pathMapper,
-            getCommandLineLimits());
+            getCommandLineLimits(),
+            actionExecutionContext.getActionKeyContext());
 
     return new ActionSpawn(
         expandedCommandLines.arguments(),

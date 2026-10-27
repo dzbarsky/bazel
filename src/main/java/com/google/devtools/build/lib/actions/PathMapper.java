@@ -209,6 +209,18 @@ public interface PathMapper {
     return this.getClass();
   }
 
+  /**
+   * A key for equivalent Starlark File observations, or null if this mapper does not opt in.
+   *
+   * <p>Equal keys must give the same values for every File API observation, including {@link
+   * #mapRoot}, for the same Artifact. This is stronger than {@link #cacheKey}: command-line
+   * postprocessing remains outside the cached callback and need not be equivalent.
+   */
+  @Nullable
+  default Object starlarkFileCacheKey() {
+    return null;
+  }
+
   /** A {@link PathMapper} that doesn't change paths. */
   PathMapper NOOP =
       new PathMapper() {
@@ -230,6 +242,11 @@ public interface PathMapper {
         @Override
         public FileRootApi mapRoot(Artifact artifact) {
           return artifact.getRoot();
+        }
+
+        @Override
+        public Object starlarkFileCacheKey() {
+          return this;
         }
       };
 

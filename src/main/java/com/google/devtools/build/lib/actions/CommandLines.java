@@ -72,12 +72,23 @@ public abstract sealed class CommandLines {
       PathMapper pathMapper,
       CommandLineLimits limits)
       throws CommandLineExpansionException, InterruptedException {
+    return expand(inputMetadataProvider, paramFileBasePath, pathMapper, limits, null);
+  }
+
+  public ExpandedCommandLines expand(
+      InputMetadataProvider inputMetadataProvider,
+      PathFragment paramFileBasePath,
+      PathMapper pathMapper,
+      CommandLineLimits limits,
+      @Nullable ActionKeyContext actionKeyContext)
+      throws CommandLineExpansionException, InterruptedException {
     return expand(
         inputMetadataProvider,
         paramFileBasePath,
         limits,
         pathMapper,
-        PARAM_FILE_ARG_LENGTH_ESTIMATE);
+        PARAM_FILE_ARG_LENGTH_ESTIMATE,
+        actionKeyContext);
   }
 
   @VisibleForTesting
@@ -87,6 +98,23 @@ public abstract sealed class CommandLines {
       CommandLineLimits limits,
       PathMapper pathMapper,
       int paramFileArgLengthEstimate)
+      throws CommandLineExpansionException, InterruptedException {
+    return expand(
+        inputMetadataProvider,
+        paramFileBasePath,
+        limits,
+        pathMapper,
+        paramFileArgLengthEstimate,
+        null);
+  }
+
+  private ExpandedCommandLines expand(
+      InputMetadataProvider inputMetadataProvider,
+      PathFragment paramFileBasePath,
+      CommandLineLimits limits,
+      PathMapper pathMapper,
+      int paramFileArgLengthEstimate,
+      @Nullable ActionKeyContext actionKeyContext)
       throws CommandLineExpansionException, InterruptedException {
     ImmutableList<CommandLineAndParamFileInfo> commandLines = unpack();
     ImmutableList.Builder<String> arguments = ImmutableList.builder();
@@ -98,7 +126,7 @@ public abstract sealed class CommandLines {
     for (CommandLineAndParamFileInfo pair : commandLines) {
       CommandLine commandLine = pair.commandLine;
       ParamFileInfo paramFileInfo = pair.paramFileInfo;
-      ArgChunk chunk = commandLine.expand(inputMetadataProvider, pathMapper);
+      ArgChunk chunk = commandLine.expand(inputMetadataProvider, pathMapper, actionKeyContext);
       if (paramFileInfo == null) {
         arguments.addAll(chunk.arguments(pathMapper));
         cmdLineLength += chunk.totalArgLength(pathMapper);

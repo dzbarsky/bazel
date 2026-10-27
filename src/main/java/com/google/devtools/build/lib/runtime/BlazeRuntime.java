@@ -55,6 +55,7 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.OutputFilter;
 import com.google.devtools.build.lib.exec.BinTools;
+import com.google.devtools.build.lib.exec.ExecutionOptions;
 import com.google.devtools.build.lib.packages.Package.Builder.PackageSettings;
 import com.google.devtools.build.lib.packages.PackageFactory;
 import com.google.devtools.build.lib.packages.PackageLoadingListener;
@@ -669,6 +670,9 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
    */
   void beforeCommand(CommandEnvironment env, CommonCommandOptions options) {
     this.env = env;
+    ExecutionOptions executionOptions = env.getOptions().getOptions(ExecutionOptions.class);
+    actionKeyContext.setMapEachCachingEnabled(
+        executionOptions != null && executionOptions.getCacheStarlarkMapEach());
     BuildRequestOptions buildRequestOptions =
         env.getOptions().getOptions(BuildRequestOptions.class);
     if (buildRequestOptions != null) {
@@ -878,6 +882,9 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
       finalCommandResult = BlazeCommandResult.withIdleTasks(finalCommandResult, idleTasks);
     }
 
+    if (actionKeyContext.getMapEachCache() != null) {
+      env.getReporter().handle(Event.info(actionKeyContext.getMapEachCache().statsSummary()));
+    }
     env.getReporter().cleanup();
     actionKeyContext.clear();
     DebugLoggerConfigurator.flushServerLog();

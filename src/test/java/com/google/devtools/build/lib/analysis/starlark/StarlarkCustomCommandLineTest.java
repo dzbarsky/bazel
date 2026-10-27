@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.actions.ArgChunk;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
 import com.google.devtools.build.lib.actions.Artifact.FilesetArtifact;
+import com.google.devtools.build.lib.actions.Artifact.SourceArtifact;
 import com.google.devtools.build.lib.actions.Artifact.TreeArtifact;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
@@ -34,12 +35,15 @@ import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
 import com.google.devtools.build.lib.actions.CommandLine;
 import com.google.devtools.build.lib.actions.CommandLine.SimpleArgChunk;
 import com.google.devtools.build.lib.actions.CommandLineExpansionException;
+import com.google.devtools.build.lib.actions.CommandLineLimits;
+import com.google.devtools.build.lib.actions.CommandLines;
 import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
 import com.google.devtools.build.lib.actions.FilesetOutputTree;
 import com.google.devtools.build.lib.actions.PathMapper;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
+import com.google.devtools.build.lib.actions.util.LabelArtifactOwner;
 import com.google.devtools.build.lib.analysis.actions.PathMappers;
 import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkCustomCommandLine.VectorArg;
@@ -58,6 +62,7 @@ import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
@@ -1081,6 +1086,216 @@ public final class StarlarkCustomCommandLineTest {
 
     assertThat(fingerprintBefore.hexDigestAndReset())
         .isEqualTo(fingerprintAfter.hexDigestAndReset());
+  }
+
+  @Test
+  public void mapEachCache_reusesStringAndNoneBeforeFormatting(@TestParameter boolean flagPerLine)
+      throws Exception {
+    StarlarkFunction function =
+        (StarlarkFunction)
+            execStarlark(
+                "def mapper(f):\n"
+                    + "  return None if f.basename == 'artifact2' else f.basename\n"
+                    + "mapper");
+    ActionKeyContext context = new ActionKeyContext();
+    context.setMapEachCachingEnabled(true);
+    var duplicateBasename = ActionsTestUtil.createArtifact(derivedRoot, "other/artifact1");
+    for (String format : ImmutableList.of("first:%s", "second:%s")) {
+      CommandLine line =
+          new StarlarkCustomCommandLine.Builder(StarlarkSemantics.DEFAULT)
+              .add("before")
+              .recordArgStart()
+              .add(
+                  vectorArg(artifact1, artifact2, artifact3, duplicateBasename)
+                      .setArgName("--files")
+                      .setExpandDirectories(false)
+                      .setMapEach(function)
+                      .uniquify(true)
+                      .setFormatEach(format))
+              .recordArgStart()
+              .add("after")
+              .build(flagPerLine, RepositoryMapping.EMPTY);
+      // Exercise the real CommandLines and suffix-wrapper path, not only the direct overload.
+      var expanded =
+          CommandLines.of(CommandLine.concat(line, ImmutableList.of("tail")))
+              .expand(
+                  new FakeActionInputFileCache(),
+                  PathFragment.create("params"),
+                  PathMapper.NOOP,
+                  CommandLineLimits.UNLIMITED,
+                  context);
+      String first = format.replace("%s", "artifact1");
+      String third = format.replace("%s", "artifact3");
+      if (flagPerLine) {
+        assertThat(expanded.arguments())
+            .containsExactly("before", "--files=" + first + " " + third, "after", "tail")
+            .inOrder();
+      } else {
+        assertThat(expanded.arguments())
+            .containsExactly("before", "--files", first, third, "after", "tail")
+            .inOrder();
+      }
+    }
+    assertThat(context.getMapEachCache().missCount()).isEqualTo(4);
+    assertThat(context.getMapEachCache().hitCount()).isEqualTo(4);
+  }
+
+  @Test
+  public void mapEachCache_preservesOwnerOfEqualSourceArtifacts() throws Exception {
+    ArtifactRoot root = ArtifactRoot.asSourceRoot(Root.fromPath(derivedRoot.getRoot().asPath()));
+    SourceArtifact first =
+        new SourceArtifact(
+            root,
+            PathFragment.create("shared.py"),
+            new LabelArtifactOwner(Label.parseCanonicalUnchecked("//owners:first")));
+    SourceArtifact second =
+        new SourceArtifact(
+            root,
+            PathFragment.create("shared.py"),
+            new LabelArtifactOwner(Label.parseCanonicalUnchecked("//owners:second")));
+    assertThat(first).isEqualTo(second);
+    StarlarkFunction function =
+        (StarlarkFunction) execStarlark("def mapper(f):\n  return str(f.owner)\nmapper");
+    ActionKeyContext context = new ActionKeyContext();
+    context.setMapEachCachingEnabled(true);
+    assertThat(
+            cachedArgs(
+                mappedLine(function, StarlarkSemantics.DEFAULT, first), context, PathMapper.NOOP))
+        .containsExactly("@@//owners:first");
+    assertThat(
+            cachedArgs(
+                mappedLine(function, StarlarkSemantics.DEFAULT, second), context, PathMapper.NOOP))
+        .containsExactly("@@//owners:second");
+  }
+
+  @Test
+  public void mapEachCache_separatesFunctionsAndSemantics() throws Exception {
+    StarlarkFunction first =
+        (StarlarkFunction) execStarlark("def mapper(f):\n  return 'first'\nmapper");
+    StarlarkFunction second =
+        (StarlarkFunction) execStarlark("def mapper(f):\n  return 'second'\nmapper");
+    StarlarkSemantics changed =
+        StarlarkSemantics.builder().setBool(StarlarkSemantics.ALLOW_RECURSION, true).build();
+    ActionKeyContext context = new ActionKeyContext();
+    context.setMapEachCachingEnabled(true);
+    assertThat(
+            cachedArgs(
+                mappedLine(first, StarlarkSemantics.DEFAULT, artifact1), context, PathMapper.NOOP))
+        .containsExactly("first");
+    assertThat(
+            cachedArgs(
+                mappedLine(second, StarlarkSemantics.DEFAULT, artifact1), context, PathMapper.NOOP))
+        .containsExactly("second");
+    assertThat(cachedArgs(mappedLine(first, changed, artifact1), context, PathMapper.NOOP))
+        .containsExactly("first");
+    assertThat(context.getMapEachCache().missCount()).isEqualTo(3);
+    assertThat(context.getMapEachCache().hitCount()).isEqualTo(0);
+  }
+
+  @Test
+  public void mapEachCache_separatesFileMappingAndDoesNotOptInUnknownMappers() throws Exception {
+    StarlarkFunction function =
+        (StarlarkFunction)
+            execStarlark("def mapper(f):\n  return f.path + '|' + f.root.path\nmapper");
+    CommandLine line = mappedLine(function, StarlarkSemantics.DEFAULT, artifact1);
+    ActionKeyContext context = new ActionKeyContext();
+    context.setMapEachCachingEnabled(true);
+    assertThat(cachedArgs(line, context, PathMapper.NOOP))
+        .containsExactly("bazel-out/k8-fastbuild/bin/pkg/artifact1|bazel-out/k8-fastbuild/bin");
+    for (int i = 0; i < 2; i++) {
+      // Separate StrippingPathMapper instances are equivalent for File observations.
+      PathMapper stripped =
+          PathMappers.create(action, CoreOptions.OutputPathsMode.STRIP, true, null);
+      assertThat(cachedArgs(line, context, stripped))
+          .containsExactly("bazel-out/cfg/bin/pkg/artifact1|bazel-out/cfg/bin");
+    }
+    PathMapper unknown = path -> PathFragment.create("custom").getRelative(path);
+    for (int i = 0; i < 2; i++) {
+      assertThat(cachedArgs(line, context, unknown))
+          .containsExactly(
+              "custom/bazel-out/k8-fastbuild/bin/pkg/artifact1|"
+                  + "custom/bazel-out/k8-fastbuild/bin");
+    }
+    assertThat(context.getMapEachCache().missCount()).isEqualTo(2);
+    assertThat(context.getMapEachCache().hitCount()).isEqualTo(1);
+  }
+
+  @Test
+  public void mapEachCache_doesNotCacheSequencesOrErrors() throws Exception {
+    for (String body : ImmutableList.of("return [f.path]", "return 7", "fail('expected')")) {
+      StarlarkFunction function =
+          (StarlarkFunction) execStarlark("def mapper(f):\n  " + body + "\nmapper");
+      CommandLine line = mappedLine(function, StarlarkSemantics.DEFAULT, artifact1);
+      ActionKeyContext context = new ActionKeyContext();
+      context.setMapEachCachingEnabled(true);
+      for (int i = 0; i < 2; i++) {
+        if (body.startsWith("return [")) {
+          assertThat(cachedArgs(line, context, PathMapper.NOOP))
+              .containsExactly(artifact1.getExecPathString());
+        } else {
+          assertThrows(
+              CommandLineExpansionException.class,
+              () -> cachedArgs(line, context, PathMapper.NOOP));
+        }
+      }
+      assertThat(context.getMapEachCache().missCount()).isEqualTo(2);
+      assertThat(context.getMapEachCache().hitCount()).isEqualTo(0);
+    }
+  }
+
+  @Test
+  public void mapEachCache_keepsDirectoryExpansionAndTwoArgumentCallbacksUncached()
+      throws Exception {
+    for (boolean expandDirectories : ImmutableList.of(false, true)) {
+      StarlarkFunction function =
+          (StarlarkFunction)
+              execStarlark(
+                  expandDirectories
+                      ? "def mapper(f):\n  return f.path\nmapper"
+                      : "def mapper(f, expander):\n  return f.path\nmapper");
+      CommandLine line =
+          new StarlarkCustomCommandLine.Builder(StarlarkSemantics.DEFAULT)
+              .add(
+                  vectorArg(artifact1).setExpandDirectories(expandDirectories).setMapEach(function))
+              .build(false, RepositoryMapping.EMPTY);
+      ActionKeyContext context = new ActionKeyContext();
+      context.setMapEachCachingEnabled(true);
+      for (int i = 0; i < 2; i++) {
+        assertThat(cachedArgs(line, context, PathMapper.NOOP))
+            .containsExactly(artifact1.getExecPathString());
+      }
+      assertThat(context.getMapEachCache().missCount()).isEqualTo(0);
+      assertThat(context.getMapEachCache().hitCount()).isEqualTo(0);
+    }
+  }
+
+  @Test
+  public void mapEachCache_hitChecksInterruption() throws Exception {
+    StarlarkFunction function =
+        (StarlarkFunction) execStarlark("def mapper(f):\n  return f.path\nmapper");
+    CommandLine line = mappedLine(function, StarlarkSemantics.DEFAULT, artifact1);
+    ActionKeyContext context = new ActionKeyContext();
+    context.setMapEachCachingEnabled(true);
+    cachedArgs(line, context, PathMapper.NOOP);
+    Thread.currentThread().interrupt();
+    try {
+      assertThrows(InterruptedException.class, () -> cachedArgs(line, context, PathMapper.NOOP));
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
+  private CommandLine mappedLine(
+      StarlarkFunction function, StarlarkSemantics semantics, Object value) {
+    return new StarlarkCustomCommandLine.Builder(semantics)
+        .add(vectorArg(value).setExpandDirectories(false).setMapEach(function))
+        .build(false, RepositoryMapping.EMPTY);
+  }
+
+  private static Iterable<String> cachedArgs(
+      CommandLine line, ActionKeyContext context, PathMapper mapper)
+      throws CommandLineExpansionException, InterruptedException {
+    return line.expand(new FakeActionInputFileCache(), mapper, context).arguments(mapper);
   }
 
   private VectorArg.Builder vectorArg(Object... elems) {

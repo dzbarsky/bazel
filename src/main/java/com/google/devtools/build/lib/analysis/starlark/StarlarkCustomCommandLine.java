@@ -26,6 +26,7 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.collect.UnmodifiableIterator;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
+import com.google.devtools.build.lib.actions.ActionKeyContext.MapEachCache;
 import com.google.devtools.build.lib.actions.ArgChunk;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
@@ -334,7 +335,8 @@ public class StarlarkCustomCommandLine extends CommandLine {
         PreprocessedCommandLine.Builder builder,
         @Nullable InputMetadataProvider inputMetadataProvider,
         PathMapper pathMapper,
-        @Nullable RepositoryMapping mainRepoMapping)
+        @Nullable RepositoryMapping mainRepoMapping,
+        @Nullable ActionKeyContext actionKeyContext)
         throws CommandLineExpansionException, InterruptedException {
       StarlarkCallable mapEach =
           hasNonGlobalMapEach ? (StarlarkCallable) arguments.get(argi++) : this.mapEach;
@@ -409,7 +411,16 @@ public class StarlarkCustomCommandLine extends CommandLine {
               inputMetadataProvider,
               pathMapper,
               starlarkSemantics,
-              expandDirectories);
+              expandDirectories,
+              actionKeyContext != null
+                      && mapEach instanceof StarlarkFunction function
+                      && function.isGlobal()
+                      && function.getParameterNames().size() == 1
+                      && !function.hasVarargs()
+                      && !function.hasKwargs()
+                      && !expandDirectories
+                  ? actionKeyContext.getMapEachCache()
+                  : null);
         } else {
           int count = expandedValues.size();
           values = new ArrayList<>(expandedValues.size());
@@ -682,7 +693,8 @@ public class StarlarkCustomCommandLine extends CommandLine {
               inputMetadataProvider,
               PathMapper.forActionKey(outputPathsMode),
               starlarkSemantics,
-              expandDirectories);
+              expandDirectories,
+              /* cache= */ null);
         } else {
           for (Object value : maybeExpandedValues) {
             addSingleObjectToFingerprint(fingerprint, value, mainRepoMapping);
@@ -1051,8 +1063,17 @@ public class StarlarkCustomCommandLine extends CommandLine {
   }
 
   @Override
-  public ArgChunk expand(
+  public final ArgChunk expand(
       @Nullable InputMetadataProvider inputMetadataProvider, PathMapper pathMapper)
+      throws CommandLineExpansionException, InterruptedException {
+    return expand(inputMetadataProvider, pathMapper, null);
+  }
+
+  @Override
+  public ArgChunk expand(
+      @Nullable InputMetadataProvider inputMetadataProvider,
+      PathMapper pathMapper,
+      @Nullable ActionKeyContext actionKeyContext)
       throws CommandLineExpansionException, InterruptedException {
     PreprocessedCommandLine.Builder builder = new PreprocessedCommandLine.Builder();
     List<Object> values = rawValuesAsList();
@@ -1071,7 +1092,13 @@ public class StarlarkCustomCommandLine extends CommandLine {
       if (item instanceof VectorArg vectorArg) {
         vali =
             vectorArg.preprocess(
-                values, vali, builder, inputMetadataProvider, pathMapper, mainRepoMapping);
+                values,
+                vali,
+                builder,
+                inputMetadataProvider,
+                pathMapper,
+                mainRepoMapping,
+                actionKeyContext);
       } else if (item == SINGLE_FORMATTED_ARG_MARKER) {
         String format = (String) recipeElems[++recipei];
         Object arg = values.get(vali++);
@@ -1151,7 +1178,9 @@ public class StarlarkCustomCommandLine extends CommandLine {
 
     @Override
     public ArgChunk expand(
-        @Nullable InputMetadataProvider inputMetadataProvider, PathMapper pathMapper)
+        @Nullable InputMetadataProvider inputMetadataProvider,
+        PathMapper pathMapper,
+        @Nullable ActionKeyContext actionKeyContext)
         throws CommandLineExpansionException, InterruptedException {
       PreprocessedCommandLine.Builder builder = new PreprocessedCommandLine.Builder();
       List<Object> values = ((StarlarkCustomCommandLine) this).rawValuesAsList();
@@ -1176,7 +1205,13 @@ public class StarlarkCustomCommandLine extends CommandLine {
           if (item instanceof VectorArg vectorArg) {
             vali =
                 vectorArg.preprocess(
-                    values, vali, line, inputMetadataProvider, pathMapper, mainRepoMapping);
+                    values,
+                    vali,
+                    line,
+                    inputMetadataProvider,
+                    pathMapper,
+                    mainRepoMapping,
+                    actionKeyContext);
           } else if (item == SINGLE_FORMATTED_ARG_MARKER) {
             String format = (String) recipeElems[recipei++];
             Object arg = values.get(vali++);
@@ -1295,8 +1330,14 @@ public class StarlarkCustomCommandLine extends CommandLine {
       @Nullable InputMetadataProvider inputMetadataProvider,
       PathMapper pathMapper,
       StarlarkSemantics starlarkSemantics,
-      boolean expandDirectories)
+      boolean expandDirectories,
+      @Nullable MapEachCache cache)
       throws CommandLineExpansionException, InterruptedException {
+    Object fileMappingKey = cache == null ? null : pathMapper.starlarkFileCacheKey();
+    MapEachCache.Lookup lookup =
+        fileMappingKey == null
+            ? null
+            : cache.newLookup((StarlarkFunction) mapFn, starlarkSemantics, fileMappingKey);
     try (Mutability mu = Mutability.create("map_each")) {
       // This computation produces only a String list, which doesn't require reference semantics,
       // so createTransient() is safe.
@@ -1329,8 +1370,15 @@ public class StarlarkCustomCommandLine extends CommandLine {
           consumer.accept(pathMapper.getMappedExecPathString((Artifact) item));
           continue;
         }
-        args.set(0, item);
-        Object ret = Starlark.call(thread, mapFn, args, /* kwargs= */ ImmutableMap.of());
+        Artifact artifact = lookup != null && item instanceof Artifact file ? file : null;
+        Object ret = artifact == null ? null : lookup.get(artifact);
+        if (ret == null) {
+          args.set(0, item);
+          ret = Starlark.call(thread, mapFn, args, /* kwargs= */ ImmutableMap.of());
+          if (artifact != null && (ret instanceof String || ret == Starlark.NONE)) {
+            lookup.put(artifact, ret);
+          }
+        }
         if (ret instanceof String string) {
           consumer.accept(string);
         } else if (ret instanceof Sequence<?> sequence) {
@@ -1409,7 +1457,8 @@ public class StarlarkCustomCommandLine extends CommandLine {
           inputMetadataProvider,
           PathMapper.forActionKey(outputPathsMode),
           starlarkSemantics,
-          expandDirectories);
+          expandDirectories,
+          /* cache= */ null);
     }
 
     private List<Object> maybeExpandDirectory(Object object) throws CommandLineExpansionException {

@@ -172,6 +172,15 @@ public final class StrippingPathMapper implements PathMapper {
     return Optional.empty();
   }
 
+  private record StarlarkFileCacheKey(PathFragment outputRoot) {}
+
+  @Override
+  public Object starlarkFileCacheKey() {
+    // mapRoot's precomputed primary root has the same value as the general mapping. Mnemonic
+    // differences affect only command-line postprocessing, which is not memoized.
+    return new StarlarkFileCacheKey(outputRoot);
+  }
+
   @Override
   public String getMappedExecPathString(ActionInput artifact) {
     if (isSupported(artifact)) {
