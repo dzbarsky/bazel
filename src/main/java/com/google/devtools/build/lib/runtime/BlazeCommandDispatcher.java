@@ -895,7 +895,11 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
           result.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED)
               && executionOptions != null
               && attemptedCommandIds.size() < executionOptions.getRemoteRetryOnTransientCacheError();
-      if (retryQuery || retryBuild) {
+      boolean retryMod =
+          commandName.equals("mod")
+              && attemptedCommandIds.isEmpty()
+              && result.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED);
+      if (retryQuery || retryBuild || retryMod) {
         throw new RemoteCacheTransientErrorException(env.getBuildRequestId(), env.getCommandId());
       }
 

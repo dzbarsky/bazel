@@ -2203,6 +2203,51 @@ class RemoteRepoContentsCacheTest(
     if CROSS_REPO_SYMLINKS_CACHEABLE:
       self.assertFalse(os.path.exists(os.path.join(my_repo_dir, 'BUILD')))
 
+  def testLostRemoteFile_mod(self):
+    self.ScratchFile('BUILD.bazel')
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'repo = use_repo_rule("//:defs.bzl", "repo")',
+            'repo(name = "data")',
+            'ext = use_extension("//:defs.bzl", "ext")',
+        ],
+    )
+    self.ScratchFile(
+        'defs.bzl',
+        [
+            'def _repo(rctx):',
+            '  rctx.file("BUILD", "exports_files([\'data.txt\'])")',
+            '  rctx.file("data.txt", "unique-mod-input")',
+            '  return rctx.repo_metadata(reproducible = True)',
+            'repo = repository_rule(_repo)',
+            'def _ext(mctx):',
+            '  mctx.read(Label("@data//:data.txt"))',
+            '  repo(name = "generated")',
+            '  return mctx.extension_metadata(',
+            '      root_module_direct_deps = ["generated"],',
+            '      root_module_direct_dev_deps = [], reproducible = True)',
+            'ext = module_extension(_ext)',
+        ],
+    )
+    graph = ['mod', 'graph', '--extension_info=all']
+    _, expected, _ = self.RunBazel(graph)
+    for args in [graph, ['mod', 'tidy']]:
+      self.RunBazel(['clean', '--expunge'])
+      self.RunBazel(['query', '@data//:data.txt'])
+      self.DeleteCasEntry(b'unique-mod-input')
+      _, stdout, stderr = self.RunBazel(args)
+      self.assertEqual(
+          1,
+          stderr.count(
+              'Found transient remote cache error, retrying the build...'
+          ),
+      )
+      if args == graph:
+        self.assertEqual(stdout, expected)
+    with open(self.Path('MODULE.bazel')) as f:
+      self.assertIn('use_repo(ext, "generated")', f.read())
+
   def testLostRemoteBuildFile_query(self):
     self.ScratchFile('BUILD.bazel', ['filegroup(name = "local")'])
     self.ScratchFile(
