@@ -23,6 +23,7 @@ import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -69,6 +70,8 @@ import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -106,13 +109,57 @@ public final class RemoteActionFileSystemTest extends RemoteActionFileSystemTest
     outputRoot.getRoot().asPath().createDirectoryAndParents();
   }
 
+  @Test
+  public void sharedExecRootDirectories_doNotHideOutputChangesOrDeletion() throws Exception {
+    var knownDirectories = ConcurrentHashMap.<Path>newKeySet();
+    Supplier<RemoteActionFileSystem> actionFileSystem =
+        () ->
+            new RemoteActionFileSystem(
+                fs,
+                execRoot.asFragment(),
+                RELATIVE_OUTPUT_PATH,
+                new ActionInputMap(0),
+                inputFetcher,
+                knownDirectories);
+    Path output = outputRoot.getRoot().asPath().getRelative("directory/file");
+    output.getParentDirectory().createDirectoryAndParents();
+    FileSystemUtils.writeContent(output, UTF_8, "one");
+    assertThat(
+            actionFileSystem.get().getPath(output.asFragment()).resolveSymbolicLinks().asFragment())
+        .isEqualTo(output.asFragment());
+
+    Path replacement = outputRoot.getRoot().asPath().getRelative("replacement/file");
+    replacement.getParentDirectory().createDirectoryAndParents();
+    FileSystemUtils.writeContent(replacement, UTF_8, "longer");
+    output.delete();
+    output.getParentDirectory().delete();
+    output.getParentDirectory().createSymbolicLink(replacement.getParentDirectory());
+    clearInvocations(fs);
+
+    var second = actionFileSystem.get();
+    Path resolved = second.getPath(output.asFragment()).resolveSymbolicLinks();
+    assertThat(resolved.asFragment()).isEqualTo(replacement.asFragment());
+    assertThat(resolved.getFileSize()).isEqualTo(6);
+    verify(fs, never()).statIfFound(execRoot.asFragment(), false);
+
+    second.getPath(execRoot.asFragment()).deleteTree();
+    assertThrows(
+        FileNotFoundException.class,
+        () -> actionFileSystem.get().getPath(execRoot.asFragment()).resolveSymbolicLinks());
+  }
+
   @Override
   protected RemoteActionFileSystem createActionFileSystem(
       ActionInputMap inputs, Iterable<Artifact> outputs) throws IOException {
     doReturn(DUMMY_REMOTE_OUTPUT_CHECKER).when(inputFetcher).getRemoteOutputChecker();
     RemoteActionFileSystem remoteActionFileSystem =
         new RemoteActionFileSystem(
-            fs, execRoot.asFragment(), RELATIVE_OUTPUT_PATH, inputs, inputFetcher);
+            fs,
+            execRoot.asFragment(),
+            RELATIVE_OUTPUT_PATH,
+            inputs,
+            inputFetcher,
+            ConcurrentHashMap.newKeySet());
     remoteActionFileSystem.updateContext(mock(ActionExecutionMetadata.class));
     remoteActionFileSystem.createDirectoryAndParents(outputRoot.getRoot().asPath().asFragment());
     return remoteActionFileSystem;

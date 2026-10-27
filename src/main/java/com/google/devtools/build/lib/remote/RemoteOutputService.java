@@ -46,7 +46,9 @@ import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.skyframe.WalkableGraph;
 import java.io.IOException;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.Nullable;
 
 /** Output service implementation for the remote build without local output service daemon. */
@@ -54,6 +56,9 @@ public class RemoteOutputService implements OutputService {
 
   private final BlazeDirectories directories;
   private final boolean rewindLostInputs;
+  // Exec-root ancestors remain directories during a command. Share their local types across action
+  // filesystems, without retaining output state or symlinks.
+  private final Set<Path> knownExecRootDirectories = ConcurrentHashMap.newKeySet();
 
   private RewoundActionSynchronizer rewoundActionSynchronizer = RewoundActionSynchronizer.NOOP;
 
@@ -105,7 +110,8 @@ public class RemoteOutputService implements OutputService {
         execRootFragment,
         relativeOutputPath,
         inputArtifactData,
-        actionInputFetcher);
+        actionInputFetcher,
+        knownExecRootDirectories);
   }
 
   @Override
@@ -226,7 +232,12 @@ public class RemoteOutputService implements OutputService {
       ActionInputMap actionInputMap) {
     FileSystem remoteFileSystem =
         new RemoteActionFileSystem(
-            fileSystem, execRoot, relativeOutputPath, actionInputMap, actionInputFetcher);
+            fileSystem,
+            execRoot,
+            relativeOutputPath,
+            actionInputMap,
+            actionInputFetcher,
+            knownExecRootDirectories);
     return ArtifactPathResolver.createPathResolver(remoteFileSystem, fileSystem.getPath(execRoot));
   }
 

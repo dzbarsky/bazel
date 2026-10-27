@@ -110,6 +110,7 @@ public class RemoteActionFileSystem extends FileSystem {
   private final InputMetadataProvider inputArtifactData;
   private final TreeArtifactDirectoryCache inputTreeArtifactDirectoryCache;
   private final PathCanonicalizer pathCanonicalizer;
+  private final Set<Path> knownExecRootDirectories;
   private final RemoteActionInputFetcher inputFetcher;
   private final FileSystem localFs;
   private final RemoteInMemoryFileSystem remoteOutputTree;
@@ -242,13 +243,15 @@ public class RemoteActionFileSystem extends FileSystem {
       PathFragment execRootFragment,
       String relativeOutputPath,
       InputMetadataProvider inputArtifactData,
-      RemoteActionInputFetcher inputFetcher) {
+      RemoteActionInputFetcher inputFetcher,
+      Set<Path> knownExecRootDirectories) {
     super(localFs.getDigestFunction());
     this.execRoot = checkNotNull(execRootFragment, "execRootFragment");
     this.outputBase = execRoot.getRelative(checkNotNull(relativeOutputPath, "relativeOutputPath"));
     this.inputArtifactData = checkNotNull(inputArtifactData, "inputArtifactData");
     this.inputTreeArtifactDirectoryCache = new TreeArtifactDirectoryCache();
     this.inputFetcher = checkNotNull(inputFetcher, "inputFetcher");
+    this.knownExecRootDirectories = checkNotNull(knownExecRootDirectories);
     this.localFs = checkNotNull(localFs, "localFs");
     this.remoteOutputTree = new RemoteInMemoryFileSystem(getDigestFunction());
     this.pathCanonicalizer =
@@ -257,6 +260,10 @@ public class RemoteActionFileSystem extends FileSystem {
               @Override
               @Nullable
               public FileStatus statIfFound(PathFragment path) throws IOException {
+                if (execRoot.startsWith(path)
+                    && knownExecRootDirectories.contains(localFs.getPath(path))) {
+                  return DIRECTORY_FILE_STATUS;
+                }
                 return statInternal(path, FollowMode.FOLLOW_NONE, StatSources.ALL);
               }
 
@@ -382,6 +389,9 @@ public class RemoteActionFileSystem extends FileSystem {
     // there's no risk of a race condition below.
     pathCanonicalizer.clearPrefix(originalPath);
 
+    if (execRoot.startsWith(path)) {
+      knownExecRootDirectories.clear();
+    }
     boolean deleted = localFs.getPath(path).delete();
     if (isOutput(path)) {
       deleted = remoteOutputTree.getPath(path).delete() || deleted;
@@ -688,7 +698,11 @@ public class RemoteActionFileSystem extends FileSystem {
     }
 
     if (statSources == StatSources.ALL) {
-      return localFs.getPath(path).statIfFound(Symlinks.NOFOLLOW);
+      FileStatus localStat = localFs.getPath(path).statIfFound(Symlinks.NOFOLLOW);
+      if (execRoot.startsWith(path) && localStat != null && localStat.isDirectory()) {
+        knownExecRootDirectories.add(localFs.getPath(path));
+      }
+      return localStat;
     }
 
     return null;

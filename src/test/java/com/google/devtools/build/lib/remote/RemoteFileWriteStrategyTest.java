@@ -67,6 +67,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.Nullable;
 import org.junit.Before;
 import org.junit.Test;
@@ -106,7 +107,8 @@ public final class RemoteFileWriteStrategyTest {
             execRoot.asFragment(),
             outputRoot.getExecPathString(),
             new ActionInputMap(0),
-            mock(RemoteActionInputFetcher.class));
+            mock(RemoteActionInputFetcher.class),
+            ConcurrentHashMap.newKeySet());
     actionFileSystem.createDirectoryAndParents(output.getPath().getParentDirectory().asFragment());
   }
 
