@@ -29,6 +29,7 @@ import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.flogger.GoogleLogger;
+import com.google.common.io.CountingOutputStream;
 import com.google.common.io.Flushables;
 import com.google.devtools.build.lib.analysis.NoBuildEvent;
 import com.google.devtools.build.lib.analysis.config.CoreOptionConverters;
@@ -399,6 +400,13 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
     // Record the start time for the profiler. Do not put anything before this!
     long execStartTimeNanos = runtime.getClock().nanoTime();
 
+    // Query can stream machine-readable results. Only replay an attempt while its stdout is empty.
+    var queryOutput =
+        commandName.equals("query") ? new CountingOutputStream(outErr.getOutputStream()) : null;
+    if (queryOutput != null) {
+      outErr = OutErr.create(queryOutput, outErr.getErrorStream());
+    }
+
     Command commandAnnotation = command.getClass().getAnnotation(Command.class);
     BlazeWorkspace workspace = runtime.getWorkspace();
 
@@ -443,10 +451,10 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
       return BlazeCommandResult.detailedExitCode(e.getDetailedExitCode());
     }
 
-    ExecutionOptions probeExecutionOptions = options.getOptions(ExecutionOptions.class);
-    if (probeExecutionOptions != null && probeExecutionOptions.getCacheProbeOutput() != null) {
+    ExecutionOptions executionOptions = options.getOptions(ExecutionOptions.class);
+    if (executionOptions != null && executionOptions.getCacheProbeOutput() != null) {
       try {
-        CacheProbe.deleteOutput(env, probeExecutionOptions);
+        CacheProbe.deleteOutput(env, executionOptions);
       } catch (IOException e) {
         storedEventHandler.handle(Event.error(e.getMessage()));
         earlyExitCode =
@@ -455,7 +463,9 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
     }
 
     if (attemptNumber > 1) {
-      outErr.printErrLn("Found transient remote cache error, retrying the build...");
+      outErr.printErrLn(
+          "Found transient remote cache error, retrying the %s..."
+              .formatted(queryOutput == null ? "build" : "query"));
     }
 
     CommonCommandOptions commonOptions = options.getOptions(CommonCommandOptions.class);
@@ -867,12 +877,21 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
 
       needToCallAfterCommand = false;
       result = runtime.afterCommand(/* forceKeepStateForTesting= */ false, env, result);
-      if (result.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED)) {
-        var executionOptions =
-            Preconditions.checkNotNull(options.getOptions(ExecutionOptions.class));
-        if (attemptedCommandIds.size() < executionOptions.getRemoteRetryOnTransientCacheError()) {
-          throw new RemoteCacheTransientErrorException(env.getBuildRequestId(), env.getCommandId());
-        }
+      // Query overrides the numeric exit code for full and partial evaluation failures, but
+      // preserves the filesystem failure detail. On retry the overlay validates all cached repos.
+      boolean retryQuery =
+          queryOutput != null
+              && attemptedCommandIds.isEmpty()
+              && queryOutput.getCount() == 0
+              && result.getFailureDetail() != null
+              && result.getFailureDetail().getFilesystem().getCode()
+                  == FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED;
+      boolean retryBuild =
+          result.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED)
+              && executionOptions != null
+              && attemptedCommandIds.size() < executionOptions.getRemoteRetryOnTransientCacheError();
+      if (retryQuery || retryBuild) {
+        throw new RemoteCacheTransientErrorException(env.getBuildRequestId(), env.getCommandId());
       }
 
       return result;
@@ -915,10 +934,10 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
       }
 
       if (!result.getDetailedExitCode().isSuccess()
-          && probeExecutionOptions != null
-          && probeExecutionOptions.getCacheProbeOutput() != null) {
+          && executionOptions != null
+          && executionOptions.getCacheProbeOutput() != null) {
         try {
-          CacheProbe.deleteOutput(env, probeExecutionOptions);
+          CacheProbe.deleteOutput(env, executionOptions);
         } catch (IOException e) {
           reporter.handle(
               Event.error("Cannot remove incomplete cache probe manifest: " + e.getMessage()));

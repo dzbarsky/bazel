@@ -2203,6 +2203,55 @@ class RemoteRepoContentsCacheTest(
     if CROSS_REPO_SYMLINKS_CACHEABLE:
       self.assertFalse(os.path.exists(os.path.join(my_repo_dir, 'BUILD')))
 
+  def testLostRemoteBuildFile_query(self):
+    self.ScratchFile('BUILD.bazel', ['filegroup(name = "local")'])
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'repo = use_repo_rule("//:repo.bzl", "repo")',
+            'repo(name = "cached")',
+        ],
+    )
+    build_file = 'filegroup(name = "from_repo")'
+    self.ScratchFile(
+        'repo.bzl',
+        [
+            'def _impl(ctx):',
+            """  ctx.file("BUILD.bazel", "filegroup(name='warm')")""",
+            f'  ctx.file("pkg/BUILD.bazel", {build_file!r})',
+            '  return ctx.repo_metadata(reproducible = True)',
+            'repo = repository_rule(implementation = _impl)',
+        ],
+    )
+
+    target = '@cached//pkg:from_repo'
+    self.RunBazel(['query', target])
+
+    def restore_then_evict():
+      # The worker checks the CAS on lookup. Evict only after Bazel has
+      # restored the repo tree, while the subpackage BUILD file is still remote.
+      self.RunBazel(['clean', '--expunge'])
+      self.RunBazel(['query', '@cached//:warm'])
+      self.DeleteCasEntry(build_file.encode())
+
+    restore_then_evict()
+    _, stdout, stderr = self.RunBazel(['query', target])
+    self.assertEqual(stdout, [target])
+    self.assertEqual(
+        stderr.count('Found transient remote cache error, retrying the query...'),
+        1,
+    )
+
+    # Replaying after a keep-going query emits a target would duplicate stdout.
+    restore_then_evict()
+    args = [
+        'query', '--keep_going', '--order_output=no', f'set(//:local {target})'
+    ]
+    code, stdout, stderr = self.RunBazel(args, allow_failure=True)
+    self.assertEqual(code, 3)
+    self.assertEqual(stdout, ['//:local'])
+    self.assertNotIn('retrying the query', '\n'.join(stderr))
+
   def testLostRemoteFile_build(self):
     # Create a repo with two BUILD files (one in a subpackage), build a target
     # from one to cause it to be cached, then build that target again after
