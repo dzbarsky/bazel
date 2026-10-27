@@ -41,6 +41,9 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/collect/nestedset",
         "//src/main/java/com/google/devtools/build/lib/collect/nestedset:fingerprint_cache",
         "//src/main/java/com/google/devtools/build/lib/util",
+        "//src/main/java/net/starlark/java/eval",
+        "//third_party/java/caffeine",
+        "//third_party/java/jsr305_annotations",
     ],
 )
 

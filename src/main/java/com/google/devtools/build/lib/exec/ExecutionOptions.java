@@ -500,6 +500,16 @@ public abstract class ExecutionOptions extends OptionsBase {
   public abstract int getCacheSizeForComputedFileDigests();
 
   @Option(
+      name = "experimental_cache_starlark_map_each",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "Reuse bounded String/None results of eligible Starlark map_each callbacks within one"
+              + " command. Experimental; does not change action keys or analysis configuration.")
+  public abstract boolean getCacheStarlarkMapEach();
+
+  @Option(
       name = "experimental_enable_critical_path_profiling",
       defaultValue = "true",
       documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
