@@ -386,8 +386,8 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
 
   @Test
   public void cacheProbeMissDoesNotReportOrdinaryError() throws Exception {
-    SpecialArtifact input = createAndPopulateTreeArtifact("missing", "child");
-    SpecialArtifact output = createTreeArtifact("output");
+    TreeArtifact input = createAndPopulateTreeArtifact("missing", "child");
+    TreeArtifact output = createTreeArtifact("output");
     artifactFailureMap.put(input, inputFailure(Spawn.Code.CACHE_PROBE_MISS));
     SpawnActionTemplate template = ActionsTestUtil.createDummySpawnActionTemplate(input, output);
     StoredEventHandler events = new StoredEventHandler();
@@ -403,9 +403,9 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
 
   @Test
   public void cacheProbeMissDoesNotHideAnotherInputTreeError() throws Exception {
-    SpecialArtifact missing = createAndPopulateTreeArtifact("missing", "child");
-    SpecialArtifact broken = createAndPopulateTreeArtifact("broken", "child");
-    SpecialArtifact output = createTreeArtifact("output");
+    TreeArtifact missing = createAndPopulateTreeArtifact("missing", "child");
+    TreeArtifact broken = createAndPopulateTreeArtifact("broken", "child");
+    TreeArtifact output = createTreeArtifact("output");
     artifactFailureMap.put(missing, inputFailure(Spawn.Code.CACHE_PROBE_MISS));
     artifactFailureMap.put(broken, inputFailure(Spawn.Code.EXEC_IO_EXCEPTION));
     ActionTemplate<DummyAction> template =
