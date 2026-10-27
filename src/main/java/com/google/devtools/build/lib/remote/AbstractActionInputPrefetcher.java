@@ -648,9 +648,9 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
     try {
       resolvedParent = parent.resolveSymbolicLinks();
     } catch (IOException e) {
-      // The parent doesn't exist or is reached through a dangling symlink or a symlink loop, which
-      // are reproduced verbatim.
-      resolvedParent = parent;
+      // An unresolvable parent can itself contain a link that must be planted. Scan from
+      // the filesystem root so we encounter that link before looking below it.
+      resolvedParent = parent.getFileSystem().getPath(parent.asFragment().getDriveStr());
     }
     // Only the path itself and those of its ancestors that aren't also ancestors of the resolved
     // parent can be symlinks.

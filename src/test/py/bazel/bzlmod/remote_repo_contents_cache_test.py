@@ -1554,6 +1554,8 @@ class RemoteRepoContentsCacheTest(
             '  if rctx.os.name != "windows":',
             '    rctx.symlink("cycle2", "cycle1")',
             '    rctx.symlink("cycle1", "cycle2")',
+            '    rctx.symlink("data.txt/missing", "dangling")',
+            '    rctx.symlink("cycle1/child", "below_cycle")',
             '  print("JUST FETCHED")',
             '  return rctx.repo_metadata(reproducible=True)',
             'repo = repository_rule(_repo_impl)',
@@ -1626,6 +1628,12 @@ class RemoteRepoContentsCacheTest(
     if not self.IsWindows():
       self.assertEqual(os.readlink(os.path.join(repo_dir, 'cycle1')), 'cycle2')
       self.assertEqual(os.readlink(os.path.join(repo_dir, 'cycle2')), 'cycle1')
+      dangling = os.path.join(repo_dir, 'dangling')
+      self.assertEqual(os.readlink(dangling), 'data.txt/missing')
+      self.assertFalse(os.path.exists(dangling))
+      below_cycle = os.path.join(repo_dir, 'below_cycle')
+      self.assertEqual(os.readlink(below_cycle), 'cycle1/child')
+      self.assertFalse(os.path.exists(below_cycle))
 
     # Lazy action-input materialization: my_repo is restored from the cache into
     # the overlay and only the symlink consumed by the local action (and its
