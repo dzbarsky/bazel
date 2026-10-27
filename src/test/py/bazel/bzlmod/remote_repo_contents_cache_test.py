@@ -2204,6 +2204,12 @@ class RemoteRepoContentsCacheTest(
       self.assertFalse(os.path.exists(os.path.join(my_repo_dir, 'BUILD')))
 
   def testLostRemoteFile_build(self):
+    self.doTestLostRemoteBuildFile('build')
+
+  def testLostRemoteFile_fetch(self):
+    self.doTestLostRemoteBuildFile('fetch')
+
+  def doTestLostRemoteBuildFile(self, command):
     # Create a repo with two BUILD files (one in a subpackage), build a target
     # from one to cause it to be cached, then build that target again after
     # expunging to verify it is cached.
@@ -2259,8 +2265,8 @@ class RemoteRepoContentsCacheTest(
     # Lose all remote files.
     self.ClearRemoteCache()
 
-    # Build the other target after losing its BUILD file.
-    _, _, stderr = self.RunBazel(['build', '@my_repo//sub:sub'])
+    # Load the other target after losing its BUILD file.
+    _, _, stderr = self.RunBazel([command, '@my_repo//sub:sub'])
     # The recovery attempt refetches both @my_repo and @platforms.
     self.assertEqual(
         1,
@@ -2531,6 +2537,12 @@ class RemoteRepoContentsCacheTest(
     self.assertTrue(os.path.exists(os.path.join(repo_dir, 'data.txt')))
 
   def testLostRemoteFile_moduleExtensionMaterialization(self):
+    self.doTestLostModuleExtensionInput(['build', '@other//:copy'])
+
+  def testLostRemoteFile_fetchRepo(self):
+    self.doTestLostModuleExtensionInput(['fetch', '--repo=@other'])
+
+  def doTestLostModuleExtensionInput(self, args):
     # Like testLostRemoteFile_fullMaterialization, but with the full
     # materialization triggered by a module extension via module_ctx.path(),
     # whose failures are reported through module extension evaluation rather
@@ -2590,7 +2602,7 @@ class RemoteRepoContentsCacheTest(
     # which discovers the lost file. The unusable cache entry must be
     # discarded and the repo rule run again.
     self.DeleteCasEntry(b'unique-data-file-contents')
-    _, _, stderr = self.RunBazel(['build', '@other//:copy'])
+    _, _, stderr = self.RunBazel(args)
     self.assertEqual(
         1,
         stderr.count(
@@ -2607,7 +2619,7 @@ class RemoteRepoContentsCacheTest(
     # extension evaluation and thus the materialization.
     self.RunBazel(['clean', '--expunge'])
     os.remove(self.Path('MODULE.bazel.lock'))
-    _, _, stderr = self.RunBazel(['build', '@other//:copy'])
+    _, _, stderr = self.RunBazel(args)
     stderr = '\n'.join(stderr)
     self.assertNotIn('JUST FETCHED', stderr)
     self.assertNotIn(
