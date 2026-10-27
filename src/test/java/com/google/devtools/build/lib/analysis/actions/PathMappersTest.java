@@ -471,7 +471,8 @@ public class PathMappersTest extends BuildViewTestCase {
                 .setMetadataProvider(new FakeActionInputFileCache())
                 .build());
 
-    assertThat(spawn.getPathMapper().isNoop()).isFalse();
+    PathMapper pathMapper = spawn.getPathMapper();
+    assertThat(pathMapper.isNoop()).isFalse();
 
     assertThat(spawn.getArguments())
         .containsExactly(
@@ -482,6 +483,14 @@ public class PathMappersTest extends BuildViewTestCase {
             "--input",
             "%s/:archived_tree_artifacts/cfg/bin/pkg/tree.zip".formatted(outDir))
         .inOrder();
+
+    assertThat(
+            pathMapper.map(
+                PathFragment.create(
+                    "%s/:archived_tree_artifacts/k8-fastbuild/bin/pkg/tree.zip".formatted(outDir))))
+        .isEqualTo(
+            PathFragment.create(
+                "%s/:archived_tree_artifacts/cfg/bin/pkg/tree.zip".formatted(outDir)));
   }
 
   @Test
