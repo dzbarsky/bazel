@@ -238,6 +238,44 @@ public class ActionExecutionContext implements Closeable, ActionContext.ActionCo
   private final SyscallCache syscallCache;
   private final ThreadStateReceiver threadStateReceiverForMetrics;
   private final boolean bustCaches;
+  @Nullable private DeferredOutputPreparation deferredOutputPreparation;
+
+  @FunctionalInterface
+  public interface OutputPreparation {
+    void run() throws ExecException, InterruptedException;
+  }
+
+  private static final class DeferredOutputPreparation {
+    @Nullable private OutputPreparation preparation;
+
+    DeferredOutputPreparation(OutputPreparation preparation) {
+      this.preparation = checkNotNull(preparation);
+    }
+
+    synchronized void run() throws ExecException, InterruptedException {
+      if (preparation != null) {
+        preparation.run();
+        preparation = null;
+      }
+    }
+  }
+
+  /** Defers output cleanup until a cache probe accepts reusable outputs. */
+  public void deferOutputPreparation(OutputPreparation preparation) {
+    Preconditions.checkState(deferredOutputPreparation == null);
+    deferredOutputPreparation = new DeferredOutputPreparation(preparation);
+  }
+
+  public void prepareOutputFiles() throws ExecException, InterruptedException {
+    if (deferredOutputPreparation != null) {
+      deferredOutputPreparation.run();
+    }
+  }
+
+  private ActionExecutionContext copyOutputPreparationTo(ActionExecutionContext copy) {
+    copy.deferredOutputPreparation = deferredOutputPreparation;
+    return copy;
+  }
 
   private ActionExecutionContext(
       Executor executor,
@@ -583,23 +621,24 @@ public class ActionExecutionContext implements Closeable, ActionContext.ActionCo
 
   private ActionExecutionContext withInputMetadataProvider(
       InputMetadataProvider newInputMetadataProvider) {
-    return new ActionExecutionContext(
-        executor,
-        newInputMetadataProvider,
-        actionInputPrefetcher,
-        actionKeyContext,
-        outputMetadataStore,
-        rewindingEnabled,
-        lostInputsCheck,
-        fileOutErr,
-        eventHandler,
-        clientEnv,
-        env,
-        actionFileSystem,
-        discoveredModulesPruner,
-        syscallCache,
-        threadStateReceiverForMetrics,
-        bustCaches);
+    return copyOutputPreparationTo(
+        new ActionExecutionContext(
+            executor,
+            newInputMetadataProvider,
+            actionInputPrefetcher,
+            actionKeyContext,
+            outputMetadataStore,
+            rewindingEnabled,
+            lostInputsCheck,
+            fileOutErr,
+            eventHandler,
+            clientEnv,
+            env,
+            actionFileSystem,
+            discoveredModulesPruner,
+            syscallCache,
+            threadStateReceiverForMetrics,
+            bustCaches));
   }
 
   /**
@@ -637,23 +676,24 @@ public class ActionExecutionContext implements Closeable, ActionContext.ActionCo
    * useful for muting the output for example.
    */
   public ActionExecutionContext withFileOutErr(FileOutErr fileOutErr) {
-    return new ActionExecutionContext(
-        executor,
-        inputMetadataProvider,
-        actionInputPrefetcher,
-        actionKeyContext,
-        outputMetadataStore,
-        rewindingEnabled,
-        lostInputsCheck,
-        fileOutErr,
-        eventHandler,
-        clientEnv,
-        env,
-        actionFileSystem,
-        discoveredModulesPruner,
-        syscallCache,
-        threadStateReceiverForMetrics,
-        bustCaches);
+    return copyOutputPreparationTo(
+        new ActionExecutionContext(
+            executor,
+            inputMetadataProvider,
+            actionInputPrefetcher,
+            actionKeyContext,
+            outputMetadataStore,
+            rewindingEnabled,
+            lostInputsCheck,
+            fileOutErr,
+            eventHandler,
+            clientEnv,
+            env,
+            actionFileSystem,
+            discoveredModulesPruner,
+            syscallCache,
+            threadStateReceiverForMetrics,
+            bustCaches));
   }
 
   /**
