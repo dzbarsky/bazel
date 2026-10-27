@@ -14,6 +14,8 @@
 
 package com.google.devtools.build.lib.analysis.actions;
 
+import static com.google.common.base.Preconditions.checkElementIndex;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
@@ -378,8 +380,10 @@ public final class StrippingPathMapper implements PathMapper {
    * the output root (e.g., {@code bazel-out/:archived_tree_artifacts/k8-fastbuild/...}).
    */
   private static boolean isArchivedTreeArtifactPath(PathFragment execPath) {
-    return execPath.segmentCount() > 2
-        && execPath.getSegment(1).equals(ARCHIVED_TREE_ARTIFACTS_SEGMENT);
+    String path = execPath.getPathString();
+    int outputRootEnd = path.indexOf('/', execPath.getDriveStrLength());
+    return outputRootEnd >= 0
+        && path.startsWith(ARCHIVED_TREE_ARTIFACTS_SEGMENT + "/", outputRootEnd + 1);
   }
 
   /**
@@ -453,12 +457,21 @@ public final class StrippingPathMapper implements PathMapper {
   }
 
   private static PathFragment strip(PathFragment execPath) {
-    int configIndex = getConfigSegmentIndex(execPath);
-    return execPath
-        .subFragment(0, configIndex)
-        // Keep the config segment, but replace it with a fixed string to improve cacheability while
-        // still preserving the general segment structure of the execpath.
-        .getRelative(FIXED_CONFIG_SEGMENT)
-        .getRelative(execPath.subFragment(configIndex + 1));
+    String path = execPath.getPathString();
+    int start = checkElementIndex(path.indexOf('/'), path.length()) + 1;
+    if (isArchivedTreeArtifactPath(execPath)) {
+      start = path.indexOf('/', start) + 1;
+    }
+    int end = path.indexOf('/', start);
+    if (end < 0) {
+      end = path.length();
+    }
+    // Execution paths are relative; replacing one segment preserves their normalized form.
+    return PathFragment.createAlreadyNormalized(
+        new StringBuilder(path.length() - (end - start) + FIXED_CONFIG_SEGMENT.length())
+            .append(path, 0, start)
+            .append(FIXED_CONFIG_SEGMENT)
+            .append(path, end, path.length())
+            .toString());
   }
 }
