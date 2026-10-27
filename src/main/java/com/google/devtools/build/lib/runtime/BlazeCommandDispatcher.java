@@ -52,6 +52,7 @@ import com.google.devtools.build.lib.profiler.MemoryProfiler;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
+import com.google.devtools.build.lib.query2.query.output.QueryOptions;
 import com.google.devtools.build.lib.runtime.BlazeOptionHandler.DetailedParseResults;
 import com.google.devtools.build.lib.runtime.InstrumentationOutputFactory.DestinationRelativeTo;
 import com.google.devtools.build.lib.runtime.proto.InvocationPolicyOuterClass.InvocationPolicy;
@@ -451,10 +452,10 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
       return BlazeCommandResult.detailedExitCode(e.getDetailedExitCode());
     }
 
-    ExecutionOptions executionOptions = options.getOptions(ExecutionOptions.class);
-    if (executionOptions != null && executionOptions.getCacheProbeOutput() != null) {
+    ExecutionOptions probeExecutionOptions = options.getOptions(ExecutionOptions.class);
+    if (probeExecutionOptions != null && probeExecutionOptions.getCacheProbeOutput() != null) {
       try {
-        CacheProbe.deleteOutput(env, executionOptions);
+        CacheProbe.deleteOutput(env, probeExecutionOptions);
       } catch (IOException e) {
         storedEventHandler.handle(Event.error(e.getMessage()));
         earlyExitCode =
@@ -850,7 +851,10 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
       env.getEventBus().post(canonicalCommandLineEvent);
       env.getEventBus().post(commonOptions.getToolCommandLine());
 
-      // Run the command.
+      // Check before opening the destination as well as before retrying. A FIFO reader may
+      // unlink its pipe as soon as it has connected.
+      boolean canRetryQuery =
+          queryOutput != null && attemptedCommandIds.isEmpty() && canReopenQueryOutput(env, options);
       result = command.exec(env, options);
 
       DetailedExitCode moduleExitCode = env.finalizeDetailedExitCode();
@@ -880,12 +884,13 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
       // Query overrides the numeric exit code for full and partial evaluation failures, but
       // preserves the filesystem failure detail. On retry the overlay validates all cached repos.
       boolean retryQuery =
-          queryOutput != null
-              && attemptedCommandIds.isEmpty()
+          canRetryQuery
               && queryOutput.getCount() == 0
               && result.getFailureDetail() != null
               && result.getFailureDetail().getFilesystem().getCode()
-                  == FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED;
+                  == FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED
+              && canReopenQueryOutput(env, options);
+      var executionOptions = options.getOptions(ExecutionOptions.class);
       boolean retryBuild =
           result.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED)
               && executionOptions != null
@@ -934,10 +939,10 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
       }
 
       if (!result.getDetailedExitCode().isSuccess()
-          && executionOptions != null
-          && executionOptions.getCacheProbeOutput() != null) {
+          && probeExecutionOptions != null
+          && probeExecutionOptions.getCacheProbeOutput() != null) {
         try {
-          CacheProbe.deleteOutput(env, executionOptions);
+          CacheProbe.deleteOutput(env, probeExecutionOptions);
         } catch (IOException e) {
           reporter.handle(
               Event.error("Cannot remove incomplete cache probe manifest: " + e.getMessage()));
@@ -1125,6 +1130,20 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
 
   private void setShutdownReason(String shutdownReason) {
     this.shutdownReason.compareAndSet(null, shutdownReason);
+  }
+
+  private static boolean canReopenQueryOutput(CommandEnvironment env, OptionsParsingResult options) {
+    String outputFile = options.getOptions(QueryOptions.class).getOutputFile();
+    if (Strings.isNullOrEmpty(outputFile)) {
+      return true;
+    }
+    try {
+      // Reopening a regular file truncates it. Reopening a FIFO can block or duplicate results.
+      var status = env.getWorkingDirectory().getRelative(outputFile).statIfFound();
+      return status == null || (status.isFile() && !status.isSpecialFile());
+    } catch (IOException e) {
+      return false;
+    }
   }
 
   private static BlazeCommandResult createDetailedCommandResult(

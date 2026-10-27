@@ -2242,15 +2242,40 @@ class RemoteRepoContentsCacheTest(
         1,
     )
 
-    # Replaying after a keep-going query emits a target would duplicate stdout.
+    # Only a regular output file can be overwritten after emitting partial results.
     restore_then_evict()
     args = [
         'query', '--keep_going', '--order_output=no', f'set(//:local {target})'
     ]
+    _, stdout, _ = self.RunBazel(args + ['--output_file=results'])
+    self.assertEmpty(stdout)
+    with open(self.Path('results'), encoding='utf-8') as f:
+      self.assertCountEqual(f.read().splitlines(), ['//:local', target])
+
+    restore_then_evict()
     code, stdout, stderr = self.RunBazel(args, allow_failure=True)
     self.assertEqual(code, 3)
     self.assertEqual(stdout, ['//:local'])
     self.assertNotIn('retrying the query', '\n'.join(stderr))
+
+    if not self.IsWindows():
+      # Repopulate the CAS after the deliberately partial query.
+      self.RunBazel(['clean', '--expunge'])
+      self.RunBazel(['query', target])
+      restore_then_evict()
+      fifo = self.Path('fifo')
+      os.mkfifo(fifo)
+      fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+      try:
+        code, stdout, stderr = self.RunBazel(
+            args + ['--output_file=fifo'], allow_failure=True
+        )
+        self.assertEqual(code, 3)
+        self.assertEmpty(stdout)
+        self.assertEqual(os.read(fd, 4096), b'//:local\n')
+        self.assertNotIn('retrying the query', '\n'.join(stderr))
+      finally:
+        os.close(fd)
 
   def testLostRemoteFile_build(self):
     # Create a repo with two BUILD files (one in a subpackage), build a target
