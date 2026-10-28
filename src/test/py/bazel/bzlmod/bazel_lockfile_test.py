@@ -116,6 +116,7 @@ class BazelLockfileTest(test_base.TestBase):
     self.RunBazel([
         'build',
         '--nobuild',
+        '--experimental_check_output_files=false',
         '--build_event_json_file=events.json',
         '//:both',
     ])
@@ -126,7 +127,7 @@ class BazelLockfileTest(test_base.TestBase):
       )
     dirtied = {
         entry['skyfunctionName']: int(entry.get('count', 0))
-        for entry in metrics['buildGraphMetrics']['dirtiedValues']
+        for entry in metrics['buildGraphMetrics'].get('dirtiedValues', [])
     }
     self.assertEqual(dirtied.get('SINGLE_EXTENSION_EVAL', 0), 1)
 

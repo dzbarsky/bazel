@@ -56,8 +56,6 @@ public class BazelLockFileFunction implements SkyFunction {
 
   public static final Precomputed<LockfileMode> LOCKFILE_MODE = new Precomputed<>("lockfile_mode");
 
-  static final String HIDDEN_LOCKFILE_DIRECTORY = "module_extension_cache";
-
   private static final Pattern LOCKFILE_VERSION_PATTERN =
       Pattern.compile("\"lockFileVersion\":\\s*(\\d+)");
 
@@ -78,7 +76,9 @@ public class BazelLockFileFunction implements SkyFunction {
 
   static Path hiddenLockfilePath(Path outputBase, ModuleExtensionId extensionId) {
     String name = Hashing.sha256().hashString(extensionId.toString(), UTF_8).toString();
-    return outputBase.getRelative(HIDDEN_LOCKFILE_DIRECTORY).getRelative(name + ".json");
+    return outputBase
+        .getRelative(LabelConstants.MODULE_EXTENSION_CACHE_DIRECTORY)
+        .getRelative(name + ".json");
   }
 
   @Override

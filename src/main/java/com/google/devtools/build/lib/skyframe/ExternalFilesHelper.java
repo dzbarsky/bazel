@@ -308,9 +308,14 @@ public class ExternalFilesHelper {
       Path externalRepoDir = outputBase.getRelative(LabelConstants.EXTERNAL_REPOSITORY_LOCATION);
       if (rootedPath.asPath().startsWith(externalRepoDir)) {
         return FileType.EXTERNAL_REPO;
-      } else {
-        return FileType.OUTPUT;
       }
+      if (rootedPath
+          .asPath()
+          .startsWith(outputBase.getRelative(LabelConstants.MODULE_EXTENSION_CACHE_DIRECTORY))) {
+        // Keep module-resolution metadata current even when output-file checks are disabled.
+        return FileType.EXTERNAL_OTHER;
+      }
+      return FileType.OUTPUT;
     }
     return FileType.EXTERNAL_OTHER;
   }
