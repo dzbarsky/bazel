@@ -309,8 +309,10 @@ public class ExternalFilesHelper {
       if (rootedPath.asPath().startsWith(externalRepoDir)) {
         return FileType.EXTERNAL_REPO;
       }
-      if (rootedPath.asPath().equals(outputBase.getRelative(LabelConstants.MODULE_LOCKFILE_NAME))) {
-        // The hidden lockfile must reflect writes even when output-file checking is disabled.
+      if (rootedPath
+          .asPath()
+          .startsWith(outputBase.getRelative(LabelConstants.MODULE_EXTENSION_CACHE_DIRECTORY))) {
+        // Keep module-resolution metadata current even when output-file checks are disabled.
         return FileType.EXTERNAL_OTHER;
       }
       return FileType.OUTPUT;
