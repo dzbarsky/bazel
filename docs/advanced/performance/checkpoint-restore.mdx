@@ -1,0 +1,89 @@
+---
+title: 'Checkpoint and restore a warm Bazel server'
+---
+
+[Horapha](https://github.com/hanwen-flow/horapha/pull/1) runs Bazel in a Linux
+namespace and invokes [CRIU](https://criu.org/) to save and restore the server
+process. The capture retains the JVM's analysis graph, heap, threads, and compiled
+code. Horapha repairs the host-side PID metadata after restore so the next Bazel
+client can reconnect to that server.
+
+Bazel provides two opt-in hooks:
+
+- `HORAPHA_JNI_DIR` keeps Bazel's extracted native library on disk in a unique
+  subdirectory. Rootless CRIU cannot reopen an unlinked library mapping. Horapha
+  sets this variable and also prevents Netty from unlinking its native library.
+- `HORAPHA_SHRINK_HEAP=1 bazel info used-heap-size-after-gc` temporarily lowers
+  G1's free-heap ratios for one explicit GC, then restores the original ratios.
+  This can reduce the committed heap captured by CRIU. It is optional: a smaller
+  capture can require more heap growth during the next build.
+
+## Build the executables
+
+Build this Bazel checkout with optimization and copy the executable to a stable
+path before checkpointing:
+
+```bash
+bazel build -c opt --nostamp //src:bazel
+mkdir -p "$HOME/.local/bin"
+install -m 755 bazel-bin/src/bazel "$HOME/.local/bin/bazel-criu"
+export HORAPHA_BAZEL="$HOME/.local/bin/bazel-criu"
+```
+
+Build Horapha from the linked change with `go build -o horapha .` and put it on
+`PATH`. Set `HORAPHA_CRIU` to the absolute path of a CRIU executable supporting
+unprivileged checkpoint/restore. The host must already permit Horapha's user,
+PID, and mount namespaces and CRIU's required kernel operations.
+
+## Capture and restore
+
+Run this from the workspace to preserve. Choose a new output base and adjust the
+heap size for that workspace. Use the same startup flags and executables for
+every invocation:
+
+```bash
+set -euo pipefail
+export HORAPHA_CRIU=/absolute/path/to/criu
+startup=(
+  --output_base="$HOME/.cache/bazel-criu-example"
+  --host_jvm_args=-XX:+UseG1GC
+  --host_jvm_args=-Xms1g
+  --host_jvm_args=-Xmx8g
+)
+
+# Populate the graph and outputs with a real build.
+horapha "${startup[@]}" build //path/to:target
+
+# Optional: collect garbage and shrink the committed heap before capture.
+HORAPHA_SHRINK_HEAP=1 \
+  horapha "${startup[@]}" info used-heap-size-after-gc
+
+# Stop the captured server, restore it explicitly, then reuse the warm graph.
+horapha checkpoint --stop "${startup[@]}"
+horapha restore "${startup[@]}"
+horapha "${startup[@]}" build //path/to:target
+```
+
+The heap-shrink command requires HotSpot G1 and `MaxHeapFreeRatio >= 20`. Its
+`HORAPHA_HEAP_SHRINK` diagnostic reports committed bytes before and after GC,
+used bytes, and the original and restored ratios. An unsupported configuration
+returns a command error and leaves the server running. A large `-Xms` can prevent
+meaningful shrinking.
+
+Check that each command succeeds before continuing. In particular, use explicit
+`restore` when validating the mechanism: Horapha's automatic restore may fall
+back to starting a cold server. A failed checkpoint is not a usable capture.
+
+## Preserve the matching filesystem
+
+CRIU saves process state; it does not snapshot the workspace or output tree.
+Keep the checkout, output base, Bazel install/JDK files, and retained native
+libraries at their original paths alongside the images in `OUTPUT_BASE/criu`.
+Retire retained native libraries only after every referencing capture is retired.
+
+The example performs one immediate restore against the unchanged filesystem.
+Reusing a capture for independent jobs also requires restoring the matching
+filesystem state before each restore; Horapha does not provide that reset.
+Bazel's normal change detection and output validation still apply after restore.
+Measure the completed build as well as restore latency, since loading pages and
+regrowing the heap can move work into the first build.
