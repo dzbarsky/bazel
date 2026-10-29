@@ -241,6 +241,7 @@ jobs:
           if ($env:ARTIFACT_ARCH -eq 'arm64') { $config += '--config=windows_arm64' }
           ./bazelisk.exe --output_user_root=C:/b --batch --nohome_rc --nosystem_rc build `
             --config=buildbuddy-cache `
+            --remote_download_all `
             "--remote_header=x-buildbuddy-api-key=$env:BUILDBUDDY_API_KEY" `
             --verbose_failures --compilation_mode=opt --jobs=2 --stamp `
             "--embed_label=$env:RELEASE_TAG" @config //src:bazel.exe
