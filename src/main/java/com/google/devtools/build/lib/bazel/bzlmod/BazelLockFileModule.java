@@ -202,7 +202,7 @@ public class BazelLockFileModule extends BlazeModule {
       Set<ModuleExtensionId> usedExtensions,
       Map<ModuleExtensionId, SingleExtensionValue> newExtensions,
       Map<ModuleExtensionId, BazelLockFileValue> oldHiddenLockfiles) {
-    Path cacheDirectory = outputBase.getRelative(BazelLockFileFunction.HIDDEN_LOCKFILE_DIRECTORY);
+    Path cacheDirectory = outputBase.getRelative(LabelConstants.MODULE_EXTENSION_CACHE_DIRECTORY);
     try {
       if (!newExtensions.isEmpty()) {
         cacheDirectory.createDirectoryAndParents();

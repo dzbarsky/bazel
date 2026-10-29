@@ -27,6 +27,10 @@ public class LabelConstants {
   public static final PathFragment MODULE_EXTENSION_WORKING_DIRECTORY_LOCATION =
       PathFragment.create("modextwd");
 
+  /** The subdirectory under the output base which caches module extension results. */
+  public static final PathFragment MODULE_EXTENSION_CACHE_DIRECTORY =
+      PathFragment.create("module_extension_cache");
+
   /** The reserved package name used for legacy external-repository labels and path handling. */
   public static final PathFragment EXTERNAL_PACKAGE_NAME = PathFragment.create("external");
 
