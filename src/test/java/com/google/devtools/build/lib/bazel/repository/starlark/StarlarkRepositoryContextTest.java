@@ -622,6 +622,8 @@ public final class StarlarkRepositoryContextTest {
 
     context.copy(src.getPathString(), "bar/baz", true, "auto", thread);
     context.copy(executableSrc.getPathString(), "bar/baz.sh", false, "no", thread);
+    context.copy(src.getPathString(), "bar/source", Starlark.NONE, "no", thread);
+    context.copy(executableSrc.getPathString(), "bar/source.sh", Starlark.NONE, "no", thread);
 
     var dst = outputDirectory.getRelative("bar/baz");
     testOutputFile(dst, "foobar\n");
@@ -630,6 +632,8 @@ public final class StarlarkRepositoryContextTest {
     var nonExecutableDst = outputDirectory.getRelative("bar/baz.sh");
     testOutputFile(nonExecutableDst, "foobar\n");
     assertThat(nonExecutableDst.stat().getPermissions()).isEqualTo(0644);
+    assertThat(outputDirectory.getRelative("bar/source").stat().getPermissions()).isEqualTo(0644);
+    assertThat(outputDirectory.getRelative("bar/source.sh").stat().getPermissions()).isEqualTo(0755);
     assertThat(context.getRecordedInputs().stream().map(RepoRecordedInput.WithValue::input))
         .containsExactly(
             new RepoRecordedInput.File(

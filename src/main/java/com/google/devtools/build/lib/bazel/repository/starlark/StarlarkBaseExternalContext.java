@@ -1542,8 +1542,8 @@ Strip the given number of leading components from file paths on extraction. Only
       doc =
           """
           Copies the file or directory at <code>src</code> to <code>dst</code>. \
-          <p>A copied file is always writable and its executable bit is determined by \
-          <code>executable</code>, not by the source. If <code>src</code> is a symlink, the file \
+          <p>A copied file is always writable. By default, its executable bit is preserved from \
+          the source; <code>executable</code> can override it. If <code>src</code> is a symlink, the file \
           it points to is copied. Parent directories of <code>dst</code> are created as needed \
           and an existing file or symlink at <code>dst</code> is replaced, but it is an error if \
           <code>dst</code> is a directory. \
@@ -1575,14 +1575,18 @@ Strip the given number of leading components from file paths on extraction. Only
             doc = "The path of the copy to create, relative to the repository directory."),
         @Param(
             name = "executable",
-            defaultValue = "True",
+            defaultValue = "None",
+            allowedTypes = {
+              @ParamType(type = Boolean.class),
+              @ParamType(type = NoneType.class)
+            },
             positional = false,
             named = true,
             doc =
                 """
-                Whether to make the copied files executable. To make only some of the files in a \
-                directory executable, copy the directory with <code>executable = False</code> \
-                and then copy the files that should be executable individually.
+                Whether to make the copied files executable. The default, <code>None</code>, \
+                preserves each source file's executable bit. Use <code>True</code> or \
+                <code>False</code> to set all copied files to the requested mode.
                 """),
         @Param(
             name = "watch_src",
@@ -1601,15 +1605,16 @@ Strip the given number of leading components from file paths on extraction. Only
                 """),
       })
   public void copy(
-      Object src, Object dst, Boolean executable, String watchSrc, StarlarkThread thread)
+      Object src, Object dst, Object executable, String watchSrc, StarlarkThread thread)
       throws RepositoryFunctionException, EvalException, InterruptedException {
     StarlarkPath srcPath = getPath(src);
     StarlarkPath dstPath = getPath(dst);
+    Boolean executableOverride = nullIfNone(executable, Boolean.class);
     WorkspaceRuleEvent w =
         WorkspaceRuleEvent.newCopyEvent(
             srcPath.toString(),
             dstPath.toString(),
-            executable,
+            executableOverride,
             identifyingStringForLogging,
             thread.getCallerLocation());
     env.getListener().post(w);
@@ -1628,10 +1633,10 @@ Strip the given number of leading components from file paths on extraction. Only
             srcPath.getPath().resolveSymbolicLinks(),
             dstPath.getPath(),
             dstPath.getPath().resolveSymbolicLinks(),
-            executable,
+            executableOverride,
             new HashSet<>());
       } else {
-        copyFile(srcPath.getPath(), dstPath.getPath(), executable);
+        copyFile(srcPath.getPath(), dstPath.getPath(), executableOverride);
       }
     } catch (IOException e) {
       throw new RepositoryFunctionException(
@@ -1645,14 +1650,14 @@ Strip the given number of leading components from file paths on extraction. Only
     }
   }
 
-  private static void copyFile(Path src, Path dst, boolean executable)
+  private static void copyFile(Path src, Path dst, @Nullable Boolean executableOverride)
       throws IOException, EvalException {
     if (dst.isDirectory(Symlinks.NOFOLLOW)) {
       throw Starlark.errorf("%s is a directory", dst);
     }
     FileSystemUtils.copyFile(src, dst);
-    // The copy has to remain modifiable by later steps of the repo rule such as patching. Its
-    // permissions don't depend on the source since watching the source only tracks its contents.
+    // Copied files remain writable for repository patching. File and tree watches track chmod.
+    boolean executable = executableOverride != null ? executableOverride : src.isExecutable();
     dst.chmod(executable ? 0755 : 0644);
   }
 
@@ -1682,7 +1687,7 @@ Strip the given number of leading components from file paths on extraction. Only
    * @param ancestors the directories that are currently being copied, with all symlinks resolved
    */
   private static void copyTree(
-      Path src, Path dst, Path dstRoot, boolean executable, Set<Path> ancestors)
+      Path src, Path dst, Path dstRoot, @Nullable Boolean executable, Set<Path> ancestors)
       throws IOException, EvalException {
     if (src.startsWith(dstRoot) || dstRoot.startsWith(src)) {
       // Copying would never terminate as it keeps picking up its own output.
