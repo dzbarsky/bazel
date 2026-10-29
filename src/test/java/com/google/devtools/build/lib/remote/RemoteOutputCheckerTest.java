@@ -30,6 +30,7 @@ import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.devtools.build.skyframe.MemoizingEvaluator;
+import com.google.devtools.common.options.Converters;
 import java.util.function.Predicate;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -133,5 +134,45 @@ public class RemoteOutputCheckerTest {
 
     assertThat(nextProbe.shouldTrustMetadata(output, metadata)).isTrue();
     assertThat(nextBuild.shouldTrustMetadata(output, metadata)).isFalse();
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void maybeInvalidateSkyframeValues_downloadRegexChanged_invalidatesCompletions()
+      throws Exception {
+    var previousBuildChecker =
+        new RemoteOutputChecker("build", RemoteOutputsMode.MINIMAL, ImmutableList.of());
+    var checker =
+        new RemoteOutputChecker(
+            "build",
+            RemoteOutputsMode.MINIMAL,
+            ImmutableList.of(new Converters.RegexPatternConverter().convert(".*\\.txt")),
+            previousBuildChecker);
+    MemoizingEvaluator evaluator = mock(MemoizingEvaluator.class);
+
+    checker.maybeInvalidateSkyframeValues(evaluator);
+
+    verify(evaluator).delete(any(Predicate.class));
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void maybeInvalidateSkyframeValues_sameDownloadRegex_keepsCompletions() throws Exception {
+    var previousBuildChecker =
+        new RemoteOutputChecker(
+            "build",
+            RemoteOutputsMode.MINIMAL,
+            ImmutableList.of(new Converters.RegexPatternConverter().convert(".*\\.txt")));
+    var checker =
+        new RemoteOutputChecker(
+            "build",
+            RemoteOutputsMode.MINIMAL,
+            ImmutableList.of(new Converters.RegexPatternConverter().convert(".*\\.txt")),
+            previousBuildChecker);
+    MemoizingEvaluator evaluator = mock(MemoizingEvaluator.class);
+
+    checker.maybeInvalidateSkyframeValues(evaluator);
+
+    verify(evaluator, never()).delete(any(Predicate.class));
   }
 }

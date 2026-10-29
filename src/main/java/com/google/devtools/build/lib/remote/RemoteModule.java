@@ -132,7 +132,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.function.Predicate;
 import javax.annotation.Nullable;
 
 /** RemoteModule provides distributed cache and remote execution for Bazel. */
@@ -561,18 +560,16 @@ public final class RemoteModule extends BlazeModule {
     boolean cacheProbe = executionOptions != null && executionOptions.cacheProbeOutput != null;
     RemoteOutputsMode outputsMode =
         cacheProbe ? RemoteOutputsMode.MINIMAL : remoteOptions.remoteOutputsMode;
-    ImmutableList.Builder<Predicate<String>> patternsToDownloadBuilder = ImmutableList.builder();
-    if (!cacheProbe && outputsMode != RemoteOutputsMode.ALL) {
-      for (RegexPatternOption patternOption : remoteOptions.remoteDownloadRegex) {
-        patternsToDownloadBuilder.add(patternOption.matcher());
-      }
-    }
+    ImmutableList<RegexPatternOption> downloadRegexes =
+        !cacheProbe && outputsMode != RemoteOutputsMode.ALL
+            ? ImmutableList.copyOf(remoteOptions.remoteDownloadRegex)
+            : ImmutableList.of();
 
     remoteOutputChecker =
         new RemoteOutputChecker(
             env.getCommandName(),
             outputsMode,
-            patternsToDownloadBuilder.build(),
+            downloadRegexes,
             lastRemoteOutputChecker);
     // Only commands that execute actions complete targets and thus download outputs. Other commands
     // neither invalidate completed targets nor become the reference that the next executing
