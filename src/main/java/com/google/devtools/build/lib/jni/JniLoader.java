@@ -67,8 +67,18 @@ public final class JniLoader {
   private static void loadLibrary(String resourceName) throws IOException {
     Path dir = null;
     Path tempFile = null;
+    String jniDir = System.getenv("HORAPHA_JNI_DIR");
+    boolean keepLibrary = jniDir != null && !jniDir.isEmpty();
     try {
-      dir = Files.createTempDirectory("bazel-jni.");
+      if (keepLibrary) {
+        // CRIU needs the mapped library to remain on disk. A unique directory
+        // avoids replacing a library that an existing server still has mapped.
+        Path parent = Path.of(jniDir).toAbsolutePath();
+        Files.createDirectories(parent);
+        dir = Files.createTempDirectory(parent, "bazel-jni.");
+      } else {
+        dir = Files.createTempDirectory("bazel-jni.");
+      }
       int slash = resourceName.lastIndexOf('/');
       checkArgument(slash != -1, "resourceName must contain two path components");
       tempFile = dir.resolve(resourceName.substring(slash + 1));
@@ -90,7 +100,7 @@ public final class JniLoader {
       //
       // Unfortunately, we cannot do this on Windows because the DLL remains open and we don't have
       // a way to specify FILE_SHARE_DELETE in the System.load() call.
-      if (OS.getCurrent() != OS.WINDOWS) {
+      if (OS.getCurrent() != OS.WINDOWS && !keepLibrary) {
         Files.delete(tempFile);
         tempFile = null;
         Files.delete(dir);
