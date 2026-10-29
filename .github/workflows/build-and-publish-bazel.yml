@@ -78,8 +78,11 @@ jobs:
           fi
           targets=(
             //src/test/java/com/google/devtools/build/lib/bazel/bzlmod:BzlmodTests
+            //src/test/java/com/google/devtools/build/lib/bazel/repository/starlark:StarlarkTests
             //src/test/java/com/google/devtools/build/lib/buildtool:GenAqueryIntegrationTest
             //src/test/java/com/google/devtools/build/lib/buildtool:GenCqueryIntegrationTest
+            //src/test/java/com/google/devtools/build/lib/exec:ExecTests
+            //src/test/java/com/google/devtools/build/lib/skyframe:FileFunctionTest
             //src/test/java/com/google/devtools/build/lib/skyframe/serialization/analysis:BazelSkycacheIntegrationTest
             //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:RegisteredToolchainsFunctionTest
             //src/test/java/com/google/devtools/build/lib/skyframe/toolchains:SingleToolchainResolutionFunctionTest
@@ -87,6 +90,7 @@ jobs:
             //src/test/java/com/google/devtools/build/lib/server:ServerTests
             //src/test/java/com/google/devtools/build/lib/remote:RemoteTests
             //src/test/java/com/google/devtools/build/lib/remote/disk:disk
+            //src/test/py/bazel:bazel_lockfile_test
             //src/test/py/bazel:remote_repo_contents_cache_test
             //src/test/py/bazel:remote_repo_contents_cache_rewinding_test
           )
