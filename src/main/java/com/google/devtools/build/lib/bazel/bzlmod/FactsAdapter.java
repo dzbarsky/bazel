@@ -80,7 +80,7 @@ public class FactsAdapter extends TypeAdapter<Facts> {
       Object value;
       boolean isEmpty = true;
       try {
-        in.peek();
+        var unused = in.peek();
         isEmpty = false;
         value = readValue(in, mu);
       } catch (EOFException e) {
