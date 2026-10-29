@@ -261,7 +261,7 @@ public final class SymlinkTreeHelper {
           at.deleteTree();
         }
         at.createDirectoryAndParents();
-        createMissingEntries(at, targetPathFn);
+        createMissingEntries(at, targetPathFn, fileSymlinksAreCopies);
         return;
       }
       // If the directory already exists, ensure it has appropriate permissions.
