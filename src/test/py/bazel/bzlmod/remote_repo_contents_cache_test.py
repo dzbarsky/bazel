@@ -3395,6 +3395,16 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
         '--remote_executor=grpc://localhost:' + str(self._worker_port),
     ])
 
+  def testLostRemoteFile_remoteExecutionUploadRetries(self):
+    self.doTestLostActionInput(
+        [
+            '--spawn_strategy=remote',
+            '--remote_executor=grpc://localhost:' + str(self._worker_port),
+            '--norewind_lost_inputs',
+        ],
+        retry=True,
+    )
+
   def testLostRemoteFile_localActionPrefetch(self):
     self.doTestLostActionInput(['--spawn_strategy=local'])
 
@@ -3437,7 +3447,7 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     with open(data_file) as f:
       self.assertEqual(f.read(), 'hello')
 
-  def doTestLostActionInput(self, strategy_args):
+  def doTestLostActionInput(self, strategy_args, *, retry=False):
     self.setUpRepoWithDataFile()
     self.ScratchFile(
         'main/BUILD.bazel',
@@ -3455,7 +3465,7 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
         'build',
         '//main:use_data',
         *strategy_args,
-        '--experimental_remote_cache_eviction_retries=0',
+        f'--experimental_remote_cache_eviction_retries={int(retry)}',
     ]
     self.RunBazel(args + ['--nobuild'])
     self.RunBazel(['clean', '--expunge'])
@@ -3464,17 +3474,30 @@ class RemoteRepoContentsCacheTest(test_base.TestBase):
     self.assertFalse(os.path.exists(os.path.join(repo_dir, 'data.txt')))
 
     # Evict after analysis, so the action is the first to encounter the missing input.
-    self.ClearRemoteCache()
-    exit_code, _, stderr = self.RunBazel(args, allow_failure=True)
-    self.AssertExitCode(exit_code, 39, stderr)
-    self.assertRegex(
-        '\n'.join(stderr),
-        r'external/[^/]+/data.txt with digest .*/.* no longer available in the'
-        ' remote cache',
-    )
+    if retry:
+      self.DeleteCasEntry(b'hello')
+      _, _, stderr = self.RunBazel(args)
+      self.assertEqual(
+          stderr.count('Found transient remote cache error, retrying the build...'),
+          1,
+      )
+      self.assertRegex(
+          '\n'.join(stderr),
+          r'external/[^/]+/data.txt with digest .*/5 is no longer available in the'
+          ' remote cache',
+      )
+    else:
+      self.ClearRemoteCache()
+      exit_code, _, stderr = self.RunBazel(args, allow_failure=True)
+      self.AssertExitCode(exit_code, 39, stderr)
+      self.assertRegex(
+          '\n'.join(stderr),
+          r'external/[^/]+/data.txt with digest .*/.* no longer available in the'
+          ' remote cache',
+      )
 
-    # The repository overlay records the eviction and invalidates the repo.
-    _, _, stderr = self.RunBazel(args)
+      # The repository overlay records the eviction and invalidates the repo.
+      _, _, stderr = self.RunBazel(args)
     self.assertIn('JUST FETCHED', '\n'.join(stderr))
     with open(self.Path('bazel-bin/main/out.txt')) as f:
       self.assertEqual(f.read(), 'hello')
