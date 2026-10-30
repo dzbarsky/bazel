@@ -62,6 +62,7 @@ import com.google.devtools.build.lib.unsafe.StringUnsafe;
 import com.google.devtools.build.lib.util.OsUtils;
 import com.google.devtools.build.lib.util.io.OutErr;
 import com.google.devtools.build.lib.vfs.Dirent;
+import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -1534,14 +1535,16 @@ Strip the given number of leading components from file paths on extraction. Only
       doc =
           """
           Copies the file or directory at <code>src</code> to <code>dst</code>. \
-          <p>A file is copied preserving its executable bit and making it writable. If \
-          <code>src</code> is a symlink, the file it points to is copied. Parent directories of \
-          <code>dst</code> are created as needed and an existing file at <code>dst</code> is \
-          overwritten. \
+          <p>A copied file is always writable. By default, its executable bit is preserved from \
+          the source; <code>executable</code> can override it. If <code>src</code> is a symlink, the file \
+          it points to is copied. Parent directories of <code>dst</code> are created as needed \
+          and an existing file or symlink at <code>dst</code> is replaced, but it is an error if \
+          <code>dst</code> is a directory. \
           <p>A directory is copied recursively, as if each file in it were copied individually: \
           symlinks are followed so that the copy doesn't contain any, existing files below \
           <code>dst</code> are overwritten and all other files below <code>dst</code> are kept. \
-          <code>src</code> and <code>dst</code> must not overlap. \
+          It is an error if <code>dst</code> or any directory to be created below it already \
+          exists as a file or symlink. <code>src</code> and <code>dst</code> must not overlap. \
           <p>On file systems that support it, a file is copied as a copy-on-write clone that \
           doesn't take up additional disk space. \
           """,
@@ -1564,6 +1567,21 @@ Strip the given number of leading components from file paths on extraction. Only
             },
             doc = "The path of the copy to create, relative to the repository directory."),
         @Param(
+            name = "executable",
+            defaultValue = "None",
+            allowedTypes = {
+              @ParamType(type = Boolean.class),
+              @ParamType(type = NoneType.class)
+            },
+            positional = false,
+            named = true,
+            doc =
+                """
+                Whether to make the copied files executable. The default, <code>None</code>, \
+                preserves each source file's executable bit. Use <code>True</code> or \
+                <code>False</code> to set all copied files to the requested mode.
+                """),
+        @Param(
             name = "watch_src",
             defaultValue = "'auto'",
             positional = false,
@@ -1576,17 +1594,20 @@ Strip the given number of leading components from file paths on extraction. Only
                 <a href="repository_ctx.html#watch_tree"><code>watch_tree()</code></a> \
                 method for a directory; passing 'no' does not attempt to watch the source; \
                 passing 'auto' will only attempt to watch the source when it is legal to do so \
-                (see <code>watch()</code> docs for more information.
+                (see <code>watch()</code> docs for more information).
                 """),
       })
-  public void copy(Object src, Object dst, String watchSrc, StarlarkThread thread)
+  public void copy(
+      Object src, Object dst, Object executable, String watchSrc, StarlarkThread thread)
       throws RepositoryFunctionException, EvalException, InterruptedException {
     StarlarkPath srcPath = getPath(src);
     StarlarkPath dstPath = getPath(dst);
+    Boolean executableOverride = nullIfNone(executable, Boolean.class);
     WorkspaceRuleEvent w =
         WorkspaceRuleEvent.newCopyEvent(
             srcPath.toString(),
             dstPath.toString(),
+            executableOverride,
             identifyingStringForLogging,
             thread.getCallerLocation());
     env.getListener().post(w);
@@ -1598,67 +1619,93 @@ Strip the given number of leading components from file paths on extraction. Only
     }
     try {
       checkInOutputDirectory("write", dstPath);
+      makeDirectories(dstPath.getPath());
       if (isDir) {
-        dstPath.getPath().createDirectoryAndParents();
+        createCopyDirectory(dstPath.getPath());
         copyTree(
             srcPath.getPath().resolveSymbolicLinks(),
             dstPath.getPath(),
             dstPath.getPath().resolveSymbolicLinks(),
+            executableOverride,
             new HashSet<>());
       } else {
-        makeDirectories(dstPath.getPath());
-        copyFile(srcPath.getPath(), dstPath.getPath());
+        copyFile(srcPath.getPath(), dstPath.getPath(), executableOverride);
       }
     } catch (IOException e) {
       throw new RepositoryFunctionException(
           new IOException(
               "Could not copy " + srcPath + " to " + dstPath + ": " + e.getMessage(), e),
           Transience.TRANSIENT);
-    } catch (InvalidPathException e) {
+    } catch (InvalidPathException | EvalException e) {
       throw new RepositoryFunctionException(
           Starlark.errorf("Could not copy %s to %s: %s", srcPath, dstPath, e.getMessage()),
           Transience.PERSISTENT);
     }
   }
 
-  private static void copyFile(Path src, Path dst) throws IOException {
+  private static void copyFile(Path src, Path dst, @Nullable Boolean executableOverride)
+      throws IOException, EvalException {
+    if (dst.isDirectory(Symlinks.NOFOLLOW)) {
+      throw Starlark.errorf("%s is a directory", dst);
+    }
     FileSystemUtils.copyFile(src, dst);
-    // The copy inherits the permissions of the source, which may be read-only, but has to remain
-    // modifiable by later steps of the repo rule such as patching.
-    dst.setWritable(true);
+    // Copied files remain writable for repository patching. File and tree watches track chmod.
+    boolean executable = executableOverride != null ? executableOverride : src.isExecutable();
+    dst.chmod(executable ? 0755 : 0644);
+  }
+
+  /** Creates {@code dir} unless it already exists as a directory, never following symlinks. */
+  private static void createCopyDirectory(Path dir) throws IOException, EvalException {
+    FileStatus stat = dir.statIfFound(Symlinks.NOFOLLOW);
+    if (stat == null) {
+      dir.createDirectory();
+    } else if (stat.isSymbolicLink()) {
+      throw Starlark.errorf("%s is a symlink", dir);
+    } else if (!stat.isDirectory()) {
+      throw Starlark.errorf("%s is not a directory", dir);
+    }
   }
 
   /**
    * Copies the files in the directory {@code src} to the existing directory {@code dst} in the same
    * way as {@link #copyFile} would copy each of them individually, following all symlinks.
    *
+   * <p>We don't use {@link FileSystemUtils#copyTreesBelow} as it would copy symlinks as-is, but
+   * tree watches only take the resolved content into account (which is the only consistent behavior
+   * across Unix and Windows).
+   *
    * @param src the directory to copy, with all symlinks resolved
    * @param dstRoot the directory that the top-level source directory is copied to, with all
    *     symlinks resolved
    * @param ancestors the directories that are currently being copied, with all symlinks resolved
    */
-  private static void copyTree(Path src, Path dst, Path dstRoot, Set<Path> ancestors)
-      throws IOException {
+  private static void copyTree(
+      Path src, Path dst, Path dstRoot, @Nullable Boolean executable, Set<Path> ancestors)
+      throws IOException, EvalException {
     if (src.startsWith(dstRoot) || dstRoot.startsWith(src)) {
       // Copying would never terminate as it keeps picking up its own output.
-      throw new IOException("%s and %s overlap".formatted(src, dstRoot));
+      throw Starlark.errorf("%s and %s overlap", src, dstRoot);
     }
     if (!ancestors.add(src)) {
-      throw new IOException("%s is part of a symlink cycle".formatted(src));
+      throw Starlark.errorf("%s is part of a symlink cycle", src);
     }
     for (Dirent dirent : src.readdir(Symlinks.NOFOLLOW)) {
       Path srcChild = src.getChild(dirent.getName());
       Path dstChild = dst.getChild(dirent.getName());
       Dirent.Type type = dirent.getType();
       if (type == Dirent.Type.SYMLINK) {
+        FileStatus stat = srcChild.statIfFound(Symlinks.FOLLOW);
+        if (stat == null) {
+          throw Starlark.errorf("%s is a dangling symlink", srcChild);
+        }
         srcChild = srcChild.resolveSymbolicLinks();
-        type = srcChild.isDirectory() ? Dirent.Type.DIRECTORY : Dirent.Type.FILE;
+        type = stat.isDirectory() ? Dirent.Type.DIRECTORY : Dirent.Type.FILE;
       }
       if (type == Dirent.Type.DIRECTORY) {
-        dstChild.createDirectoryAndParents();
-        copyTree(srcChild, dstChild, dstRoot, ancestors);
+        createCopyDirectory(dstChild);
+        copyTree(srcChild, dstChild, dstRoot, executable, ancestors);
       } else {
-        copyFile(srcChild, dstChild);
+        copyFile(srcChild, dstChild, executable);
       }
     }
     ancestors.remove(src);

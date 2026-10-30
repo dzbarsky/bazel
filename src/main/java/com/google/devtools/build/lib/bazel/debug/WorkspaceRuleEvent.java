@@ -29,6 +29,7 @@ import com.google.protobuf.ByteString;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
+import javax.annotation.Nullable;
 import net.starlark.java.syntax.Location;
 
 /** An event to record events happening during workspace rule resolution */
@@ -268,8 +269,11 @@ public final class WorkspaceRuleEvent implements Postable {
 
   /** Creates a new WorkspaceRuleEvent for a copy event. */
   public static WorkspaceRuleEvent newCopyEvent(
-      String src, String dst, String context, Location location) {
-    CopyEvent e = WorkspaceLogProtos.CopyEvent.newBuilder().setSrc(src).setDst(dst).build();
+      String src, String dst, @Nullable Boolean executable, String context, Location location) {
+    CopyEvent.Builder e = WorkspaceLogProtos.CopyEvent.newBuilder().setSrc(src).setDst(dst);
+    if (executable != null) {
+      e.setExecutable(executable);
+    }
 
     WorkspaceLogProtos.WorkspaceEvent.Builder result =
         WorkspaceLogProtos.WorkspaceEvent.newBuilder();
