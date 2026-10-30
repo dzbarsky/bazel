@@ -66,6 +66,82 @@ jobs:
           fi
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
 
+  validate:
+    name: Test R2C2 backports
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+    steps:
+      - name: Check out Bazel
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Bazelisk
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(id -u)" -ne 0
+          df -h . /tmp
+          free -h
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 120 \
+            --output "${RUNNER_TEMP}/bazelisk" \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
+          chmod +x "${RUNNER_TEMP}/bazelisk"
+
+      - name: Run R2C2 and repository rule tests
+        run: |
+          set -euo pipefail
+          if [[ -z "${BUILDBUDDY_API_KEY}" ]]; then
+            echo 'Missing the BUILDBUDDY_API_KEY Actions secret.' >&2
+            exit 1
+          fi
+          targets=(
+            //src/test/java/com/google/devtools/build/lib/bazel/repository/starlark:StarlarkTests
+            //src/test/java/com/google/devtools/build/lib/dynamic:DynamicSpawnStrategyUnitTest
+            //src/test/java/com/google/devtools/build/lib/exec:ExecTests
+            //src/test/java/com/google/devtools/build/lib/remote:RemoteTests
+            //src/test/java/com/google/devtools/build/lib/remote:BuildWithoutTheBytesIntegrationTest
+            //src/test/java/com/google/devtools/build/lib/remote:DiskCacheIntegrationTest
+            //src/test/java/com/google/devtools/build/lib/remote/common:common
+            //src/test/java/com/google/devtools/build/lib/remote/grpc:grpc
+            //src/test/java/com/google/devtools/build/lib/remote/http:http
+            //src/test/java/com/google/devtools/build/lib/skyframe:DirectoryTreeDigestFunctionTest
+            //src/test/java/com/google/devtools/build/lib/skyframe/rewinding:RewindingTest
+            //src/test/java/com/google/devtools/build/lib/util:UtilTests
+            //src/test/java/com/google/devtools/build/lib/vfs:VfsTests
+            //src/test/py/bazel:bazel_lockfile_test
+            //src/test/py/bazel:repo_contents_cache_test
+            //src/test/py/bazel:remote_repo_contents_cache_test
+            //src/test/shell/bazel:external_files_test
+            //src/test/shell/integration:starlark_dependency_pruning_test
+          )
+          printf 'Source: `%s`\n\n' "${GITHUB_SHA}" >> "${GITHUB_STEP_SUMMARY}"
+          printf -- '- `%s`\n' "${targets[@]}" >> "${GITHUB_STEP_SUMMARY}"
+          "${RUNNER_TEMP}/bazelisk" \
+            --batch --nohome_rc --nosystem_rc --host_jvm_args=-Xmx4g \
+            test --config=buildbuddy-cache \
+            "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}" \
+            --jobs=2 --local_test_jobs=1 \
+            --local_resources=cpu=2 --local_resources=memory=8192 \
+            --worker_max_instances=1 \
+            --nocache_test_results --test_timeout=1800 --keep_going \
+            --test_output=errors --test_summary=detailed --verbose_failures \
+            --color=no --curses=no "${targets[@]}"
+
+      - name: Upload validation test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ needs.prepare.outputs.release_tag }}
+          path: |
+            bazel-testlogs/**/test.log
+            bazel-testlogs/**/test.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
   build:
     name: Build ${{ matrix.artifact_os }}-${{ matrix.artifact_arch }}
     needs: prepare
@@ -189,6 +265,7 @@ jobs:
           if ($env:ARTIFACT_ARCH -eq 'arm64') { $config += '--config=windows_arm64' }
           ./bazelisk.exe --output_user_root=C:/b --batch --nohome_rc --nosystem_rc build `
             --config=buildbuddy-cache `
+            --remote_download_all `
             "--remote_header=x-buildbuddy-api-key=$env:BUILDBUDDY_API_KEY" `
             --verbose_failures --compilation_mode=opt --jobs=2 --stamp `
             "--embed_label=$env:RELEASE_TAG" @config //src:bazel.exe
@@ -280,6 +357,7 @@ jobs:
       - prepare
       - build
       - verify-windows-arm64
+      - validate
     runs-on: ubuntu-24.04
     permissions:
       attestations: write
