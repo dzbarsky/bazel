@@ -1227,7 +1227,7 @@ public abstract class ActionInputPrefetcherTestBase {
     doAnswer(
             invocation -> {
               Path path = invocation.getArgument(3);
-              FileArtifactValue metadata = invocation.getArgument(4);
+              FileArtifactValue metadata = invocation.getArgument(5);
               byte[] content = cas.get(HashCode.fromBytes(metadata.getDigest()));
               if (content == null) {
                 return Futures.immediateFailedFuture(new IOException("Not found"));
