@@ -56,7 +56,7 @@ def workspace_and_buildfile(ctx):
         ctx.fail("Only one of build_file and build_file_content can be provided.")
 
     if ctx.attr.build_file:
-        ctx.file("BUILD.bazel", ctx.read(ctx.attr.build_file))
+        ctx.copy(ctx.attr.build_file, "BUILD.bazel")
     elif ctx.attr.build_file_content:
         ctx.file("BUILD.bazel", ctx.attr.build_file_content)
 
@@ -134,8 +134,7 @@ def symlink_files(ctx):
 
         if not src_path.exists:
             fail("Input %s does not exist" % label)
-        if ctx.path(path).exists:
-            ctx.delete(path)
+        ctx.delete(path)
         ctx.copy(src_path, path, watch_src = "yes")
 
 def patch(ctx, patches = None, patch_cmds = None, patch_cmds_win = None, patch_tool = None, patch_args = None, auth = None, patch_directory = None):
