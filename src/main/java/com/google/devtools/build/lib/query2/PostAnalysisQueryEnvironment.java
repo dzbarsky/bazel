@@ -983,6 +983,10 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       nulls = nullsBuilder.build();
     }
 
+    public int size() {
+      return nonNulls.size() + nulls.size();
+    }
+
     public boolean isTopLevelTarget(Label label) {
       return nonNulls.containsKey(label) || nulls.contains(label);
     }
