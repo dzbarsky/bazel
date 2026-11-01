@@ -353,10 +353,11 @@ public abstract class TestStrategy implements TestActionContext {
 
   /** Parse a test result XML file into a {@link TestCase}. */
   @Nullable
-  protected TestCase parseTestResult(Path resultFile) {
+  protected TestCase parseTestResult(Path resultFile, boolean cached) {
     /* xml files. We avoid parsing it unnecessarily, since test results can potentially consume
     a large amount of memory. */
-    if (!PARSE_TEST_RESULT_FORMATS.contains(executionOptions.getTestSummary())) {
+    if (!PARSE_TEST_RESULT_FORMATS.contains(executionOptions.getTestSummary())
+        || (cached && executionOptions.getTestSummary() == TestSummaryFormat.DETAILED_UNCACHED)) {
       return null;
     }
 

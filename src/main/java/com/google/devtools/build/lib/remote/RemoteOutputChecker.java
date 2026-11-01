@@ -71,6 +71,8 @@ public class RemoteOutputChecker implements OutputChecker {
   private final ImmutableList<RegexPatternOption> downloadRegexes;
   private final ImmutableList<Predicate<String>> patternsToDownload;
   private final ConcurrentArtifactPathTrie pathsToDownload = new ConcurrentArtifactPathTrie();
+  private final ConcurrentArtifactPathTrie testOutputs = new ConcurrentArtifactPathTrie();
+  private final boolean downloadCachedTestOutputs;
   private final Set<PathFragment> pathsToSkip = ConcurrentHashMap.newKeySet();
 
   public RemoteOutputChecker(
@@ -85,6 +87,17 @@ public class RemoteOutputChecker implements OutputChecker {
       RemoteOutputsMode outputsMode,
       ImmutableList<RegexPatternOption> downloadRegexes,
       RemoteOutputChecker lastRemoteOutputChecker) {
+    this(
+        commandName, outputsMode, downloadRegexes, lastRemoteOutputChecker,
+        /* downloadCachedTestOutputs= */ false);
+  }
+
+  public RemoteOutputChecker(
+      String commandName,
+      RemoteOutputsMode outputsMode,
+      ImmutableList<RegexPatternOption> downloadRegexes,
+      @Nullable RemoteOutputChecker lastRemoteOutputChecker,
+      boolean downloadCachedTestOutputs) {
     this.commandMode =
         switch (commandName) {
           case "test" -> CommandMode.TEST;
@@ -100,6 +113,7 @@ public class RemoteOutputChecker implements OutputChecker {
     this.patternsToDownload =
         downloadRegexes.stream().map(RegexPatternOption::matcher).collect(toImmutableList());
     this.lastRemoteOutputChecker = lastRemoteOutputChecker;
+    this.downloadCachedTestOutputs = downloadCachedTestOutputs;
   }
 
   @VisibleForTesting
@@ -242,10 +256,10 @@ public class RemoteOutputChecker implements OutputChecker {
 
   private void addTargetUnderTest(ProviderCollection target) {
     TestProvider testProvider = checkNotNull(target.getProvider(TestProvider.class));
-    if (outputsMode != RemoteOutputsMode.MINIMAL
-        && (commandMode == CommandMode.TEST || commandMode == CommandMode.COVERAGE)) {
-      // In test or coverage mode, download the outputs of the test runner action.
-      addOutputsToDownload(testProvider.getTestParams().getOutputs());
+    if (commandMode == CommandMode.TEST || commandMode == CommandMode.COVERAGE) {
+      for (var output : testProvider.getTestParams().getOutputs()) {
+        addTestOutput(output);
+      }
     }
     if (commandMode == CommandMode.COVERAGE) {
       // In coverage mode, download the per-test and aggregated coverage files.
@@ -275,6 +289,11 @@ public class RemoteOutputChecker implements OutputChecker {
   /** Marks a file for download. */
   public void addOutputToDownload(ActionInput file) {
     pathsToDownload.add(file);
+  }
+
+  @VisibleForTesting
+  void addTestOutput(ActionInput file) {
+    testOutputs.add(file);
   }
 
   /**
@@ -354,7 +373,15 @@ public class RemoteOutputChecker implements OutputChecker {
     return outputsMode == RemoteOutputsMode.ALL
         || pathsToDownload.contains(execPath)
         || matchesPattern(execPath)
-        || (treeRootExecPath != null && matchesPattern(treeRootExecPath));
+        || (treeRootExecPath != null && matchesPattern(treeRootExecPath))
+        || (downloadCachedTestOutputs && testOutputs.contains(execPath));
+  }
+
+  /** Download implicit test outputs after a new execution, preserving toplevel output mode. */
+  boolean shouldDownloadTestOutputAfterExecution(PathFragment execPath) {
+    return outputsMode != RemoteOutputsMode.MINIMAL
+        && !pathsToSkip.contains(execPath)
+        && testOutputs.contains(execPath);
   }
 
   @Override
@@ -375,7 +402,9 @@ public class RemoteOutputChecker implements OutputChecker {
       // Under Skymeld, this check may run before analysis has registered the current build's
       // toplevel targets. Checks the toplevel outputs tracked by the previous build's checker.
       if (lastRemoteOutputChecker != null
-          && lastRemoteOutputChecker.pathsToDownload.contains(file.getExecPath())) {
+          && (lastRemoteOutputChecker.pathsToDownload.contains(file.getExecPath())
+              || (downloadCachedTestOutputs
+                  && lastRemoteOutputChecker.testOutputs.contains(file.getExecPath())))) {
         return false;
       }
 
@@ -437,6 +466,7 @@ public class RemoteOutputChecker implements OutputChecker {
         lastRemoteOutputChecker.commandMode == CommandMode.RUN || commandMode == CommandMode.RUN;
     if (lastRemoteOutputChecker.outputsMode != outputsMode
         || !lastRemoteOutputChecker.downloadRegexes.equals(downloadRegexes)
+        || lastRemoteOutputChecker.downloadCachedTestOutputs != downloadCachedTestOutputs
         || (lastRemoteOutputChecker.commandMode != commandMode && !runTransition)) {
       memoizingEvaluator.delete(
           k -> {
