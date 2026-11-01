@@ -20,6 +20,9 @@ import com.google.devtools.build.lib.bugreport.BugReporter;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.InfoItem;
 import com.google.devtools.build.lib.runtime.MemoryPressureOptions;
+import com.google.devtools.build.lib.server.FailureDetails;
+import com.google.devtools.build.lib.util.AbruptExitException;
+import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.HeapOffsetHelper;
 import com.google.devtools.build.lib.util.StringUtilities;
 import com.sun.management.HotSpotDiagnosticMXBean;
@@ -37,7 +40,8 @@ public final class UsedHeapSizeAfterGcInfoItem extends InfoItem {
 
   @Override
   public byte[] get(
-      Supplier<BuildConfigurationValue> configurationSupplier, CommandEnvironment env) {
+      Supplier<BuildConfigurationValue> configurationSupplier, CommandEnvironment env)
+      throws AbruptExitException {
     if ("1".equals(env.getClientEnv().get("HORAPHA_SHRINK_HEAP"))) {
       return shrinkHeapForCheckpoint(env);
     }
@@ -54,13 +58,21 @@ public final class UsedHeapSizeAfterGcInfoItem extends InfoItem {
                     BugReporter.defaultInstance())));
   }
 
-  private static byte[] shrinkHeapForCheckpoint(CommandEnvironment env) {
+  private static byte[] shrinkHeapForCheckpoint(CommandEnvironment env) throws AbruptExitException {
     HotSpotDiagnosticMXBean bean = ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class);
     String min = bean.getVMOption("MinHeapFreeRatio").getValue();
     String max = bean.getVMOption("MaxHeapFreeRatio").getValue();
     if (!"true".equals(bean.getVMOption("UseG1GC").getValue()) || Integer.parseInt(max) < 20) {
-      throw new IllegalStateException(
-          "Checkpoint heap shrinking requires G1 with MaxHeapFreeRatio >= 20");
+      String message = "Checkpoint heap shrinking requires G1 with MaxHeapFreeRatio >= 20";
+      env.getReporterOutErr().printErrLn("ERROR: " + message);
+      throw new AbruptExitException(
+          DetailedExitCode.of(
+              FailureDetails.FailureDetail.newBuilder()
+                  .setMessage(message)
+                  .setInfoCommand(
+                      FailureDetails.InfoCommand.newBuilder()
+                          .setCode(FailureDetails.InfoCommand.Code.HEAP_SHRINK_UNSUPPORTED))
+                  .build()));
     }
     long committedBefore = InfoItemUtils.getMemoryUsage().getCommitted();
     try {
