@@ -720,6 +720,53 @@ EOF
   assert_exists bazel-testlogs/a/test/test.xml
 }
 
+function test_cached_test_logs_download_only_when_requested() {
+  add_rules_shell "MODULE.bazel"
+  mkdir -p cached_logs
+  cat > cached_logs/BUILD <<'EOF'
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+sh_test(name = "test", srcs = ["test.sh"])
+EOF
+  cat > cached_logs/test.sh <<'EOF'
+#!/bin/sh
+echo 'original cached test stdout'
+cat > "$XML_OUTPUT_FILE" <<'XML'
+<testsuites><testsuite name="original" tests="1" failures="0" errors="0">
+<testcase name="original_cached_test_case"/></testsuite></testsuites>
+XML
+echo 'original undeclared output' > "$TEST_UNDECLARED_OUTPUTS_DIR/result.txt"
+EOF
+  chmod +x cached_logs/test.sh
+
+  bazel test --remote_executor=grpc://localhost:${worker_port} \
+    --remote_download_toplevel --nozip_undeclared_test_outputs \
+    //cached_logs:test >& "$TEST_log" || fail "Expected initial test execution"
+  assert_exists bazel-testlogs/cached_logs/test/test.log
+  assert_exists bazel-testlogs/cached_logs/test/test.xml
+
+  bazel clean >& "$TEST_log" || fail "Failed to clean local outputs"
+  bazel test --remote_executor=grpc://localhost:${worker_port} \
+    --remote_download_toplevel --nozip_undeclared_test_outputs \
+    //cached_logs:test >& "$TEST_log" || fail "Expected remote cache hit"
+  assert_not_exists bazel-testlogs/cached_logs/test/test.log
+  assert_not_exists bazel-testlogs/cached_logs/test/test.xml
+  assert_not_exists bazel-testlogs/cached_logs/test/test.outputs/result.txt
+
+  bazel shutdown >& "$TEST_log" || fail "Failed to stop Bazel"
+  bazel test --remote_executor=grpc://localhost:${worker_port} \
+    --remote_download_toplevel --nozip_undeclared_test_outputs \
+    //cached_logs:test >& "$TEST_log" || fail "Expected warm cached test after restart"
+  assert_not_exists bazel-testlogs/cached_logs/test/test.log
+  assert_not_exists bazel-testlogs/cached_logs/test/test.xml
+
+  bazel test --remote_executor=grpc://localhost:${worker_port} \
+    --remote_download_toplevel --nozip_undeclared_test_outputs --test_output=all \
+    //cached_logs:test >& "$TEST_log" || fail "Expected requested cached test stdout"
+  expect_log "original cached test stdout"
+  assert_exists bazel-testlogs/cached_logs/test/test.log
+  assert_exists bazel-testlogs/cached_logs/test/test.xml
+}
+
 function do_test_non_test_toplevel_targets() {
   # Regression test for https://github.com/bazelbuild/bazel/issues/17190.
   #
