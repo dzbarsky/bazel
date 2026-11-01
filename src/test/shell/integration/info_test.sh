@@ -85,6 +85,18 @@ function test_used_heap_size_after_gc() {
   expect_log '[0-9]*MB'
 }
 
+function test_checkpoint_heap_shrink_rejection_preserves_server() {
+  local startup=(--host_jvm_args=-XX:-UseG1GC --host_jvm_args=-XX:+UseSerialGC)
+  local pid
+  pid=$(bazel "${startup[@]}" info server_pid) || fail "Could not start server"
+  local status=0
+  HORAPHA_SHRINK_HEAP=1 bazel "${startup[@]}" info used-heap-size-after-gc \
+    >"$TEST_log" 2>&1 || status=$?
+  assert_equals 2 "$status"
+  expect_log 'Checkpoint heap shrinking requires G1'
+  assert_equals "$pid" "$(bazel "${startup[@]}" info server_pid)"
+}
+
 function test_starlark_semantics() {
   bazel info starlark-semantics >$TEST_log \
     || fail "${PRODUCT_NAME} info failed"
