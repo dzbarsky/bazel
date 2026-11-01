@@ -66,6 +66,76 @@ public class RemoteOutputCheckerTest {
   }
 
   @Test
+  public void cachedTestOutputs_reusedAfterRestart_newExecutionStillDownloads() {
+    Artifact log = ActionsTestUtil.createArtifact(execRoot, "testlogs/pkg/t/test.log");
+    Artifact tree = ActionsTestUtil.createTreeArtifactWithGeneratingAction(
+        execRoot, "testlogs/pkg/t/test.outputs");
+    var child = tree.getExecPath().getRelative("junit.xml");
+    var metadata = FileArtifactValue.createForRemoteFile(new byte[] {1, 2, 3}, 10, 1);
+    var previous = new RemoteOutputChecker("test", RemoteOutputsMode.TOPLEVEL, ImmutableList.of());
+    previous.addTestOutput(log);
+    previous.addTestOutput(tree);
+    var current =
+        new RemoteOutputChecker("test", RemoteOutputsMode.TOPLEVEL, ImmutableList.of(), previous);
+    current.addTestOutput(log);
+    current.addTestOutput(tree);
+
+    assertThat(current.shouldDownloadOutput(log, metadata)).isFalse();
+    assertThat(current.shouldDownloadOutput(child, tree.getExecPath())).isFalse();
+    assertThat(current.shouldTrustMetadata(log, metadata)).isTrue();
+    assertThat(current.shouldTrustCachedMetadata(log, metadata)).isTrue();
+    assertThat(current.shouldDownloadTestOutputAfterExecution(log.getExecPath())).isTrue();
+    assertThat(current.shouldDownloadTestOutputAfterExecution(child)).isTrue();
+  }
+
+  @Test
+  public void cachedTestOutputs_explicitlyRequestedAndCoverageAreMaterialized() throws Exception {
+    Artifact log = ActionsTestUtil.createArtifact(execRoot, "testlogs/pkg/t/test.log");
+    Artifact xml = ActionsTestUtil.createArtifact(execRoot, "testlogs/pkg/t/test.xml");
+    Artifact coverage = ActionsTestUtil.createArtifact(execRoot, "testlogs/pkg/t/coverage.dat");
+    var metadata = FileArtifactValue.createForRemoteFile(new byte[] {1, 2, 3}, 10, 1);
+    var previous = new RemoteOutputChecker("test", RemoteOutputsMode.TOPLEVEL, ImmutableList.of());
+    previous.addTestOutput(log);
+    var verbose = new RemoteOutputChecker(
+        "test", RemoteOutputsMode.TOPLEVEL, ImmutableList.of(), previous,
+        /* downloadCachedTestOutputs= */ true);
+    // Before Skymeld registers the current targets, the previous command identifies the test.
+    assertThat(verbose.shouldTrustMetadata(log, metadata)).isFalse();
+    verbose.addTestOutput(log);
+    assertThat(verbose.shouldTrustCachedMetadata(log, metadata)).isFalse();
+
+    var regex = new RemoteOutputChecker(
+        "coverage", RemoteOutputsMode.TOPLEVEL,
+        ImmutableList.of(new Converters.RegexPatternConverter().convert(".*/test[.]xml")),
+        previous);
+    regex.addTestOutput(log);
+    regex.addTestOutput(xml);
+    regex.addTestOutput(coverage);
+    regex.addOutputToDownload(coverage);
+    assertThat(regex.shouldTrustCachedMetadata(xml, metadata)).isFalse();
+    assertThat(regex.shouldTrustCachedMetadata(log, metadata)).isTrue();
+    assertThat(regex.shouldDownloadOutput(coverage, metadata)).isTrue();
+
+    var all = new RemoteOutputChecker("test", RemoteOutputsMode.ALL, ImmutableList.of());
+    assertThat(all.shouldDownloadOutput(log, metadata)).isTrue();
+    assertThat(all.shouldDownloadOutput(xml, metadata)).isTrue();
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void cachedTestOutputs_requestingLogsInvalidatesCompletions() {
+    var previous = new RemoteOutputChecker("test", RemoteOutputsMode.TOPLEVEL, ImmutableList.of());
+    var verbose = new RemoteOutputChecker(
+        "test", RemoteOutputsMode.TOPLEVEL, ImmutableList.of(), previous,
+        /* downloadCachedTestOutputs= */ true);
+    MemoizingEvaluator evaluator = mock(MemoizingEvaluator.class);
+
+    verbose.maybeInvalidateSkyframeValues(evaluator);
+
+    verify(evaluator).delete(any(Predicate.class));
+  }
+
+  @Test
   @SuppressWarnings("unchecked")
   public void maybeInvalidateSkyframeValues_downloadRegexChanged_invalidatesCompletions()
       throws Exception {
