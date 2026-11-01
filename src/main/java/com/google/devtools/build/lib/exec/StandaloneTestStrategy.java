@@ -906,7 +906,7 @@ public class StandaloneTestStrategy extends TestStrategy {
       }
     }
 
-    TestCase details = parseTestResult(xmlOutputPath);
+    TestCase details = parseTestResult(xmlOutputPath, spawnResults.getFirst().isCacheHit());
     if (details != null) {
       testResultDataBuilder.setTestCase(details);
     }
