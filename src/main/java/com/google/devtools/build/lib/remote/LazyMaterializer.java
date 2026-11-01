@@ -45,10 +45,6 @@ public interface LazyMaterializer {
   @Nullable
   IOException getRepoDownloadError(PathFragment path, IOException cause);
 
-  /** Returns the recorded file permissions, or the default for a path outside the overlay. */
-  int getMaterializationPermissions(PathFragment path, int defaultPermissions) throws IOException;
-
-
   /**
    * Materializes the subtree rooted at the given path to the local file system if its contents are
    * currently only available in memory, together with the targets of any symlinks below it.
