@@ -428,6 +428,30 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
     return labelPrinter;
   }
 
+  /** Returns the configured edges for hashing, or null if analysis left any edge unavailable. */
+  @Nullable
+  protected final ImmutableList<T> getCompleteFwdDeps(T target) throws InterruptedException {
+    SkyKey key = getConfiguredTargetKey(target);
+    List<SkyKey> unavailable = new ArrayList<>();
+    Iterable<SkyKey> direct = getDepsForTargetification(key, unavailable);
+    var values = targetifyValues(target, direct, new HashSet<>(), new HashSet<>(), unavailable);
+    if (!unavailable.isEmpty()) {
+      eventHandler.handle(
+          Event.warn("Incomplete configured dependencies of " + key + "; unavailable: " + unavailable));
+      return null;
+    }
+    return filterFwdDeps(target, values);
+  }
+
+  private Iterable<SkyKey> getDepsForTargetification(
+      SkyKey key, @Nullable List<SkyKey> unavailable) throws InterruptedException {
+    if (unavailable != null && graph.getValue(key) == null) {
+      unavailable.add(key);
+      return ImmutableList.of();
+    }
+    return graph.getDirectDeps(key);
+  }
+
   public ThreadSafeMutableSet<T> getFwdDeps(Iterable<T> targets) throws InterruptedException {
     Map<SkyKey, T> targetsByKey = Maps.newHashMapWithExpectedSize(Iterables.size(targets));
     for (T target : targets) {
@@ -683,12 +707,14 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
    *     defines the aspect's deps, all of those aspect instances have the same deps, which makes
    *     examinining each of them down T's transitive deps very wasteful. This parameter lets us
    *     avoid that redundancy.
+   * @param unavailable when non-null, accumulate missing edges through aspect and toolchain expansion
    */
   private ImmutableList<ClassifiedDependency<T>> targetifyValues(
       @Nullable T parent,
       Iterable<? extends SkyKey> dependencies,
       Set<SkyKey> knownCtDeps,
-      Set<AspectClass> resolvedAspectClasses)
+      Set<AspectClass> resolvedAspectClasses,
+      @Nullable List<SkyKey> unavailable)
       throws InterruptedException {
     Collection<ConfiguredTargetKey> implicitDeps = null;
     if (parent != null) {
@@ -718,6 +744,9 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
           || (explicitAspects && key.functionName().equals(SkyFunctions.ASPECT))) {
         T dependency = getValueFromKey(key);
         if (dependency == null && keepGoing) {
+          if (unavailable != null) {
+            unavailable.add(key);
+          }
           eventHandler.handle(
               Event.warn(
                   String.format(
@@ -789,12 +818,16 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
           resolvedAspectClasses.add(((AspectKey) key).getAspectClass());
         }
         values.addAll(
-            targetifyValues(null, graph.getDirectDeps(key), knownCtDeps, resolvedAspectClasses));
+            targetifyValues(
+                null, getDepsForTargetification(key, unavailable), knownCtDeps, resolvedAspectClasses,
+                unavailable));
       } else if (key.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION)) {
         values.addAll(
-            targetifyValues(null, graph.getDirectDeps(key), knownCtDeps, resolvedAspectClasses));
+            targetifyValues(
+                null, getDepsForTargetification(key, unavailable), knownCtDeps, resolvedAspectClasses,
+                unavailable));
       } else if (key instanceof GenAnalysisQueryKey scope) {
-        values.addAll(targetifyValues(parent, scope.roots(), knownCtDeps, resolvedAspectClasses));
+        values.addAll(targetifyValues(parent, scope.roots(), knownCtDeps, resolvedAspectClasses, unavailable));
       }
     }
     return values.build();
@@ -812,7 +845,8 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
               fromTargetsByKey.get(fromKey),
               entry.getValue(),
               /* knownCtDeps= */ new HashSet<>(),
-              /* resolvedAspectClasses= */ new HashSet<>()));
+              /* resolvedAspectClasses= */ new HashSet<>(),
+              /* unavailable= */ null));
     }
     return result;
   }

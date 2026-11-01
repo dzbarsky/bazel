@@ -25,7 +25,6 @@ import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.query2.SkyQueryEnvironment;
 import com.google.devtools.build.lib.query2.common.CqueryNode;
-import com.google.devtools.build.lib.query2.cquery.GraphOutputFormatterCallback.DepsRetriever;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.TargetAccessor;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.query.hash.DirectTargetHashFunction;
@@ -44,9 +43,12 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import javax.annotation.Nullable;
 
 /**
  * cquery output formatter for {@code --generate_hashes}. Prints each configured target in the
@@ -60,11 +62,17 @@ import java.util.Map;
  */
 class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
 
+  @FunctionalInterface
+  interface DepsRetriever {
+    @Nullable Iterable<CqueryNode> getDirectDeps(CqueryNode target) throws InterruptedException;
+  }
+
   static final String NAME = "generate_hashes";
 
   private final SkyframeExecutor skyframeExecutor;
   private final DepsRetriever depsRetriever;
   private final LabelPrinter labelPrinter;
+  private final boolean keepGoing;
 
   HashesOutputFormatterCallback(
       ExtendedEventHandler eventHandler,
@@ -73,11 +81,13 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       SkyframeExecutor skyframeExecutor,
       TargetAccessor<CqueryNode> accessor,
       DepsRetriever depsRetriever,
-      LabelPrinter labelPrinter) {
+      LabelPrinter labelPrinter,
+      boolean keepGoing) {
     super(eventHandler, options, out, skyframeExecutor, accessor, /* uniquifyResults= */ false);
     this.skyframeExecutor = skyframeExecutor;
     this.depsRetriever = depsRetriever;
     this.labelPrinter = labelPrinter;
+    this.keepGoing = keepGoing;
   }
 
   @Override
@@ -106,6 +116,7 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       roots.putIfAbsent(node.getLookupKey(), node);
     }
 
+    Set<ActionLookupKey> failedKeys = new HashSet<>();
     // Walk the configured graph breadth-first, recording each node's deps.
     Map<ActionLookupKey, CqueryNode> nodes = new HashMap<>(roots);
     Map<ActionLookupKey, List<ActionLookupKey>> deps = new HashMap<>();
@@ -114,7 +125,13 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       List<CqueryNode> next = new ArrayList<>();
       for (CqueryNode node : frontier) {
         List<ActionLookupKey> nodeDeps = new ArrayList<>();
-        for (CqueryNode dep : depsRetriever.getDirectDeps(node)) {
+        Iterable<CqueryNode> directDeps = depsRetriever.getDirectDeps(node);
+        if (directDeps == null) {
+          failedKeys.add(node.getLookupKey());
+          deps.put(node.getLookupKey(), ImmutableList.of());
+          continue;
+        }
+        for (CqueryNode dep : directDeps) {
           ActionLookupKey depKey = dep.getLookupKey();
           if (depKey.equals(node.getLookupKey())) {
             continue;
@@ -153,11 +170,20 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
     Map<ActionLookupKey, TransitiveHashes.Node<ActionLookupKey>> graph = new HashMap<>();
     for (Map.Entry<ActionLookupKey, CqueryNode> entry : nodes.entrySet()) {
       CqueryNode node = entry.getValue();
-      var value =
-          (DirectTargetHashFunction.Value)
-              result.get(DirectTargetHashFunction.key(node.getOriginalLabel()));
+      var directHashKey = DirectTargetHashFunction.key(node.getOriginalLabel());
+      var value = (DirectTargetHashFunction.Value) result.get(directHashKey);
       if (value == null) {
-        continue; // Hashed as a missing leaf by its dependents, reported below for roots.
+        failedKeys.add(entry.getKey());
+        ErrorInfo error = result.getError(directHashKey);
+        eventHandler.handle(
+            Event.error(
+                String.format(
+                    "failed to compute hash for %s: %s",
+                    node.getDescription(labelPrinter),
+                    error != null && error.getException() != null
+                        ? error.getException().getMessage()
+                        : "unknown error")));
+        continue;
       }
       Fingerprint fp = new Fingerprint().addBytes(value.getDirectHash());
       String checksum = node.getConfigurationChecksum();
@@ -175,35 +201,29 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
                   .collect(ImmutableList.toImmutableList())));
     }
 
+    // A missing transitive input invalidates the hash of each root that reaches it.
+    failures += failedKeys.size();
+    if (!keepGoing && failures > 0) {
+      return;
+    }
     eventHandler.handle(
         Event.progress(String.format("Hashing: combining hashes of %d targets", graph.size())));
-    Map<ActionLookupKey, byte[]> hashes = TransitiveHashes.combine(graph, byName, names::get);
+    Map<ActionLookupKey, byte[]> hashes = TransitiveHashes.combine(graph, byName, names::get, failedKeys);
     for (CqueryNode root : roots.values()) {
+      byte[] hash = hashes.get(root.getLookupKey());
+      if (hash == null) {
+        continue;
+      }
       String description =
           String.format(
               "%s (%s)",
               root.getDescription(labelPrinter),
               shortId(getConfiguration(root.getConfigurationKey())));
-      byte[] hash = hashes.get(root.getLookupKey());
-      if (hash != null) {
-        // Written directly instead of through addResult, because a failure below skips close().
-        printStream
-            .append(description)
-            .append(' ')
-            .append(BaseEncoding.base16().lowerCase().encode(hash))
-            .append(options.getLineTerminator());
-        continue;
-      }
-      failures++;
-      ErrorInfo error = result.getError(DirectTargetHashFunction.key(root.getOriginalLabel()));
-      eventHandler.handle(
-          Event.error(
-              String.format(
-                  "failed to compute hash for %s: %s",
-                  description,
-                  error != null && error.getException() != null
-                      ? error.getException().getMessage()
-                      : "unknown error")));
+      printStream
+          .append(description)
+          .append(' ')
+          .append(BaseEncoding.base16().lowerCase().encode(hash))
+          .append(options.getLineTerminator());
     }
     printStream.flush();
   }

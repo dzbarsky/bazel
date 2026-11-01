@@ -191,8 +191,9 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
               out,
               skyframeExecutor,
               accessor,
-              kct -> getFwdDeps(ImmutableList.of(kct)),
-              getLabelPrinter()));
+              this::getCompleteFwdDeps,
+              getLabelPrinter(),
+              keepGoing));
     }
     AspectResolver aspectResolver =
         cqueryOptions.getAspectDeps().createResolver(packageManager, eventHandler);
