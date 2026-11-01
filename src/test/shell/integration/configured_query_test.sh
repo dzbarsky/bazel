@@ -1902,6 +1902,42 @@ EOF
     || fail "Expected the hash of //$pkg:a to change"
 }
 
+function test_parallel_generate_hashes_agrees_on_mutation_and_partial_analysis() {
+  local -r pkg=$FUNCNAME
+  mkdir -p "$pkg"
+  cat >"$pkg/BUILD" <<EOF
+filegroup(name = "leaf", srcs = ["input"])
+alias(name = "indirect", actual = ":leaf")
+genquery(name = "listing", expression = "deps(//$pkg:leaf)", scope = [":leaf"])
+filegroup(name = "top", srcs = [":indirect", ":leaf", ":listing"])
+filegroup(name = "missing", srcs = [":not_declared"])
+EOF
+  local -ar common=(--experimental_generate_hashes --experimental_explicit_aspects)
+  local -r query="set(//$pkg:top //$pkg:indirect //$pkg:listing)"
+  local content
+  for content in first second; do
+    echo "$content" > "$pkg/input"
+    bazel cquery "${common[@]}" "$query" > reference 2> "$TEST_log" || fail "serial hash failed"
+    bazel cquery "${common[@]}" --experimental_cquery_hash_workers=4 "$query" > actual 2> "$TEST_log" \
+      || fail "parallel hash failed"
+    assert_equals 3 "$(wc -l < actual)"
+    diff <(LC_ALL=C sort reference) <(LC_ALL=C sort actual) || fail "different root digests"
+    grep "^//$pkg:top " actual > "top.$content" || fail "missing root"
+  done
+  cmp -s top.first top.second && fail "source change did not reach top"
+
+  local -r partial="set(//$pkg:missing //$pkg:top)"
+  if bazel cquery "${common[@]}" --keep_going "$partial" > reference 2> "$TEST_log"; then
+    fail "serial hash accepted a missing dependency"
+  fi
+  if bazel cquery "${common[@]}" --experimental_cquery_hash_workers=4 --keep_going "$partial" > actual 2> "$TEST_log"; then
+    fail "parallel hash accepted a missing dependency"
+  fi
+  assert_equals 1 "$(wc -l < actual)"
+  grep "^//$pkg:top " actual || fail "independent healthy root is missing"
+  diff reference actual || fail "different partial results"
+}
+
 function test_generate_hashes_rejects_dependency_filters() {
   local -r pkg=$FUNCNAME
   mkdir -p $pkg

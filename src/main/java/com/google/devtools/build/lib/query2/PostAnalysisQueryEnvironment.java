@@ -431,20 +431,46 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
   /** Returns the configured edges for hashing, or null if analysis left any edge unavailable. */
   @Nullable
   protected final ImmutableList<T> getCompleteFwdDeps(T target) throws InterruptedException {
+    return getCompleteFwdDeps(target, false);
+  }
+
+  @Nullable
+  protected final ImmutableList<T> getCompleteFwdDeps(T target, boolean rawEdges)
+      throws InterruptedException {
     SkyKey key = getConfiguredTargetKey(target);
     List<SkyKey> unavailable = new ArrayList<>();
     Iterable<SkyKey> direct = getDepsForTargetification(key, unavailable);
-    var values = targetifyValues(target, direct, new HashSet<>(), new HashSet<>(), unavailable);
+    ImmutableList<T> rawDeps = null;
+    ImmutableList<ClassifiedDependency<T>> classified = ImmutableList.of();
+    if (rawEdges
+        && !settings.contains(Setting.ONLY_TARGET_DEPS)
+        && !settings.contains(Setting.NO_IMPLICIT_DEPS)) {
+      // Neither filter consumes edge classification. Passing a null parent marks all edges
+      // implicit while preserving the same configured, aspect and toolchain projection.
+      ImmutableList.Builder<T> raw = ImmutableList.builder();
+      targetifyInto(
+          null,
+          direct,
+          new HashSet<>(),
+          new HashSet<>(),
+          unavailable,
+          (node, implicit) -> node,
+          raw);
+      rawDeps = raw.build();
+    } else {
+      classified = targetifyValues(target, direct, new HashSet<>(), new HashSet<>(), unavailable);
+    }
     if (!unavailable.isEmpty()) {
       eventHandler.handle(
-          Event.warn("Incomplete configured dependencies of " + key + "; unavailable: " + unavailable));
+          Event.warn(
+              "Incomplete configured dependencies of " + key + "; unavailable: " + unavailable));
       return null;
     }
-    return filterFwdDeps(target, values);
+    return rawDeps != null ? rawDeps : filterFwdDeps(target, classified);
   }
 
-  private Iterable<SkyKey> getDepsForTargetification(
-      SkyKey key, @Nullable List<SkyKey> unavailable) throws InterruptedException {
+  private Iterable<SkyKey> getDepsForTargetification(SkyKey key, @Nullable List<SkyKey> unavailable)
+      throws InterruptedException {
     if (unavailable != null && graph.getValue(key) == null) {
       unavailable.add(key);
       return ImmutableList.of();
@@ -707,7 +733,8 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
    *     defines the aspect's deps, all of those aspect instances have the same deps, which makes
    *     examinining each of them down T's transitive deps very wasteful. This parameter lets us
    *     avoid that redundancy.
-   * @param unavailable when non-null, accumulate missing edges through aspect and toolchain expansion
+   * @param unavailable when non-null, accumulate missing edges through aspect and toolchain
+   *     expansion
    */
   private ImmutableList<ClassifiedDependency<T>> targetifyValues(
       @Nullable T parent,
@@ -715,6 +742,33 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       Set<SkyKey> knownCtDeps,
       Set<AspectClass> resolvedAspectClasses,
       @Nullable List<SkyKey> unavailable)
+      throws InterruptedException {
+    ImmutableList.Builder<ClassifiedDependency<T>> results = ImmutableList.builder();
+    targetifyInto(
+        parent,
+        dependencies,
+        knownCtDeps,
+        resolvedAspectClasses,
+        unavailable,
+        ClassifiedDependency::new,
+        results);
+    return results.build();
+  }
+
+  @FunctionalInterface
+  private interface DependencyProjection<T, R> {
+    R apply(T node, boolean implicit);
+  }
+
+  // Share one builder across nested aspect, toolchain and analysis-query scopes.
+  private <R> void targetifyInto(
+      @Nullable T parent,
+      Iterable<? extends SkyKey> dependencies,
+      Set<SkyKey> knownCtDeps,
+      Set<AspectClass> resolvedAspectClasses,
+      @Nullable List<SkyKey> unavailable,
+      DependencyProjection<T, R> projection,
+      ImmutableList.Builder<R> values)
       throws InterruptedException {
     Collection<ConfiguredTargetKey> implicitDeps = null;
     if (parent != null) {
@@ -727,7 +781,6 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
     boolean explicitAspects =
         settings.containsAll(ImmutableSet.of(Setting.INCLUDE_ASPECTS, Setting.EXPLICIT_ASPECTS));
 
-    ImmutableList.Builder<ClassifiedDependency<T>> values = ImmutableList.builder();
     // TODO(bazel-team): The end-goal approach is to treat aspects and toolchains as
     // first-class query nodes just like targets. In other words, let query expressions reference
     // them (they also have identifying labels) and make the graph connections between targets,
@@ -767,7 +820,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
             key);
 
         boolean implicitDep;
-        if (!(key.argument() instanceof ConfiguredTargetKey)) {
+        if (parent == null || !(key.argument() instanceof ConfiguredTargetKey)) {
           // All non-configured target deps are implicit.
           implicitDep = true;
         } else if (parent != null && isAliasConfiguredTarget(parent)) {
@@ -792,7 +845,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
                   || implicitDeps.contains(getConfiguredTargetKey(dependency));
         }
 
-        values.add(new ClassifiedDependency<>(dependency, implicitDep));
+        values.add(projection.apply(dependency, implicitDep));
         knownCtDeps.add(key);
       } else if (settings.contains(Setting.INCLUDE_ASPECTS)
           && key.functionName().equals(SkyFunctions.ASPECT)) {
@@ -817,20 +870,34 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
           // examined through the recursive call.
           resolvedAspectClasses.add(((AspectKey) key).getAspectClass());
         }
-        values.addAll(
-            targetifyValues(
-                null, getDepsForTargetification(key, unavailable), knownCtDeps, resolvedAspectClasses,
-                unavailable));
+        targetifyInto(
+            null,
+            getDepsForTargetification(key, unavailable),
+            knownCtDeps,
+            resolvedAspectClasses,
+            unavailable,
+            projection,
+            values);
       } else if (key.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION)) {
-        values.addAll(
-            targetifyValues(
-                null, getDepsForTargetification(key, unavailable), knownCtDeps, resolvedAspectClasses,
-                unavailable));
+        targetifyInto(
+            null,
+            getDepsForTargetification(key, unavailable),
+            knownCtDeps,
+            resolvedAspectClasses,
+            unavailable,
+            projection,
+            values);
       } else if (key instanceof GenAnalysisQueryKey scope) {
-        values.addAll(targetifyValues(parent, scope.roots(), knownCtDeps, resolvedAspectClasses, unavailable));
+        targetifyInto(
+            parent,
+            scope.roots(),
+            knownCtDeps,
+            resolvedAspectClasses,
+            unavailable,
+            projection,
+            values);
       }
     }
-    return values.build();
   }
 
   private Map<SkyKey, ImmutableList<ClassifiedDependency<T>>> targetifyValues(
