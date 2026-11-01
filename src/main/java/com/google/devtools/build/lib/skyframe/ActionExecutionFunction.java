@@ -272,7 +272,8 @@ public class ActionExecutionFunction implements SkyFunction {
     InputDiscoveryState state;
     if (action.discoversInputs() || skyframeActionExecutor.isCacheProbe()) {
       state = env.getState(InputDiscoveryState::new);
-      if (previousExecution != null
+      if (action.discoversInputs()
+          && previousExecution != null
           && !previousExecution.isDone()
           && state.discoveredInputs == null) {
         // This path is only reached when the previous execution failed with lost inputs and needed
