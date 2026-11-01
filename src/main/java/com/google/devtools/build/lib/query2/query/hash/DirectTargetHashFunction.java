@@ -41,7 +41,6 @@ import com.google.devtools.build.lib.packages.InputFile;
 import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.packages.LabelVisitationUtils;
 import com.google.devtools.build.lib.packages.NoSuchThingException;
-import com.google.devtools.build.lib.packages.Package;
 import com.google.devtools.build.lib.packages.PackageGroup;
 import com.google.devtools.build.lib.packages.RawAttributeMapper;
 import com.google.devtools.build.lib.packages.RepositoryFetchException;
@@ -184,7 +183,6 @@ public final class DirectTargetHashFunction implements SkyFunction {
       throws DirectTargetHashFunctionException, InterruptedException {
     Label label = (Label) skyKey.argument();
     Target target;
-    Package pkg;
     try {
       Object loaded = TargetLoadingUtil.loadTarget(env, label);
       if (!(loaded instanceof TargetAndErrorIfAny targetAndErrorIfAny)) {
@@ -194,7 +192,6 @@ public final class DirectTargetHashFunction implements SkyFunction {
         throw targetAndErrorIfAny.getErrorLoadingTarget();
       }
       target = targetAndErrorIfAny.getTarget();
-      pkg = targetAndErrorIfAny.getPackage();
     } catch (NoSuchThingException e) {
       throw new DirectTargetHashFunctionException(e);
     }
@@ -274,39 +271,11 @@ public final class DirectTargetHashFunction implements SkyFunction {
     }
     deps.remove(label);
 
-    // Source files of external repos that only change when refetched are hashed by the digest of
-    // the whole repo, rather than tracking each file in Skyframe.
-    RepoContentDigestFunction.Value repoDigest = null;
-    if (!label.getRepository().isMain()
-        && (target instanceof InputFile || target instanceof Rule)) {
-      try {
-        repoDigest =
-            (RepoContentDigestFunction.Value)
-                env.getValueOrThrow(
-                    RepoContentDigestFunction.key(label.getRepository()), IOException.class);
-      } catch (IOException e) {
-        throw new DirectTargetHashFunctionException(e);
-      }
-      if (repoDigest == null) {
-        return null;
-      }
-      if (repoDigest.usesFileDigests()) {
-        repoDigest = null;
-      }
-    }
-    boolean coversPackageFiles = false;
-    if (repoDigest != null && target instanceof Rule) {
-      // The repo digest covers the rule's source files in this package, so they don't need to be
-      // visited. This keeps the walk from visiting every file of large toolchain repos.
-      coversPackageFiles =
-          deps.removeIf(
-              dep ->
-                  dep.getPackageIdentifier().equals(label.getPackageIdentifier())
-                      && pkg.getTargetOrNull(dep.getName()) instanceof InputFile);
-    }
-
+    // Retain external source edges and hash only files that are reachable. The source digest
+    // function reads the FileValue digest (already held in memory for R2C2 files) and falls
+    // back to a cached content read on ordinary filesystems.
     SourceFileDigestFunction.Value fileDigest = null;
-    if (target instanceof InputFile inputFile && repoDigest == null) {
+    if (target instanceof InputFile inputFile) {
       try {
         fileDigest =
             (SourceFileDigestFunction.Value)
@@ -344,12 +313,27 @@ public final class DirectTargetHashFunction implements SkyFunction {
       fp.addString(implementation.getKey().getUnambiguousCanonicalForm());
       fp.addBytes(implementation.getValue());
     }
-    if (repoDigest != null && (target instanceof InputFile || coversPackageFiles)) {
-      fp.addString("<repo contents>");
-      fp.addBytes(repoDigest.getDigest());
-    }
     if (fileDigest != null) {
       fp.addBytes(fileDigest.getDigest());
+      if (fileDigest == SourceFileDigestFunction.Value.DIRECTORY && !label.getRepository().isMain()) {
+        // A directory label has no file digest. Preserve the fetched repository's conservative
+        // invalidation in this rare case rather than silently skipping its children.
+        RepoContentDigestFunction.Value repo;
+        try {
+          repo = (RepoContentDigestFunction.Value)
+              env.getValueOrThrow(
+                  RepoContentDigestFunction.key(label.getRepository()), IOException.class);
+        } catch (IOException e) {
+          throw new DirectTargetHashFunctionException(e);
+        }
+        if (repo == null) {
+          return null;
+        }
+        if (!repo.usesFileDigests()) {
+          fp.addString("<directory repo contents>");
+          fp.addBytes(repo.getDigest());
+        }
+      }
       if (fileDigest.isExecutable()) {
         // Only added when set, so that hashes of non-executable files are unaffected.
         fp.addString("<executable>");
