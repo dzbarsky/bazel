@@ -103,7 +103,7 @@ public final class SkyValueRetrieverUtils {
           retrievalResult = Restart.RESTART;
         } else if (!directories.equals(bound.directories())) {
           var miss = new NoCachedData(MissReason.MISS_REASON_INVALIDATED);
-          state.setState(miss);
+          state.rejectRetrievedValue(miss);
           retrievalResult = miss;
         } else {
           retrievalResult = new RetrievedValue(bound.value());
@@ -140,7 +140,7 @@ public final class SkyValueRetrieverUtils {
       // Validation can reject a decoded value after the retriever has memoized it. Do not retain
       // or repeatedly reject that payload on local-analysis restarts.
       if (state.getState() instanceof RetrievedValue) {
-        state.setState(miss);
+        state.rejectRetrievedValue(miss);
       }
       retrievalResult = miss;
     } finally {
