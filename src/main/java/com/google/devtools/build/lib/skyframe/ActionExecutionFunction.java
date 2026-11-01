@@ -944,28 +944,49 @@ public class ActionExecutionFunction implements SkyFunction {
             ? state.getOrCreateLateDiscoveredInputArtifactData(unknownDiscoveredInputs.size())
             : state.inputArtifactData;
 
+    SkyframeLookupResult nonMandatoryDiscovered;
+    ImmutableSet<SkyKey> discoveredInputDepKeys = ImmutableSet.of();
     boolean nestedInputsReady = false;
-    if (!state.discoveredInputs.isSingleton()) {
-      // Preserve shared header sets instead of retaining one edge per header in every action.
-      SkyKey nestedKey = ArtifactNestedSetKey.create(state.discoveredInputs);
-      try {
-        if (env.getValueOrThrow(nestedKey, ArtifactNestedSetEvalException.class) == null) {
-          return;
-        }
-        nestedInputsReady = true;
-      } catch (ArtifactNestedSetEvalException e) {
-        // Keep the per-artifact error handling below, including missing discovered source files.
-      }
-    }
-    SkyframeLookupResult nonMandatoryDiscovered = null;
-    if (!nestedInputsReady) {
+    // Depth at most two is flat: there are no child sets to share.
+    if (state.discoveredInputs.getApproxDepth() <= 2) {
       nonMandatoryDiscovered = env.getValuesAndExceptions(Artifact.keys(unknownDiscoveredInputs));
+    } else {
+      // Like declared inputs, share child sets without adding a node for the action's unique root.
+      ImmutableSet.Builder<SkyKey> discoveredInputDepKeysBuilder = ImmutableSet.builder();
+      ArtifactNestedSetKey.visitDirectDeps(
+          state.discoveredInputs,
+          input -> {
+            if (state.getKnownDiscoveredInputMetadata(input) == null) {
+              discoveredInputDepKeysBuilder.add(Artifact.key(input));
+            }
+          },
+          discoveredInputDepKeysBuilder::add);
+      discoveredInputDepKeys = discoveredInputDepKeysBuilder.build();
+      nonMandatoryDiscovered = env.getValuesAndExceptions(discoveredInputDepKeys);
+      nestedInputsReady = true;
+      for (SkyKey key : discoveredInputDepKeys) {
+        if (!(key instanceof ArtifactNestedSetKey)) {
+          continue;
+        }
+        try {
+          if (nonMandatoryDiscovered.getOrThrow(key, ArtifactNestedSetEvalException.class)
+              == null) {
+            return;
+          }
+        } catch (ArtifactNestedSetEvalException e) {
+          // Keep the per-artifact error handling below, including missing discovered source files.
+          nestedInputsReady = false;
+        }
+      }
+      if (!nestedInputsReady) {
+        nonMandatoryDiscovered = env.getValuesAndExceptions(Artifact.keys(unknownDiscoveredInputs));
+      }
     }
     for (Artifact input : unknownDiscoveredInputs) {
       SkyValue retrievedMetadata;
       try {
         if (nestedInputsReady) {
-          retrievedMetadata = lookupInput(input, ImmutableSet.of(), env);
+          retrievedMetadata = lookupInput(input, discoveredInputDepKeys, env);
           if (retrievedMetadata == null) {
             // If rewinding finishes with an error, the nested set may still report success.
             // Request the failed artifact directly so Skyframe propagates its error.

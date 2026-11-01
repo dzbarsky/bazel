@@ -57,6 +57,15 @@ public class TimestampBuilderTest extends TimestampBuilderTestCase {
 
   @Test
   public void sharedDiscoveredInputs_preserveNestedDependencies() throws Exception {
+    checkDiscoveredInputDependencies(/* sharedChild= */ true);
+  }
+
+  @Test
+  public void flatDiscoveredInputs_doNotAddNestedSetNodes() throws Exception {
+    checkDiscoveredInputDependencies(/* sharedChild= */ false);
+  }
+
+  private void checkDiscoveredInputDependencies(boolean sharedChild) throws Exception {
     Artifact first = createSourceArtifact("first.h");
     Artifact second = createSourceArtifact("second.h");
     BlazeTestUtils.makeEmptyFile(first.getPath());
@@ -68,8 +77,14 @@ public class TimestampBuilderTest extends TimestampBuilderTestCase {
     for (Artifact output : ImmutableSet.of(one, two)) {
       Artifact unique = createSourceArtifact(output.getFilename() + ".h");
       BlazeTestUtils.makeEmptyFile(unique.getPath());
-      NestedSet<Artifact> discovered =
-          NestedSetBuilder.<Artifact>stableOrder().add(unique).addTransitive(shared).build();
+      NestedSetBuilder<Artifact> discoveredBuilder =
+          NestedSetBuilder.<Artifact>stableOrder().add(unique);
+      if (sharedChild) {
+        discoveredBuilder.addTransitive(shared);
+      } else {
+        discoveredBuilder.addAll(shared.toList());
+      }
+      NestedSet<Artifact> discovered = discoveredBuilder.build();
       registerAction(
           new TestAction(counter::incrementAndGet, emptyNestedSet, ImmutableSet.of(output)) {
             @Override
@@ -108,15 +123,16 @@ public class TimestampBuilderTest extends TimestampBuilderTestCase {
 
     assertThat(counter.get()).isEqualTo(2);
     assertThat(actionDeps).hasSize(2);
-    ImmutableSet.Builder<ArtifactNestedSetKey> discoveredKeys = ImmutableSet.builder();
     for (ImmutableSet<SkyKey> deps : actionDeps) {
-      ArtifactNestedSetKey discoveredKey =
-          Iterables.getOnlyElement(Iterables.filter(deps, ArtifactNestedSetKey.class));
-      discoveredKeys.add(discoveredKey);
-      assertThat(discoveredKey.getDirectDepKeys()).contains(ArtifactNestedSetKey.create(shared));
-      assertThat(deps).containsNoneOf(Artifact.key(first), Artifact.key(second));
+      if (sharedChild) {
+        assertThat(Iterables.filter(deps, ArtifactNestedSetKey.class))
+            .containsExactly(ArtifactNestedSetKey.create(shared));
+        assertThat(deps).containsNoneOf(Artifact.key(first), Artifact.key(second));
+      } else {
+        assertThat(Iterables.filter(deps, ArtifactNestedSetKey.class)).isEmpty();
+        assertThat(deps).containsAtLeast(Artifact.key(first), Artifact.key(second));
+      }
     }
-    assertThat(discoveredKeys.build()).hasSize(2);
 
     buildArtifacts(cachingBuilder(), one, two);
     assertThat(counter.get()).isEqualTo(2);
