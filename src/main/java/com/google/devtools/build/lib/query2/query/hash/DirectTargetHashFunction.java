@@ -334,7 +334,8 @@ public final class DirectTargetHashFunction implements SkyFunction {
               /* extraDataForAttrHash= */ "",
               Hashing.sha256(),
               /* includeAttributeSourceAspects= */ false,
-              /* includeStarlarkRuleEnv= */ true));
+              /* includeStarlarkRuleEnv= */ true,
+              /* canonicalizeLabelSelects= */ true));
     } else if (target instanceof PackageGroup packageGroup) {
       fp.addStrings(packageGroup.getContainedPackages(/* includeDoubleSlash= */ true));
     }

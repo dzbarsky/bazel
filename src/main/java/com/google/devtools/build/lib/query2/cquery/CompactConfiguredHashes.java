@@ -16,7 +16,6 @@ package com.google.devtools.build.lib.query2.cquery;
 import com.google.devtools.build.lib.query2.query.hash.TransitiveHashes;
 import com.google.devtools.build.lib.util.Fingerprint;
 import java.util.ArrayDeque;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,7 +52,16 @@ final class CompactConfiguredHashes {
         }
       }
       Map<N, byte[]> hashes = TransitiveHashes.combine(
-          graph, Comparator.comparing(node -> node.name), node -> node.name, failed);
+          graph,
+          (left, right) -> {
+            int result = left.name.compareTo(right.name);
+            if (result == 0 && left != right) {
+              throw new java.io.UncheckedIOException(new java.io.IOException(
+                  "Distinct members of a configured hash cycle have the same identity"));
+            }
+            return result;
+          },
+          node -> node.name, failed);
       for (N node : nodes) {
         node.hash = hashes.get(node);
       }

@@ -440,13 +440,19 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
       // so we optimize for it not being hit.
       if (!Objects.equals(configurationKey, target.getConfigurationKey())) {
         var targetKey = ConfiguredTargetKey.fromConfiguredTarget(target);
-        if (targetKey.shouldApplyRuleTransition()
-            || getValueFromKey(
-                    ConfiguredTargetKey.builder()
-                        .setLabel(label)
-                        .setConfigurationKey(targetKey.getConfigurationKey())
-                        .build())
-                != null) {
+        if (targetKey.shouldApplyRuleTransition()) {
+          continue;
+        }
+        // A second application of a non-idempotent transition can return a different target.
+        // The ordinary lookup covers this target only if it resolves to the same configured key.
+        var ordinaryTarget =
+            getValueFromKey(
+                ConfiguredTargetKey.builder()
+                    .setLabel(label)
+                    .setConfigurationKey(targetKey.getConfigurationKey())
+                    .build());
+        if (ordinaryTarget != null
+            && ConfiguredTargetKey.fromConfiguredTarget(ordinaryTarget).equals(targetKey)) {
           continue;
         }
         if (extraConfiguredTargetKeys == null) {

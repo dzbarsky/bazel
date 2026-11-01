@@ -19,10 +19,14 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.common.io.BaseEncoding;
+import com.google.devtools.build.lib.actions.ActionAnalysisMetadata.AnalysisTimeFileContents;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
+import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.LabelPrinter;
+import com.google.devtools.build.lib.packages.NativeAspectClass;
+import com.google.devtools.build.lib.packages.StarlarkAspectClass;
 import com.google.devtools.build.lib.query2.SkyQueryEnvironment;
 import com.google.devtools.build.lib.query2.common.CqueryNode;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.TargetAccessor;
@@ -30,6 +34,8 @@ import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.query.hash.DirectTargetHashFunction;
 import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
+import com.google.devtools.build.lib.skyframe.RuleConfiguredTargetValue;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.skyframe.ErrorInfo;
@@ -123,7 +129,11 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
     }
     eventHandler.handle(
         Event.progress(String.format("Hashing: combining hashes of %d targets", nodes.size())));
-    CompactConfiguredHashes.combine(nodes, failed);
+    try {
+      CompactConfiguredHashes.combine(nodes, failed);
+    } catch (java.io.UncheckedIOException collision) {
+      throw collision.getCause();
+    }
     for (HashTarget target : roots) {
       CqueryNode root = target.node;
       byte[] hash = target.hash;
@@ -149,19 +159,75 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
   private static final class HashTarget extends CompactConfiguredHashes.Node<HashTarget> {
     final CqueryNode node;
 
-    HashTarget(int ordinal, CqueryNode node) {
+    HashTarget(int ordinal, CqueryNode node) throws IOException {
       super(ordinal, stableName(node));
       this.node = node;
     }
 
-    private static String stableName(CqueryNode node) {
+    private static String stableName(CqueryNode node) throws IOException {
       String checksum = node.getConfigurationChecksum();
       String identity =
           node.getOriginalLabel().getUnambiguousCanonicalForm()
               + " " + (checksum == null ? "null" : checksum);
-      return node.getLookupKey() instanceof AspectKey aspectKey
-          ? identity + " " + aspectKey.getDescription()
-          : identity;
+      if (node.getLookupKey() instanceof ConfiguredTargetKey key) {
+        if (key.getExecutionPlatformLabel() == null && key.shouldApplyRuleTransition()
+            && key.getLabel().equals(node.getOriginalLabel())) {
+          return identity;
+        }
+        Fingerprint fp = new Fingerprint();
+        addConfiguredKey(fp, key);
+        return identity + (char) 0 + BaseEncoding.base16().lowerCase().encode(fp.digestAndReset());
+      }
+      if (node.getLookupKey() instanceof AspectKey key) {
+        Fingerprint fp = new Fingerprint();
+        addAspectKey(fp, key);
+        return identity + " " + key.getAspectClass().getName() + (char) 0
+            + BaseEncoding.base16().lowerCase().encode(fp.digestAndReset());
+      }
+      throw new IOException("Unsupported configured hash key: " + node.getLookupKey().getClass());
+    }
+
+    private static void addConfiguredKey(Fingerprint fp, ConfiguredTargetKey key) {
+      fp.addString(key.getLabel().getUnambiguousCanonicalForm())
+          .addNullableString(key.getConfigurationKey() == null
+              ? null : key.getConfigurationKey().getOptions().checksum())
+          .addNullableString(key.getExecutionPlatformLabel() == null
+              ? null : key.getExecutionPlatformLabel().getUnambiguousCanonicalForm())
+          .addBoolean(key.shouldApplyRuleTransition());
+    }
+
+    private static void addAspectKey(Fingerprint fp, AspectKey key) throws IOException {
+      addConfiguredKey(fp, key.getBaseConfiguredTargetKey());
+      switch (key.getAspectClass()) {
+        case StarlarkAspectClass starlark -> fp.addString("starlark")
+            .addString(starlark.getExtensionLabel().getUnambiguousCanonicalForm())
+            .addString(starlark.getExtensionKey().loadKindForFingerprint())
+            .addString(starlark.getExportedName());
+        case NativeAspectClass nativeAspect -> fp.addString("native")
+            .addString(nativeAspect.getClass().getName());
+        default -> throw new IOException("Unsupported aspect class: " + key.getAspectClass().getClass());
+      }
+      var attributes = key.getParameters().getAttributes();
+      fp.addInt(attributes.keySet().size());
+      for (String name : ImmutableList.sortedCopyOf(attributes.keySet())) {
+        fp.addString(name).addStrings(attributes.get(name));
+      }
+      // Base aspects are canonicalized by Bazel on construction, but its presentation-based
+      // comparator can tie. Sort their structured digests instead of inheriting that tie order.
+      var bases = key.getBaseKeys();
+      fp.addInt(bases.size());
+      if (!bases.isEmpty()) {
+        var identities = new ArrayList<String>(bases.size());
+        for (AspectKey base : bases) {
+          Fingerprint child = new Fingerprint();
+          addAspectKey(child, base);
+          identities.add(BaseEncoding.base16().lowerCase().encode(child.digestAndReset()));
+        }
+        identities.sort(String::compareTo);
+        for (String identity : identities) {
+          fp.addString(identity);
+        }
+      }
     }
   }
 
@@ -169,7 +235,7 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
 
   private List<HashTarget> collectGraph(
       Iterable<CqueryNode> partialResult, List<HashTarget> roots, Set<HashTarget> failed)
-      throws InterruptedException {
+      throws IOException, InterruptedException {
     Map<ActionLookupKey, HashTarget> seen = new HashMap<>();
     for (CqueryNode node : partialResult) {
       if (!seen.containsKey(node.getLookupKey())) {
@@ -203,6 +269,12 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
           deps.add(candidate);
         }
         target.deps = ImmutableList.sortedCopyOf(BY_NAME, deps.build());
+        for (int j = 1; j < target.deps.size(); j++) {
+          if (target.deps.get(j - 1).name.equals(target.deps.get(j).name)) {
+            throw new IOException("Distinct configured dependencies have the same hash identity under "
+                + target.node.getLookupKey());
+          }
+        }
       }
       eventHandler.handle(
           Event.progress(String.format(
@@ -243,12 +315,45 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
         continue;
       }
       Fingerprint fp = new Fingerprint().addBytes(value.getDirectHash());
+      if (node instanceof RuleConfiguredTarget rule
+          && rule.getRuleClassId().key().equals("genquery")
+          && !addGenQueryResult(node, fp)) {
+        failed.add(target);
+        eventHandler.handle(Event.error("Missing genquery output for " + node.getOriginalLabel()));
+        continue;
+      }
       String checksum = node.getConfigurationChecksum();
       fp.addString(checksum == null ? "<no configuration>" : checksum);
-      if (node.getLookupKey() instanceof AspectKey aspectKey) {
-        fp.addString(aspectKey.getDescription());
+      if (node.getLookupKey() instanceof AspectKey
+          || (node.getLookupKey() instanceof ConfiguredTargetKey configuredKey
+              && (configuredKey.getExecutionPlatformLabel() != null || !configuredKey.shouldApplyRuleTransition()
+                  || !configuredKey.getLabel().equals(node.getOriginalLabel())))) {
+        fp.addString(target.name);
       }
       target.hash = fp.digestAndReset();
     }
+  }
+
+  // Native genquery reads the unconfigured graph. A ConfiguredTarget's dependency edges
+  // therefore do not encode its result. Read the same result bytes as the actual generating action.
+  private boolean addGenQueryResult(CqueryNode node, Fingerprint fingerprint)
+      throws InterruptedException {
+    if (!(skyframeExecutor.getEvaluator().getExistingValue(node.getLookupKey())
+        instanceof RuleConfiguredTargetValue value)) {
+      return false;
+    }
+    var outputs =
+        value.getActions().stream()
+            .filter(AnalysisTimeFileContents.class::isInstance)
+            .map(AnalysisTimeFileContents.class::cast)
+            .toList();
+    if (outputs.size() != 1) {
+      return false;
+    }
+    fingerprint.addString("native-genquery-result-v1");
+    Fingerprint contents = new Fingerprint();
+    outputs.get(0).fingerprintFileContents(contents);
+    fingerprint.addBytes(contents.digestAndReset());
+    return true;
   }
 }
