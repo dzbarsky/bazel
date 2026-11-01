@@ -189,10 +189,8 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
           PackageManager packageManager,
           StarlarkSemantics starlarkSemantics)
           throws QueryException, InterruptedException {
-    if (cqueryOptions.getGenerateHashes() || "label".equals(cqueryOptions.getOutputFormat())) {
-      indexSource = skyframeExecutor;
-    }
     if (cqueryOptions.getGenerateHashes()) {
+      indexSource = skyframeExecutor;
       return ImmutableList.of(
           new HashesOutputFormatterCallback(
               eventHandler,
@@ -443,8 +441,9 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
         if (targetKey.shouldApplyRuleTransition()) {
           continue;
         }
-        // A second application of a non-idempotent transition can return a different target.
-        // The ordinary lookup covers this target only if it resolves to the same configured key.
+        // Ordinary cquery considers an input configuration covered if its lookup succeeds.
+        // Hashing must distinguish two applications of a non-idempotent transition: success only
+        // covers this result when the lookup actually resolves to the same configured key.
         var ordinaryTarget =
             getValueFromKey(
                 ConfiguredTargetKey.builder()
@@ -452,7 +451,9 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
                     .setConfigurationKey(targetKey.getConfigurationKey())
                     .build());
         if (ordinaryTarget != null
-            && ConfiguredTargetKey.fromConfiguredTarget(ordinaryTarget).equals(targetKey)) {
+            && (cqueryOptions == null
+                || !cqueryOptions.getGenerateHashes()
+                || ConfiguredTargetKey.fromConfiguredTarget(ordinaryTarget).equals(targetKey))) {
           continue;
         }
         if (extraConfiguredTargetKeys == null) {

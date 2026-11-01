@@ -1938,6 +1938,56 @@ EOF
   diff reference actual || fail "different partial results"
 }
 
+function test_hashes_include_distinct_non_idempotent_transition_instances() {
+  local -r pkg=$FUNCNAME
+  mkdir -p "$pkg"
+  cat > "$pkg/rules.bzl" <<EOF
+Value = provider(fields = ["value"])
+
+def _setting_impl(ctx):
+    return [Value(value = ctx.build_setting_value)]
+
+setting = rule(implementation = _setting_impl, build_setting = config.string())
+
+def _append_impl(settings, attr):
+    return {"//$pkg:s": settings["//$pkg:s"] + "-next"}
+
+append = transition(implementation = _append_impl, inputs = ["//$pkg:s"], outputs = ["//$pkg:s"])
+
+def _impl(ctx):
+    return []
+
+def _subject_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(out, ctx.attr._setting[Value].value)
+    return [DefaultInfo(files = depset([out]))]
+
+subject = rule(
+    implementation = _subject_impl,
+    cfg = append,
+    attrs = {"_setting": attr.label(default = "//$pkg:s")},
+)
+wrapper = rule(implementation = _impl, attrs = {"dep": attr.label(cfg = append)})
+EOF
+  cat > "$pkg/BUILD" <<EOF
+load(":rules.bzl", "setting", "subject", "wrapper")
+setting(name = "s", build_setting_default = "initial")
+subject(name = "subject")
+wrapper(name = "caller", dep = ":subject")
+EOF
+  local -r expression="//$pkg:all intersect //$pkg:subject"
+  bazel cquery --output=label "$expression" > normal 2> "$TEST_log" || fail "ordinary cquery"
+  assert_equals 1 "$(wc -l < normal)"
+  bazel cquery --experimental_generate_hashes "$expression" > reference 2> "$TEST_log" \
+    || fail "serial hashes"
+  bazel cquery --experimental_generate_hashes --experimental_cquery_hash_workers=4 \
+    "$expression" > parallel 2> "$TEST_log" || fail "parallel hashes"
+  assert_equals 2 "$(wc -l < reference)"
+  assert_equals 2 "$(cut -d' ' -f2 reference | sort -u | wc -l)"
+  assert_equals 2 "$(cut -d' ' -f3 reference | sort -u | wc -l)"
+  diff <(LC_ALL=C sort reference) <(LC_ALL=C sort parallel) || fail "different root digests"
+}
+
 function test_generate_hashes_rejects_dependency_filters() {
   local -r pkg=$FUNCNAME
   mkdir -p $pkg
