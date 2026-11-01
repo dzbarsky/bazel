@@ -80,6 +80,7 @@ import com.google.devtools.build.lib.actions.Spawns;
 import com.google.devtools.build.lib.actions.VirtualActionInput;
 import com.google.devtools.build.lib.analysis.platform.PlatformInfo;
 import com.google.devtools.build.lib.analysis.platform.PlatformUtils;
+import com.google.devtools.build.lib.analysis.test.TestRunnerAction;
 import com.google.devtools.build.lib.authandtls.credentialhelper.CredentialHelperException;
 import com.google.devtools.build.lib.buildtool.buildevent.BuildCompleteEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.BuildInterruptedEvent;
@@ -1444,17 +1445,43 @@ public class RemoteExecutionService {
 
     FileOutErr outErr = action.getSpawnExecutionContext().getFileOutErr();
 
-    // Always download the action stdout/stderr, except for stdout that was redirected into an
-    // output above (in which case it must not be reported as regular action stdout).
     FileOutErr tmpOutErr = outErr.childOutErr();
-    List<ListenableFuture<Void>> outErrDownloads =
-        combinedCache.downloadOutErr(
-            context,
-            result.actionResult,
-            tmpOutErr,
-            /* downloadStdout= */ context.getSpawn().getStdout() == null);
-    for (ListenableFuture<Void> future : outErrDownloads) {
-      downloadsBuilder.add(transform(future, (v) -> null, directExecutor()));
+    boolean downloadOutErr = !result.cacheHit() || !result.success();
+    if (action.getSpawn().getResourceOwner() instanceof TestRunnerAction testAction) {
+      // test.log is the stdout of the main test spawn and is a mandatory action output.
+      // XML-generation and coverage spawns share the owner but write to different OutErr files.
+      downloadOutErr = true;
+      Path testLog = outErr.getOutputPath();
+      if (result.cacheHit()
+          && result.success()
+          && remoteActionFileSystem != null
+          && testLog.asFragment().equals(testAction.getTestLog().getPath().asFragment())
+          && !remoteOutputChecker.shouldDownloadOutput(testAction.getTestLog().getExecPath(), null)
+          && result.actionResult.hasStdoutDigest()
+          && result.actionResult.getStdoutDigest().getSizeBytes() != 0
+          && result.actionResult.getStdoutRaw().isEmpty()
+          && result.actionResult.getStderrRaw().isEmpty()
+          && result.actionResult.getStderrDigest().getSizeBytes() == 0) {
+        var digest = result.actionResult.getStdoutDigest();
+        remoteActionFileSystem.injectRemoteFile(
+            testLog.asFragment(),
+            DigestUtil.toBinaryDigest(digest),
+            digest.getSizeBytes(),
+            expirationTime,
+            /* inMemoryOutput= */ false);
+        downloadOutErr = false;
+      }
+    }
+    if (downloadOutErr) {
+      // Redirected stdout is already handled as an action output above.
+      for (ListenableFuture<Void> future :
+          combinedCache.downloadOutErr(
+              context,
+              result.actionResult,
+              tmpOutErr,
+              /* downloadStdout= */ context.getSpawn().getStdout() == null)) {
+        downloadsBuilder.add(transform(future, (v) -> null, directExecutor()));
+      }
     }
 
     ImmutableList<ListenableFuture<FileMetadata>> downloads = downloadsBuilder.build();
@@ -1822,7 +1849,8 @@ public class RemoteExecutionService {
     if (result.getExitCode() != 0) {
       return true;
     }
-    return remoteOutputChecker.shouldDownloadOutput(execPath, treeRootExecPath);
+    return remoteOutputChecker.shouldDownloadOutput(execPath, treeRootExecPath)
+        || (!result.cacheHit() && remoteOutputChecker.shouldDownloadTestOutputAfterExecution(execPath));
   }
 
   private static String prettyPrint(ActionInput actionInput) {

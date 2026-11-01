@@ -1725,7 +1725,8 @@ public class RemoteExecutionServiceTest {
             .setStderrDigest(digestStderr)
             .build();
     RemoteActionResult result =
-        RemoteActionResult.createFromCache(CachedActionResult.remote(actionResult));
+        RemoteActionResult.createFromResponse(
+            ExecuteResponse.newBuilder().setResult(actionResult).setCachedResult(false).build());
     Spawn spawn = newSpawnFromResult(result);
     FakeSpawnExecutionContext context = newSpawnExecutionContext(spawn, spyOutErr);
     RemoteExecutionService service = newRemoteExecutionService();
@@ -1768,7 +1769,8 @@ public class RemoteExecutionServiceTest {
             .setStderrDigest(digestStderr)
             .build();
     RemoteActionResult result =
-        RemoteActionResult.createFromCache(CachedActionResult.remote(actionResult));
+        RemoteActionResult.createFromResponse(
+            ExecuteResponse.newBuilder().setResult(actionResult).setCachedResult(false).build());
     Spawn spawn = newSpawnFromResult(result);
     FakeSpawnExecutionContext context = newSpawnExecutionContext(spawn, spyOutErr);
     RemoteExecutionService service = newRemoteExecutionService();
@@ -1791,6 +1793,63 @@ public class RemoteExecutionServiceTest {
       throw new AssertionError("outErr should still be writable after download failed.", err);
     }
     assertThat(context.isLockOutputFilesCalled()).isFalse();
+  }
+
+  @Test
+  public void downloadOutputs_cachedSuccess_ignoresMissingDiagnosticBlobs(
+      @TestParameter({"disk", "remote", "execute"}) String cacheName) throws Exception {
+    Digest output = cache.addContents(remoteActionExecutionContext, "required output");
+    var cached = ActionResult.newBuilder()
+        .setExitCode(0)
+        .addOutputFiles(OutputFile.newBuilder().setPath("outputs/result").setDigest(output))
+        .setStdoutDigest(digestUtil.computeAsUtf8("evicted stdout"))
+        .setStderrDigest(digestUtil.computeAsUtf8("evicted stderr"))
+        .build();
+    var result = switch (cacheName) {
+      case "disk" -> RemoteActionResult.createFromCache(CachedActionResult.disk(cached));
+      case "remote" -> RemoteActionResult.createFromCache(CachedActionResult.remote(cached));
+      case "execute" -> RemoteActionResult.createFromResponse(
+          ExecuteResponse.newBuilder().setResult(cached).setCachedResult(true).build());
+      default -> throw new AssertionError(cacheName);
+    };
+    Spawn spawn = newSpawnFromResult(result);
+    FakeSpawnExecutionContext context = newSpawnExecutionContext(spawn);
+    RemoteExecutionService service = newRemoteExecutionService();
+    RemoteAction action = service.buildRemoteAction(spawn, context);
+    createOutputDirectories(spawn);
+    when(remoteOutputChecker.shouldDownloadOutput(ArgumentMatchers.<PathFragment>any(), any()))
+        .thenReturn(true);
+
+    service.downloadOutputs(action, result);
+
+    assertThat(readContent(execRoot.getRelative("outputs/result"), UTF_8))
+        .isEqualTo("required output");
+    assertThat(outErr.hasRecordedOutput()).isFalse();
+    assertThat(context.isLockOutputFilesCalled()).isTrue();
+  }
+
+  @Test
+  public void downloadOutputs_cachedFailure_retainsDiagnostics() throws Exception {
+    Digest stdout = cache.addContents(remoteActionExecutionContext, "test ran");
+    Digest stderr = cache.addContents(remoteActionExecutionContext, "test failed");
+    var result =
+        RemoteActionResult.createFromCache(
+            CachedActionResult.remote(
+                ActionResult.newBuilder()
+                    .setExitCode(1)
+                    .setStdoutDigest(stdout)
+                    .setStderrDigest(stderr)
+                    .build()));
+    Spawn spawn = newSpawnFromResult(result);
+    FakeSpawnExecutionContext context = newSpawnExecutionContext(spawn);
+    RemoteExecutionService service = newRemoteExecutionService();
+    RemoteAction action = service.buildRemoteAction(spawn, context);
+    createOutputDirectories(spawn);
+
+    service.downloadOutputs(action, result);
+
+    assertThat(outErr.outAsLatin1()).isEqualTo("test ran");
+    assertThat(outErr.errAsLatin1()).isEqualTo("test failed");
   }
 
   @Test
@@ -2072,7 +2131,7 @@ public class RemoteExecutionServiceTest {
   }
 
   @Test
-  public void downloadOutputs_nonInlinedStdoutAndStderr_alwaysDownload() throws Exception {
+  public void downloadOutputs_nonInlinedStdoutAndStderr_afterExecution() throws Exception {
     // arrange
     Digest dOut = cache.addContents(remoteActionExecutionContext, "stdout");
     Digest dErr = cache.addContents(remoteActionExecutionContext, "stderr");
@@ -2083,7 +2142,8 @@ public class RemoteExecutionServiceTest {
             .setStderrDigest(dErr)
             .build();
 
-    RemoteActionResult result = RemoteActionResult.createFromCache(CachedActionResult.remote(r));
+    RemoteActionResult result = RemoteActionResult.createFromResponse(
+            ExecuteResponse.newBuilder().setResult(r).setCachedResult(false).build());
     Spawn spawn = newSpawnFromResult(result);
     FakeSpawnExecutionContext context = newSpawnExecutionContext(spawn);
     RemoteExecutionService service = newRemoteExecutionService();
@@ -2106,7 +2166,7 @@ public class RemoteExecutionServiceTest {
   }
 
   @Test
-  public void downloadOutputs_inlinedStdoutAndStderr_alwaysDownload() throws Exception {
+  public void downloadOutputs_inlinedStdoutAndStderr_afterExecution() throws Exception {
     // arrange
     Digest dOut = digestUtil.compute("stdout".getBytes(UTF_8));
     Digest dErr = digestUtil.compute("stderr".getBytes(UTF_8));
@@ -2117,7 +2177,8 @@ public class RemoteExecutionServiceTest {
             .setStderrRaw(ByteString.copyFromUtf8("stderr"))
             .build();
 
-    RemoteActionResult result = RemoteActionResult.createFromCache(CachedActionResult.remote(r));
+    RemoteActionResult result = RemoteActionResult.createFromResponse(
+            ExecuteResponse.newBuilder().setResult(r).setCachedResult(false).build());
     Spawn spawn = newSpawnFromResult(result);
     FakeSpawnExecutionContext context = newSpawnExecutionContext(spawn);
     RemoteExecutionService service = newRemoteExecutionService();
