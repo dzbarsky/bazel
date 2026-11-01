@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe.serialization;
 
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static com.google.common.util.concurrent.Futures.getDone;
 
@@ -97,6 +98,12 @@ public final class SkyValueRetriever {
 
     public SerializationState getState() {
       return state;
+    }
+
+    /** Rejects a retrieved value that did not pass the caller's validation. */
+    public void rejectRetrievedValue(NoCachedData miss) {
+      checkState(state instanceof RetrievedValue);
+      state = miss;
     }
 
     public int getRestarts() {

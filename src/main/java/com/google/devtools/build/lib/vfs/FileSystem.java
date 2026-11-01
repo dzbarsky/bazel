@@ -365,7 +365,7 @@ public abstract class FileSystem {
    * See {@link Path#setLastModifiedTimeNanos} for specification.
    */
   @SuppressWarnings("GoodTime") // performance-sensitive
-  public void setLastModifiedTimeNanos(PathFragment path, long newTime) throws IOException {
+  public final void setLastModifiedTimeNanos(PathFragment path, long newTime) throws IOException {
     if (!setLastModifiedTimeNanosIfExists(path, newTime)) {
       throw new FileNotFoundException(path + ERR_NO_SUCH_FILE_OR_DIR);
     }
