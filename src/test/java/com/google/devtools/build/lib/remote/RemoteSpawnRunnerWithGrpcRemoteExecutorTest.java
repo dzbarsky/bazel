@@ -98,6 +98,7 @@ import com.google.devtools.build.lib.util.TempPathGenerator;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
+import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.OutputPermissions;
 import com.google.devtools.build.lib.vfs.OutputService;
 import com.google.devtools.build.lib.vfs.Path;
@@ -535,8 +536,8 @@ public class RemoteSpawnRunnerWithGrpcRemoteExecutorTest {
     assertThat(result.setupSuccess()).isTrue();
     assertThat(result.exitCode()).isEqualTo(0);
     assertThat(result.isCacheHit()).isTrue();
-    assertThat(outErr.outAsLatin1()).isEqualTo("stdout");
-    assertThat(outErr.errAsLatin1()).isEqualTo("stderr");
+    assertThat(outErr.outAsLatin1()).isEmpty();
+    assertThat(outErr.errAsLatin1()).isEmpty();
   }
 
   @Test
@@ -562,8 +563,8 @@ public class RemoteSpawnRunnerWithGrpcRemoteExecutorTest {
     assertThat(result.setupSuccess()).isTrue();
     assertThat(result.exitCode()).isEqualTo(0);
     assertThat(result.isCacheHit()).isTrue();
-    assertThat(outErr.outAsLatin1()).isEqualTo("stdout");
-    assertThat(outErr.errAsLatin1()).isEqualTo("stderr");
+    assertThat(outErr.outAsLatin1()).isEmpty();
+    assertThat(outErr.errAsLatin1()).isEmpty();
   }
 
   private static Answer<StreamObserver<WriteRequest>> blobWriteAnswer(final byte[] data) {
@@ -1152,12 +1153,14 @@ public class RemoteSpawnRunnerWithGrpcRemoteExecutorTest {
 
   @Test
   public void passRepeatedOrphanedCacheMissErrorWithStackTrace() throws Exception {
-    final Digest stdOutDigest = DIGEST_UTIL.computeAsUtf8("bloo");
+    final Digest outputDigest = DIGEST_UTIL.computeAsUtf8("bloo");
     final ActionResult actionResult =
         ActionResult.newBuilder()
-            .addOutputFiles(DUMMY_OUTPUT)
-            .setStdoutDigest(stdOutDigest)
+            .addOutputFiles(DUMMY_OUTPUT.toBuilder().setPath("foo").setDigest(outputDigest))
             .build();
+    // Missing required output bytes must still trigger a retry or an error.
+    when(remoteOutputChecker.shouldDownloadOutput(PathFragment.create("foo"), null))
+        .thenReturn(true);
     serviceRegistry.addService(
         new ActionCacheImplBase() {
           @Override
@@ -1190,17 +1193,17 @@ public class RemoteSpawnRunnerWithGrpcRemoteExecutorTest {
             responseObserver.onCompleted();
           }
         });
-    String stdOutResourceName =
+    String outputResourceName =
         getResourceName(
             remoteOptions.getRemoteInstanceName(),
-            stdOutDigest,
+            outputDigest,
             false,
             DigestFunction.Value.SHA256);
     serviceRegistry.addService(
         new ByteStreamImplBase() {
           @Override
           public void read(ReadRequest request, StreamObserver<ReadResponse> responseObserver) {
-            assertThat(request.getResourceName()).isEqualTo(stdOutResourceName);
+            assertThat(request.getResourceName()).isEqualTo(outputResourceName);
             responseObserver.onError(Status.NOT_FOUND.asRuntimeException());
           }
         });
@@ -1211,7 +1214,7 @@ public class RemoteSpawnRunnerWithGrpcRemoteExecutorTest {
     assertThat(result.status()).isEqualTo(SpawnResult.Status.REMOTE_CACHE_FAILED);
     assertThat(result.failureDetail().getSpawn().getCode())
         .isEqualTo(FailureDetails.Spawn.Code.REMOTE_CACHE_FAILED);
-    assertThat(result.getFailureMessage()).contains(DigestUtil.toString(stdOutDigest));
+    assertThat(result.getFailureMessage()).contains(DigestUtil.toString(outputDigest));
     // Ensure we also got back the stack trace because verboseFailures=true
     assertThat(result.getFailureMessage())
         .contains("passRepeatedOrphanedCacheMissErrorWithStackTrace");
@@ -1219,12 +1222,14 @@ public class RemoteSpawnRunnerWithGrpcRemoteExecutorTest {
 
   @Test
   public void remotelyReExecuteOrphanedCachedActions() throws Exception {
-    final Digest stdOutDigest = DIGEST_UTIL.computeAsUtf8("stdout");
+    final Digest outputDigest = DIGEST_UTIL.computeAsUtf8("output");
     final ActionResult actionResult =
         ActionResult.newBuilder()
-            .addOutputFiles(DUMMY_OUTPUT)
-            .setStdoutDigest(stdOutDigest)
+            .addOutputFiles(DUMMY_OUTPUT.toBuilder().setPath("foo").setDigest(outputDigest))
             .build();
+    // Missing required output bytes must still trigger a retry or an error.
+    when(remoteOutputChecker.shouldDownloadOutput(PathFragment.create("foo"), null))
+        .thenReturn(true);
     serviceRegistry.addService(
         new ActionCacheImplBase() {
           @Override
@@ -1246,7 +1251,7 @@ public class RemoteSpawnRunnerWithGrpcRemoteExecutorTest {
               responseObserver.onError(Status.NOT_FOUND.asRuntimeException());
             } else {
               responseObserver.onNext(
-                  ReadResponse.newBuilder().setData(ByteString.copyFromUtf8("stdout")).build());
+                  ReadResponse.newBuilder().setData(ByteString.copyFromUtf8("output")).build());
               responseObserver.onCompleted();
             }
           }
@@ -1304,7 +1309,8 @@ public class RemoteSpawnRunnerWithGrpcRemoteExecutorTest {
     assertThat(result.setupSuccess()).isTrue();
     assertThat(result.exitCode()).isEqualTo(0);
     assertThat(result.isCacheHit()).isFalse();
-    assertThat(outErr.outAsLatin1()).isEqualTo("stdout");
+    assertThat(FileSystemUtils.readContent(execRoot.getRelative("foo"), UTF_8)).isEqualTo("output");
+    assertThat(outErr.outAsLatin1()).isEmpty();
     assertThat(numExecuteCalls.get()).isEqualTo(1);
   }
 
