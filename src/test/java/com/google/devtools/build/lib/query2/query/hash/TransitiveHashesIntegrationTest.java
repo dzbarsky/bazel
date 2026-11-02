@@ -169,6 +169,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
                 "\\n".join([
                     'load("@@//defs:defs.bzl", "my_toolchain")',
                     'filegroup(name = "files", srcs = glob(["*.txt"]), visibility = ["//visibility:public"])',
+                    'filegroup(name = "only_b", srcs = ["b.txt"], visibility = ["//visibility:public"])',
                     'my_toolchain(name = "impl", src = "a.txt", visibility = ["//visibility:public"])',
                 ]),
             )
@@ -195,6 +196,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
             name = "uses_ext",
             srcs = ["@ext//:files"],
         )
+        filegroup(name = "only_b", srcs = ["@ext//:only_b"])
         """);
     writeModuleFile(/* content= */ "a", /* unused= */ "1");
   }
@@ -293,7 +295,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   }
 
   @Test
-  public void externalRepoRule_doesNotListSamePackageSourceFilesAsDeps() throws Exception {
+  public void externalRepoRule_listsSamePackageSourceFilesAsDeps() throws Exception {
     EvaluationContext context =
         EvaluationContext.newBuilder().setParallelism(1).setEventHandler(reporter).build();
     var userKey = DirectTargetHashFunction.key(Label.parseCanonical("//ext_user:uses_ext"));
@@ -307,8 +309,22 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
     assertThat(result.getError(filesKey)).isNull();
     var filesValue = (DirectTargetHashFunction.Value) result.get(filesKey);
 
-    // a.txt and b.txt are covered by the digest of the whole repo.
-    assertThat(filesValue.getDeps()).isEmpty();
+    assertThat(filesValue.getDeps())
+        .containsExactly(
+            Label.create(files.getPackageIdentifier(), "a.txt"),
+            Label.create(files.getPackageIdentifier(), "b.txt"),
+            Label.create(files.getPackageIdentifier(), "linked.txt"));
+  }
+
+  @Test
+  public void externalFileChange_onlyAffectsTargetsThatUseTheFile() throws Exception {
+    Label allFiles = Label.parseCanonical("//ext_user:uses_ext");
+    Label onlyB = Label.parseCanonical("//ext_user:only_b");
+    ImmutableMap<Label, String> before = hashes(allFiles, onlyB);
+
+    writeModuleFile(/* content= */ "changed a", /* unused= */ "1");
+
+    assertThat(changed(before, hashes(allFiles, onlyB))).containsExactly(allFiles.toString());
   }
 
   @Test
