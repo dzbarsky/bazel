@@ -246,6 +246,37 @@ public final class PersistentStringIndexerTest {
   }
 
   @Test
+  public void unchangedSavesDoNotRewriteIndex() throws Exception {
+    setupTestContent();
+    long savedBytes = indexer.save();
+    // Use a fixed mtime to detect replacement of the main file.
+    dataPath.setLastModifiedTime(123L);
+
+    assertThat(indexer.save()).isEqualTo(savedBytes);
+    assertThat(dataPath.getLastModifiedTime()).isEqualTo(123L);
+
+    assertIndex(9, "one more string");
+    indexer.save();
+    indexer = PersistentStringIndexer.create(dataPath, journalPath, clock);
+    assertSize(10);
+    assertContent();
+  }
+
+  @Test
+  public void clearAndRepopulateSameSizeIsSaved() throws Exception {
+    setupTestContent();
+    indexer.save();
+    indexer.clear();
+    for (int i = 0; i < 9; i++) {
+      assertIndex(i, "replacement" + i);
+    }
+    indexer.save();
+    indexer = PersistentStringIndexer.create(dataPath, journalPath, clock);
+    assertSize(9);
+    assertContent();
+  }
+
+  @Test
   public void testJournalRecoveryWithoutMainDataFile() throws Exception {
     assertThat(dataPath.exists()).isFalse();
     assertThat(journalPath.exists()).isFalse();
