@@ -47,6 +47,7 @@ import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.HighWaterMarkLimiter;
 import com.google.devtools.build.lib.skyframe.WorkspaceStatusValue;
+import com.google.devtools.build.lib.skyframe.serialization.DeserializedSkyValue;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueService;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueStore;
 import com.google.devtools.build.lib.skyframe.serialization.InMemoryFingerprintValueStore;
@@ -246,6 +247,56 @@ public final class BazelSkycacheIntegrationTest extends SkycacheIntegrationTestB
     return super.getRuntimeBuilder()
         .addBlazeModule(new ModuleWithOverrides())
         .addBlazeService(new CompressionServiceImpl());
+  }
+
+  @Test
+  public void configuredQueryAfterCacheHitPreservesUnrelatedDirtyPackage(
+      @TestParameter boolean aquery) throws Exception {
+    allowExternalRepositories = false;
+    reinitializeAndPreserveOptions();
+    injectVersionGetter();
+    write(
+        "scope/BUILD",
+        "genrule(name = 'subject', outs = ['out'], cmd = 'touch $@')",
+        "filegroup(name = 'both', srcs = [':subject', '//other:local'])");
+    write("other/BUILD", "exports_files(['local'])");
+    write("other/local", "contents");
+    addOptions(
+        "--experimental_active_directories=other",
+        "--nobuild",
+        "--version_window_for_dirty_node_gc=-1");
+    assertUploadSuccess("//scope:subject");
+    getSkyframeExecutor().resetEvaluator();
+    addOptions(OFF_MODE_OPTION);
+    buildTarget("//other:local");
+    var packageKey = parseCanonicalUnchecked("//other:local").getPackageIdentifier();
+    var graph = getSkyframeExecutor().getEvaluator().getInMemoryGraph();
+    var packageEntry = graph.getIfPresent(packageKey);
+
+    write("other/BUILD", "exports_files(['local'])", "filegroup(name = 'new')");
+    failingStore.changedFiles = ImmutableList.of("other/BUILD");
+    assertDownloadSuccess("//scope:subject");
+    assertThat(graph.getIfPresent(packageKey)).isSameInstanceAs(packageEntry);
+    assertThat(packageEntry.isDirty()).isTrue();
+    var label = parseCanonicalUnchecked("//scope:subject");
+    var cachedKey =
+        getCommandEnvironment().getRemoteAnalysisCachingEventListener().getCacheHits().stream()
+            .filter(key -> key instanceof ConfiguredTargetKey ct && ct.getLabel().equals(label))
+            .findFirst()
+            .orElseThrow();
+    assertThat(graph.getIfPresent(cachedKey).toValue()).isInstanceOf(DeserializedSkyValue.class);
+
+    // Request both packages: queries intentionally discard still-dirty nodes outside their scope.
+    if (aquery) {
+      runtimeWrapper.runAqueryExprCommand("deps(//scope:both)", "//scope:all");
+    } else {
+      runtimeWrapper.runCqueryExprCommand("deps(//scope:both)", "//scope:all");
+    }
+
+    var localValue = graph.getIfPresent(cachedKey).getValue();
+    assertThat(localValue).isNotNull();
+    assertThat(localValue).isNotInstanceOf(DeserializedSkyValue.class);
+    assertThat(graph.getIfPresent(packageKey)).isSameInstanceAs(packageEntry);
   }
 
   @Test
