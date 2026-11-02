@@ -38,6 +38,7 @@ import com.google.devtools.build.lib.analysis.test.TestProvider;
 import com.google.devtools.build.lib.bugreport.BugReporter;
 import com.google.devtools.build.lib.buildtool.buildevent.ExecutionProgressReceiverAvailableEvent;
 import com.google.devtools.build.lib.events.Reporter;
+import com.google.devtools.build.lib.exec.ExecutionOptions;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.runtime.KeepGoingOption;
@@ -117,7 +118,11 @@ public class SkyframeBuilder implements Builder {
     // but plumbing the flag through is hard.
     int fsvcThreads = buildRequestOptions == null ? 200 : buildRequestOptions.getFsvcThreads();
     skyframeExecutor.detectModifiedOutputFiles(
-        modifiedOutputFiles, lastExecutionTimeRange, outputChecker, fsvcThreads);
+        modifiedOutputFiles,
+        lastExecutionTimeRange,
+        outputChecker,
+        fsvcThreads,
+        options.getOptions(ExecutionOptions.class).getCacheProbeOutput() != null);
     try (SilentCloseable c = Profiler.instance().profile("configureActionExecutor")) {
       skyframeExecutor.configureActionExecutor(
           fileCache,

@@ -325,7 +325,8 @@ public class ExecutionTool {
         modifiedOutputFiles,
         env.getBlazeWorkspace().getLastExecutionTimeRange(),
         outputChecker,
-        buildRequestOptions.getFsvcThreads());
+        buildRequestOptions.getFsvcThreads(),
+        request.getOptions(ExecutionOptions.class).getCacheProbeOutput() != null);
     try (SilentCloseable c = Profiler.instance().profile("configureActionExecutor")) {
       skyframeExecutor.configureActionExecutor(
           skyframeBuilder.getFileCache(),
