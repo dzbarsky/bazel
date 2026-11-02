@@ -1910,7 +1910,7 @@ filegroup(name = "leaf", srcs = ["input"])
 alias(name = "indirect", actual = ":leaf")
 genquery(name = "listing", expression = "deps(//$pkg:leaf)", scope = [":leaf"])
 filegroup(name = "top", srcs = [":indirect", ":leaf", ":listing"])
-filegroup(name = "missing", srcs = [":not_declared"])
+filegroup(name = "missing", srcs = ["//$pkg/missing_package:input"])
 EOF
   local -ar common=(--experimental_generate_hashes --experimental_explicit_aspects)
   local -r query="set(//$pkg:top //$pkg:indirect //$pkg:listing)"
@@ -1920,7 +1920,11 @@ EOF
     bazel cquery "${common[@]}" "$query" > reference 2> "$TEST_log" || fail "serial hash failed"
     bazel cquery "${common[@]}" --experimental_cquery_hash_workers=4 "$query" > actual 2> "$TEST_log" \
       || fail "parallel hash failed"
-    assert_equals 3 "$(wc -l < actual)"
+    # An alias may have multiple configured instances. Check the requested labels and every
+    # identity rather than assuming a single row per label.
+    diff <(printf '%s\n' "//$pkg:indirect" "//$pkg:listing" "//$pkg:top") \
+      <(cut -d' ' -f1 actual | LC_ALL=C sort -u) || fail "different requested labels"
+    assert_equals "$(wc -l < actual)" "$(cut -d' ' -f1,2 actual | LC_ALL=C sort -u | wc -l)"
     diff <(LC_ALL=C sort reference) <(LC_ALL=C sort actual) || fail "different root digests"
     grep "^//$pkg:top " actual > "top.$content" || fail "missing root"
   done
