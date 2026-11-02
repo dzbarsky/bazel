@@ -735,6 +735,7 @@ cat > "$XML_OUTPUT_FILE" <<'XML'
 <testcase name="original_cached_test_case"/></testsuite></testsuites>
 XML
 echo 'original undeclared output' > "$TEST_UNDECLARED_OUTPUTS_DIR/result.txt"
+cp "$XML_OUTPUT_FILE" "$TEST_UNDECLARED_OUTPUTS_DIR/test.xml"
 EOF
   chmod +x cached_logs/test.sh
 
@@ -760,11 +761,22 @@ EOF
   assert_not_exists bazel-testlogs/cached_logs/test/test.xml
 
   bazel test --remote_executor=grpc://localhost:${worker_port} \
+    --remote_download_minimal --nozip_undeclared_test_outputs --test_summary=detailed \
+    //cached_logs:test >& "$TEST_log" || fail "Expected requested cached test XML"
+  assert_contains "original_cached_test_case" bazel-testlogs/cached_logs/test/test.xml
+  assert_not_exists bazel-testlogs/cached_logs/test/test.log
+  assert_not_exists bazel-testlogs/cached_logs/test/test.outputs/result.txt
+  assert_not_exists bazel-testlogs/cached_logs/test/test.outputs/test.xml
+
+  bazel clean >& "$TEST_log" || fail "Failed to clean requested reports"
+  bazel test --remote_executor=grpc://localhost:${worker_port} \
     --remote_download_toplevel --nozip_undeclared_test_outputs --test_output=all \
     //cached_logs:test >& "$TEST_log" || fail "Expected requested cached test stdout"
   expect_log "original cached test stdout"
   assert_exists bazel-testlogs/cached_logs/test/test.log
-  assert_exists bazel-testlogs/cached_logs/test/test.xml
+  assert_not_exists bazel-testlogs/cached_logs/test/test.xml
+  assert_not_exists bazel-testlogs/cached_logs/test/test.outputs/result.txt
+  assert_not_exists bazel-testlogs/cached_logs/test/test.outputs/test.xml
 }
 
 function do_test_non_test_toplevel_targets() {
