@@ -55,6 +55,9 @@ import javax.annotation.Nullable;
  * mode and the TTL of remote metadata.
  */
 public class RemoteOutputChecker implements OutputChecker {
+  private static final PathFragment TEST_LOG = PathFragment.create("test.log");
+  private static final PathFragment TEST_XML = PathFragment.create("test.xml");
+
   private enum CommandMode {
     BUILD,
     TEST,
@@ -72,7 +75,8 @@ public class RemoteOutputChecker implements OutputChecker {
   private final ImmutableList<Predicate<String>> patternsToDownload;
   private final ConcurrentArtifactPathTrie pathsToDownload = new ConcurrentArtifactPathTrie();
   private final ConcurrentArtifactPathTrie testOutputs = new ConcurrentArtifactPathTrie();
-  private final boolean downloadCachedTestOutputs;
+  private final boolean downloadCachedTestLogs;
+  private final boolean downloadCachedTestXml;
   private final Set<PathFragment> pathsToSkip = ConcurrentHashMap.newKeySet();
 
   public RemoteOutputChecker(
@@ -88,8 +92,12 @@ public class RemoteOutputChecker implements OutputChecker {
       ImmutableList<RegexPatternOption> downloadRegexes,
       RemoteOutputChecker lastRemoteOutputChecker) {
     this(
-        commandName, outputsMode, downloadRegexes, lastRemoteOutputChecker,
-        /* downloadCachedTestOutputs= */ false);
+        commandName,
+        outputsMode,
+        downloadRegexes,
+        lastRemoteOutputChecker,
+        /* downloadCachedTestLogs= */ false,
+        /* downloadCachedTestXml= */ false);
   }
 
   public RemoteOutputChecker(
@@ -97,7 +105,8 @@ public class RemoteOutputChecker implements OutputChecker {
       RemoteOutputsMode outputsMode,
       ImmutableList<RegexPatternOption> downloadRegexes,
       @Nullable RemoteOutputChecker lastRemoteOutputChecker,
-      boolean downloadCachedTestOutputs) {
+      boolean downloadCachedTestLogs,
+      boolean downloadCachedTestXml) {
     this.commandMode =
         switch (commandName) {
           case "test" -> CommandMode.TEST;
@@ -113,7 +122,8 @@ public class RemoteOutputChecker implements OutputChecker {
     this.patternsToDownload =
         downloadRegexes.stream().map(RegexPatternOption::matcher).collect(toImmutableList());
     this.lastRemoteOutputChecker = lastRemoteOutputChecker;
-    this.downloadCachedTestOutputs = downloadCachedTestOutputs;
+    this.downloadCachedTestLogs = downloadCachedTestLogs;
+    this.downloadCachedTestXml = downloadCachedTestXml;
   }
 
   @VisibleForTesting
@@ -374,7 +384,15 @@ public class RemoteOutputChecker implements OutputChecker {
         || pathsToDownload.contains(execPath)
         || matchesPattern(execPath)
         || (treeRootExecPath != null && matchesPattern(treeRootExecPath))
-        || (downloadCachedTestOutputs && testOutputs.contains(execPath));
+        || shouldDownloadCachedTestReport(execPath, testOutputs);
+  }
+
+  private boolean shouldDownloadCachedTestReport(
+      PathFragment execPath, ConcurrentArtifactPathTrie outputs) {
+    return ((downloadCachedTestLogs && execPath.endsWith(TEST_LOG))
+            || (downloadCachedTestXml && execPath.endsWith(TEST_XML)))
+        // An undeclared output named test.xml or test.log is not a test report.
+        && outputs.containsExact(execPath);
   }
 
   /** Download implicit test outputs after a new execution, preserving toplevel output mode. */
@@ -403,8 +421,8 @@ public class RemoteOutputChecker implements OutputChecker {
       // toplevel targets. Checks the toplevel outputs tracked by the previous build's checker.
       if (lastRemoteOutputChecker != null
           && (lastRemoteOutputChecker.pathsToDownload.contains(file.getExecPath())
-              || (downloadCachedTestOutputs
-                  && lastRemoteOutputChecker.testOutputs.contains(file.getExecPath())))) {
+              || shouldDownloadCachedTestReport(
+                  file.getExecPath(), lastRemoteOutputChecker.testOutputs))) {
         return false;
       }
 
@@ -466,7 +484,8 @@ public class RemoteOutputChecker implements OutputChecker {
         lastRemoteOutputChecker.commandMode == CommandMode.RUN || commandMode == CommandMode.RUN;
     if (lastRemoteOutputChecker.outputsMode != outputsMode
         || !lastRemoteOutputChecker.downloadRegexes.equals(downloadRegexes)
-        || lastRemoteOutputChecker.downloadCachedTestOutputs != downloadCachedTestOutputs
+        || lastRemoteOutputChecker.downloadCachedTestLogs != downloadCachedTestLogs
+        || lastRemoteOutputChecker.downloadCachedTestXml != downloadCachedTestXml
         || (lastRemoteOutputChecker.commandMode != commandMode && !runTransition)) {
       memoizingEvaluator.delete(
           k -> {
