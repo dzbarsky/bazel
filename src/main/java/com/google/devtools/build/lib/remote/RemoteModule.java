@@ -565,15 +565,16 @@ public final class RemoteModule extends BlazeModule {
             outputsMode,
             downloadRegexes,
             executes ? lastRemoteOutputChecker : null,
-            /* downloadCachedTestOutputs= */ executionOptions != null
-                && (switch (executionOptions.getTestOutput()) {
-                      case ALL, STREAMED -> true;
-                      default -> false;
-                    }
-                    || switch (executionOptions.getTestSummary()) {
-                      case DETAILED, TESTCASE -> true;
-                      default -> false;
-                    }));
+            /* downloadCachedTestLogs= */ executionOptions != null
+                && switch (executionOptions.getTestOutput()) {
+                  case ALL, STREAMED -> true;
+                  default -> false;
+                },
+            /* downloadCachedTestXml= */ executionOptions != null
+                && switch (executionOptions.getTestSummary()) {
+                  case DETAILED, TESTCASE -> true;
+                  default -> false;
+                });
     // Only commands that execute actions complete targets and thus download outputs. Other commands
     // neither invalidate completed targets nor become the reference that the next executing
     // command compares its download settings against.
