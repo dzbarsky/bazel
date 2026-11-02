@@ -96,13 +96,22 @@ public class RemoteOutputCheckerTest {
     var metadata = FileArtifactValue.createForRemoteFile(new byte[] {1, 2, 3}, 10, 1);
     var previous = new RemoteOutputChecker("test", RemoteOutputsMode.TOPLEVEL, ImmutableList.of());
     previous.addTestOutput(log);
-    var verbose = new RemoteOutputChecker(
-        "test", RemoteOutputsMode.TOPLEVEL, ImmutableList.of(), previous,
-        /* downloadCachedTestOutputs= */ true);
+    previous.addTestOutput(xml);
+    var verbose =
+        new RemoteOutputChecker(
+            "test",
+            RemoteOutputsMode.TOPLEVEL,
+            ImmutableList.of(),
+            previous,
+            /* downloadCachedTestLogs= */ true,
+            /* downloadCachedTestXml= */ false);
     // Before Skymeld registers the current targets, the previous command identifies the test.
     assertThat(verbose.shouldTrustMetadata(log, metadata)).isFalse();
+    assertThat(verbose.shouldTrustMetadata(xml, metadata)).isTrue();
     verbose.addTestOutput(log);
+    verbose.addTestOutput(xml);
     assertThat(verbose.shouldTrustCachedMetadata(log, metadata)).isFalse();
+    assertThat(verbose.shouldDownloadOutput(xml, metadata)).isFalse();
 
     var regex = new RemoteOutputChecker(
         "coverage", RemoteOutputsMode.TOPLEVEL,
@@ -122,17 +131,65 @@ public class RemoteOutputCheckerTest {
   }
 
   @Test
+  public void cachedTestOutputs_detailedSummaryDoesNotDownloadLogsOrUndeclaredOutputs() {
+    Artifact log = ActionsTestUtil.createArtifact(execRoot, "testlogs/pkg/t/test.log");
+    Artifact xml = ActionsTestUtil.createArtifact(execRoot, "testlogs/pkg/t/test.xml");
+    var tree =
+        ActionsTestUtil.createTreeArtifactWithGeneratingAction(
+            execRoot, "testlogs/pkg/t/test.outputs");
+    var child = Artifact.TreeFileArtifact.createTreeOutput(tree, "test.xml");
+    var metadata = FileArtifactValue.createForRemoteFile(new byte[] {1, 2, 3}, 10, 1);
+    var previous = new RemoteOutputChecker("test", RemoteOutputsMode.MINIMAL, ImmutableList.of());
+    for (Artifact output : ImmutableList.of(log, xml, tree)) {
+      previous.addTestOutput(output);
+    }
+    var detailed =
+        new RemoteOutputChecker(
+            "test",
+            RemoteOutputsMode.MINIMAL,
+            ImmutableList.of(),
+            previous,
+            /* downloadCachedTestLogs= */ false,
+            /* downloadCachedTestXml= */ true);
+
+    assertThat(detailed.shouldTrustMetadata(xml, metadata)).isFalse();
+    assertThat(detailed.shouldTrustMetadata(log, metadata)).isTrue();
+    assertThat(detailed.shouldTrustMetadata(child, metadata)).isTrue();
+    for (Artifact output : ImmutableList.of(log, xml, tree)) {
+      detailed.addTestOutput(output);
+    }
+    assertThat(detailed.shouldDownloadOutput(xml, metadata)).isTrue();
+    assertThat(detailed.shouldDownloadOutput(log, metadata)).isFalse();
+    assertThat(detailed.shouldDownloadOutput(child, metadata)).isFalse();
+    assertThat(detailed.shouldTrustCachedMetadata(child, metadata)).isTrue();
+  }
+
+  @Test
   @SuppressWarnings("unchecked")
-  public void cachedTestOutputs_requestingLogsInvalidatesCompletions() {
+  public void cachedTestOutputs_changingRequestedReportsInvalidatesCompletions() {
     var previous = new RemoteOutputChecker("test", RemoteOutputsMode.TOPLEVEL, ImmutableList.of());
-    var verbose = new RemoteOutputChecker(
-        "test", RemoteOutputsMode.TOPLEVEL, ImmutableList.of(), previous,
-        /* downloadCachedTestOutputs= */ true);
-    MemoizingEvaluator evaluator = mock(MemoizingEvaluator.class);
+    var verbose =
+        new RemoteOutputChecker(
+            "test",
+            RemoteOutputsMode.TOPLEVEL,
+            ImmutableList.of(),
+            previous,
+            /* downloadCachedTestLogs= */ true,
+            /* downloadCachedTestXml= */ false);
+    var detailed =
+        new RemoteOutputChecker(
+            "test",
+            RemoteOutputsMode.TOPLEVEL,
+            ImmutableList.of(),
+            verbose,
+            /* downloadCachedTestLogs= */ false,
+            /* downloadCachedTestXml= */ true);
 
-    verbose.maybeInvalidateSkyframeValues(evaluator);
-
-    verify(evaluator).delete(any(Predicate.class));
+    for (var checker : ImmutableList.of(verbose, detailed)) {
+      MemoizingEvaluator evaluator = mock(MemoizingEvaluator.class);
+      checker.maybeInvalidateSkyframeValues(evaluator);
+      verify(evaluator).delete(any(Predicate.class));
+    }
   }
 
   @Test
