@@ -17,6 +17,7 @@ import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static com.google.common.util.concurrent.Uninterruptibles.awaitTerminationUninterruptibly;
 
 import com.google.common.base.Ascii;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
@@ -32,6 +33,7 @@ import com.google.devtools.build.lib.analysis.AnalysisPhaseCompleteEvent;
 import com.google.devtools.build.lib.buildtool.SymlinkForest;
 import com.google.devtools.build.lib.buildtool.SymlinkForest.SymlinkPlantingException;
 import com.google.devtools.build.lib.cmdline.IgnoredSubdirectories;
+import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet.Node;
@@ -86,6 +88,7 @@ public class IncrementalPackageRoots implements PackageRoots {
   private final IgnoredSubdirectories ignoredPaths;
 
   private final boolean allowExternalRepositories;
+  @Nullable private final Path externalRepositoryRoot;
   @Nullable private EventBus eventBus;
   @Nullable private final PackageRootLookup fallbackPackageRootLookup;
 
@@ -99,7 +102,9 @@ public class IncrementalPackageRoots implements PackageRoots {
       String prefix,
       IgnoredSubdirectories ignoredPaths,
       boolean allowExternalRepositories,
+      @Nullable Path externalRepositoryRoot,
       @Nullable PackageRootLookup fallbackPackageRootLookup) {
+    Preconditions.checkArgument(externalRepositoryRoot == null || allowExternalRepositories);
     this.threadSafeExternalRepoPackageRootsMap = new ConcurrentHashMap<>();
     this.execroot = execroot;
     this.singleSourceRoot = singleSourceRoot;
@@ -107,6 +112,7 @@ public class IncrementalPackageRoots implements PackageRoots {
     this.ignoredPaths = ignoredPaths;
     this.eventBus = eventBus;
     this.allowExternalRepositories = allowExternalRepositories;
+    this.externalRepositoryRoot = externalRepositoryRoot;
     this.fallbackPackageRootLookup = fallbackPackageRootLookup;
     this.symlinkPlantingPool =
         MoreExecutors.listeningDecorator(
@@ -129,6 +135,7 @@ public class IncrementalPackageRoots implements PackageRoots {
         prefix,
         ignoredSubdirectories,
         allowExternalRepositories,
+        /* externalRepositoryRoot= */ null,
         /* fallbackPackageRootLookup= */ null);
   }
 
@@ -139,6 +146,7 @@ public class IncrementalPackageRoots implements PackageRoots {
       String prefix,
       IgnoredSubdirectories ignoredSubdirectories,
       boolean allowExternalRepositories,
+      @Nullable Path externalRepositoryRoot,
       @Nullable PackageRootLookup fallbackPackageRootLookup) {
     IncrementalPackageRoots incrementalPackageRoots =
         new IncrementalPackageRoots(
@@ -148,6 +156,7 @@ public class IncrementalPackageRoots implements PackageRoots {
             prefix,
             ignoredSubdirectories,
             allowExternalRepositories,
+            externalRepositoryRoot,
             fallbackPackageRootLookup);
     eventBus.register(incrementalPackageRoots);
     return incrementalPackageRoots;
@@ -184,6 +193,12 @@ public class IncrementalPackageRoots implements PackageRoots {
       maybeConflictingBaseNamesLowercase =
           SymlinkForest.eagerlyPlantSymlinkForestSinglePackagePath(
               execroot, singleSourceRoot.asPath(), prefix, ignoredPaths);
+      if (externalRepositoryRoot != null) {
+        externalRepositoryRoot.createDirectoryAndParents();
+        execroot
+            .getRelative(LabelConstants.EXTERNAL_PATH_PREFIX)
+            .createSymbolicLink(externalRepositoryRoot);
+      }
     } catch (IOException e) {
       throwAbruptExitException(e);
     }
@@ -318,6 +333,23 @@ public class IncrementalPackageRoots implements PackageRoots {
         return;
       }
       for (Package.Metadata pkg : packages.getLeaves()) {
+        if (externalRepositoryRoot != null && isExternalRepository(pkg.packageIdentifier())) {
+          Preconditions.checkState(
+              pkg.sourceRoot()
+                  .asPath()
+                  .equals(
+                      externalRepositoryRoot.getChild(
+                          pkg.packageIdentifier().getRepository().getName())),
+              "External package %s has root %s outside %s",
+              pkg.packageIdentifier(),
+              pkg.sourceRoot(),
+              externalRepositoryRoot);
+          // Keep the lookup even when package values are discarded during analysis. The directory
+          // link already exposes this repository, so no filesystem work or worker is needed.
+          threadSafeExternalRepoPackageRootsMap.putIfAbsent(
+              pkg.packageIdentifier(), pkg.sourceRoot());
+          continue;
+        }
         if (pkg.packageIdentifier().getRepository().isMain()
             && maybeConflictingBaseNamesLowercase.isEmpty()) {
           continue;

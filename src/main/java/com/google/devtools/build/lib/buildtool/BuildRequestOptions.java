@@ -72,6 +72,16 @@ public abstract class BuildRequestOptions extends OptionsBase {
   public abstract int getJobs();
 
   @Option(
+      name = "experimental_single_external_symlink",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS, OptionEffectTag.EXECUTION},
+      help =
+          "Link the execution root's external directory to the repository directory instead of"
+              + " creating a separate link for each repository.")
+  public abstract boolean getUseSingleExternalSymlink();
+
+  @Option(
       name = "experimental_async_execution",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
