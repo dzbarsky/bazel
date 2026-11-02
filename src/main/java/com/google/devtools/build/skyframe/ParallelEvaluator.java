@@ -406,6 +406,9 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
             maybeMarkRebuilding(parentEntry);
             break;
           case REBUILDING:
+          case VERIFIED_CLEAN:
+            // An unchanged comparable error can finish checking this parent's deps on abort.
+            // Recompute only its diagnostic below, even if its old value recovered the error.
             break;
           default:
             throw new AssertionError(parent + " not in valid dirty state: " + parentEntry);
