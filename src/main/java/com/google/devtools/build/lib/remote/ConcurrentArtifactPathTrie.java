@@ -51,6 +51,11 @@ final class ConcurrentArtifactPathTrie {
     return paths.isEmpty();
   }
 
+  /** Checks for an artifact itself, excluding files contained in tree artifacts. */
+  boolean containsExact(PathFragment execPath) {
+    return paths.contains(execPath);
+  }
+
   /** Checks whether the given {@link PathFragment} is contained in an artifact in the trie. */
   boolean contains(PathFragment execPath) {
     // By the invariant of this set, there is at most one prefix of execPath in the set. Since the
