@@ -219,7 +219,7 @@ public class SymlinkForestTest {
     linkRoot.createDirectoryAndParents();
     ImmutableList<Path> plantedSymlinks =
         new SymlinkForest(packageRootMap, linkRoot, TestConstants.PRODUCT_NAME)
-            .plantSymlinkForest();
+            .plantSymlinkForest(/* externalRepositoryRoot= */ null);
 
     assertLinksTo(linkRoot, rootA, "pkgA");
     assertIsDir(linkRoot, "dir1");
@@ -259,7 +259,7 @@ public class SymlinkForestTest {
 
     ImmutableList<Path> plantedSymlinks =
         new SymlinkForest(packageRootMap, linkRoot, TestConstants.PRODUCT_NAME)
-            .plantSymlinkForest();
+            .plantSymlinkForest(/* externalRepositoryRoot= */ null);
     assertLinksTo(linkRoot, rootX, "file");
     assertThat(plantedSymlinks)
         .containsExactly(linkRoot.getRelative("file"), linkRoot.getRelative("foo"));
@@ -294,7 +294,7 @@ public class SymlinkForestTest {
 
     ImmutableList<Path> plantedSymlinks =
         new SymlinkForest(packageRootMap, linkRoot, TestConstants.PRODUCT_NAME)
-            .plantSymlinkForest();
+            .plantSymlinkForest(/* externalRepositoryRoot= */ null);
 
     assertLinksTo(linkRoot, mainRepo, "dir_main");
     assertLinksTo(linkRoot, mainRepo, "dir_lib");
@@ -349,7 +349,7 @@ public class SymlinkForestTest {
 
     ImmutableList<Path> plantedSymlinks =
         new SymlinkForest(packageRootMap, linkRoot, TestConstants.PRODUCT_NAME)
-            .plantSymlinkForest();
+            .plantSymlinkForest(/* externalRepositoryRoot= */ null);
 
     assertLinksTo(linkRoot, mainRepo, "dir1");
     assertLinksTo(linkRoot, mainRepo, "dir2");
@@ -391,7 +391,7 @@ public class SymlinkForestTest {
 
     ImmutableList<Path> plantedSymlinks =
         new SymlinkForest(packageRootMap, linkRoot, TestConstants.PRODUCT_NAME)
-            .plantSymlinkForest();
+            .plantSymlinkForest(/* externalRepositoryRoot= */ null);
 
     assertLinksTo(linkRoot, mainRepo, "dir1");
     assertLinksTo(linkRoot, mainRepo, "dir2");
@@ -431,7 +431,7 @@ public class SymlinkForestTest {
 
     ImmutableList<Path> plantedSymlinks =
         new SymlinkForest(packageRootMap, linkRoot, TestConstants.PRODUCT_NAME)
-            .plantSymlinkForest();
+            .plantSymlinkForest(/* externalRepositoryRoot= */ null);
 
     assertLinksTo(linkRoot, mainRepo, "dir1");
     assertLinksTo(linkRoot, mainRepo, "dir2");
@@ -461,7 +461,7 @@ public class SymlinkForestTest {
 
     ImmutableList<Path> plantedSymlinks =
         new SymlinkForest(packageRootMap, linkRoot, TestConstants.PRODUCT_NAME)
-            .plantSymlinkForest();
+            .plantSymlinkForest(/* externalRepositoryRoot= */ null);
     assertThat(linkRoot.getRelative(LabelConstants.EXTERNAL_PATH_PREFIX).exists()).isFalse();
     assertThat(plantedSymlinks).isEmpty();
   }
@@ -484,7 +484,7 @@ public class SymlinkForestTest {
 
     ImmutableList<Path> plantedSymlinks =
         new SymlinkForest(packageRootMap, linkRoot, TestConstants.PRODUCT_NAME)
-            .plantSymlinkForest();
+            .plantSymlinkForest(/* externalRepositoryRoot= */ null);
 
     assertLinksTo(linkRoot, mainRepo, "dir1");
     assertThat(linkRoot.getRelative(prefixedDir).exists(Symlinks.NOFOLLOW)).isFalse();
@@ -512,7 +512,7 @@ public class SymlinkForestTest {
     linkRoot.createDirectoryAndParents();
     ImmutableList<Path> plantedSymlinks =
         new SymlinkForest(packageRootMap, linkRoot, TestConstants.PRODUCT_NAME)
-            .plantSymlinkForest();
+            .plantSymlinkForest(/* externalRepositoryRoot= */ null);
 
     assertLinksTo(linkRoot, rootA, "pkgA");
     assertLinksTo(linkRoot, rootB, "pkgB");

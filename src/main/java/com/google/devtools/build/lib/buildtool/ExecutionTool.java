@@ -58,6 +58,7 @@ import com.google.devtools.build.lib.buildtool.buildevent.ConvenienceSymlinksIde
 import com.google.devtools.build.lib.buildtool.buildevent.ExecutionPhaseCompleteEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.ExecutionProgressReceiverAvailableEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.ExecutionStartingEvent;
+import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.EventKind;
@@ -282,6 +283,7 @@ public class ExecutionTool {
               env.getDirectories().getProductName() + "-",
               skyframeExecutor.getIgnoredPaths(),
               runtime.getWorkspace().doesAllowExternalRepositories(),
+              getSingleExternalRepositoryRoot(),
               skyframeExecutor::getRootForDonePackage);
       incrementalPackageRoots.eagerlyPlantSymlinksToSingleSourceRoot();
 
@@ -664,7 +666,7 @@ public class ExecutionTool {
       SymlinkForest symlinkForest =
           new SymlinkForest(
               packageRoots.getPackageRootsMap(), getExecRoot(), runtime.getProductName());
-      symlinkForest.plantSymlinkForest();
+      symlinkForest.plantSymlinkForest(getSingleExternalRepositoryRoot());
     } catch (IOException e) {
       String message = String.format("Source forest creation failed: %s", e.getMessage());
       throw new AbruptExitException(
@@ -1051,6 +1053,16 @@ public class ExecutionTool {
 
   private Path getExecRoot() {
     return env.getExecRoot();
+  }
+
+  @Nullable
+  private Path getSingleExternalRepositoryRoot() {
+    return request.getBuildOptions().getUseSingleExternalSymlink()
+            && runtime.getWorkspace().doesAllowExternalRepositories()
+        ? env.getDirectories()
+            .getOutputBase()
+            .getRelative(LabelConstants.EXTERNAL_REPOSITORY_LOCATION)
+        : null;
   }
 
   private static AbruptExitException createExitException(

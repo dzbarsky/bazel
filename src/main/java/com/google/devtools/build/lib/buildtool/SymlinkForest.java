@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.buildtool;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Ascii;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -56,7 +57,7 @@ public class SymlinkForest {
   /**
    * Constructor for a symlink forest creator; does not perform any i/o.
    *
-   * <p>Use {@link #plantSymlinkForest()} to actually create the symlink forest.
+   * <p>Use {@link #plantSymlinkForest(Path)} to actually create the symlink forest.
    *
    * @param packageRoots source package roots to which to create symlinks
    * @param execroot path where to plant the symlink forest
@@ -270,9 +271,11 @@ public class SymlinkForest {
   /**
    * Performs the filesystem operations to plant the symlink forest.
    *
+   * @param externalRepositoryRoot if non-null, link the external directory directly to this root
    * @return the symlinks that have been planted
    */
-  public ImmutableList<Path> plantSymlinkForest() throws IOException, AbruptExitException {
+  public ImmutableList<Path> plantSymlinkForest(@Nullable Path externalRepositoryRoot)
+      throws IOException, AbruptExitException {
     deleteTreesBelowNotPrefixed(execroot, prefix);
 
     boolean shouldLinkAllTopLevelItems = false;
@@ -281,6 +284,12 @@ public class SymlinkForest {
     Set<Path> externalRepoLinks = new LinkedHashSet<>();
     Map<PackageIdentifier, Root> packageRootsForMainRepo = new LinkedHashMap<>();
     ImmutableList.Builder<Path> plantedSymlinks = ImmutableList.builder();
+    if (externalRepositoryRoot != null) {
+      externalRepositoryRoot.createDirectoryAndParents();
+      Path externalLink = execroot.getRelative(LabelConstants.EXTERNAL_PATH_PREFIX);
+      externalLink.createSymbolicLink(externalRepositoryRoot);
+      plantedSymlinks.add(externalLink);
+    }
 
     for (Entry<PackageIdentifier, Root> entry : packageRoots.entrySet()) {
       PackageIdentifier pkgId = entry.getKey();
@@ -313,6 +322,13 @@ public class SymlinkForest {
         // Record the root of the packages and main repo packages.
         mainRepoRoots.add(entry.getValue());
         packageRootsForMainRepo.put(entry.getKey(), entry.getValue());
+      } else if (externalRepositoryRoot != null) {
+        Preconditions.checkState(
+            entry.getValue().asPath().equals(externalRepositoryRoot.getChild(repository.getName())),
+            "External package %s has root %s outside %s",
+            pkgId,
+            entry.getValue(),
+            externalRepositoryRoot);
       } else {
         plantSymlinkForExternalRepo(
             plantedSymlinks, repository, entry.getValue().asPath(), externalRepoLinks);
