@@ -47,6 +47,7 @@ import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.HighWaterMarkLimiter;
 import com.google.devtools.build.lib.skyframe.WorkspaceStatusValue;
+import com.google.devtools.build.lib.skyframe.serialization.DeserializedSkyValue;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueService;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueStore;
 import com.google.devtools.build.lib.skyframe.serialization.InMemoryFingerprintValueStore;
@@ -246,6 +247,50 @@ public final class BazelSkycacheIntegrationTest extends SkycacheIntegrationTestB
     return super.getRuntimeBuilder()
         .addBlazeModule(new ModuleWithOverrides())
         .addBlazeService(new CompressionServiceImpl());
+  }
+
+  @Test
+  public void configuredQueryAfterCacheHitPreservesUnrelatedDirtyTarget(
+      @TestParameter boolean aquery) throws Exception {
+    allowExternalRepositories = false;
+    reinitializeAndPreserveOptions();
+    injectVersionGetter();
+    write("scope/BUILD", "genrule(name = 'subject', outs = ['out'], cmd = 'touch $@')");
+    write("other/BUILD", "filegroup(name = 'local')");
+    addOptions(
+        "--experimental_active_directories=other",
+        "--nobuild",
+        "--version_window_for_dirty_node_gc=-1");
+    assertUploadSuccess("//scope:subject");
+    getSkyframeExecutor().resetEvaluator();
+    addOptions(OFF_MODE_OPTION);
+    buildTarget("//other:local");
+    var localKey = getConfiguredTarget("//other:local").getLookupKey();
+    var graph = getSkyframeExecutor().getEvaluator().getInMemoryGraph();
+    var localEntry = graph.getIfPresent(localKey);
+
+    write("other/BUILD", "filegroup(name = 'local', tags = ['changed'])");
+    failingStore.changedFiles = ImmutableList.of("other/BUILD");
+    assertDownloadSuccess("//scope:subject");
+    assertThat(localEntry.isDirty()).isTrue();
+    var label = parseCanonicalUnchecked("//scope:subject");
+    var cachedKey =
+        getCommandEnvironment().getRemoteAnalysisCachingEventListener().getCacheHits().stream()
+            .filter(key -> key instanceof ConfiguredTargetKey ct && ct.getLabel().equals(label))
+            .findFirst()
+            .orElseThrow();
+    assertThat(graph.getIfPresent(cachedKey).toValue()).isInstanceOf(DeserializedSkyValue.class);
+
+    if (aquery) {
+      runtimeWrapper.runAqueryExprCommand("//scope:subject");
+    } else {
+      runtimeWrapper.runCqueryExprCommand("//scope:subject", "//scope:subject");
+    }
+
+    var localValue = graph.getIfPresent(cachedKey).getValue();
+    assertThat(localValue).isNotNull();
+    assertThat(localValue).isNotInstanceOf(DeserializedSkyValue.class);
+    assertThat(graph.getIfPresent(localKey)).isSameInstanceAs(localEntry);
   }
 
   @Test
