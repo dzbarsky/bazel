@@ -112,6 +112,7 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:remote_analysis_caching_services_supplier",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:versioned_changes",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:versioned_changes_validator",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:deserialized-sky-value",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:fingerprint_value_store",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:frontier_node_version",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:key_bytes_provider",
