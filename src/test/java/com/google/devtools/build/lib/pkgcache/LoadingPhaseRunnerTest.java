@@ -91,6 +91,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.junit.Before;
@@ -144,6 +146,38 @@ public final class LoadingPhaseRunnerTest {
     assertThat(loadingResult.getTargetLabels())
         .containsExactlyElementsIn(getLabels("//base:hello"));
     assertThat(loadingResult.getTestsToRunLabels()).isNull();
+  }
+
+  @Test
+  public void cacheProbeTraversesReadyDependenciesWhileAnotherPackageLoads() throws Exception {
+    tester.addFile(
+        "root/BUILD",
+        "filegroup(name = 'root', srcs = ['//slow:root', '//ready:root'])");
+    tester.addFile("slow/BUILD", "filegroup(name = 'root', srcs = ['//ignored:input'])");
+    tester.addFile("ready/BUILD", "filegroup(name = 'root', srcs = ['//deep:root'])");
+    tester.addFile("deep/BUILD", "filegroup(name = 'root')");
+    tester.addFile("ignored/BUILD", "fail('Excluded package must not load')");
+    assertNoErrors(tester.load("//ready:root"));
+
+    CountDownLatch deepPackageRead = new CountDownLatch(1);
+    tester.fs.beforeInputStream =
+        path -> {
+          if (path.equals(tester.workspace.getRelative("deep/BUILD").asFragment())) {
+            deepPackageRead.countDown();
+          }
+          if (path.equals(tester.workspace.getRelative("slow/BUILD").asFragment())) {
+            try {
+              deepPackageRead.await();
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+              throw new AssertionError(e);
+            }
+          }
+        };
+    tester.cacheProbe = true;
+    tester.useLoadingOptions("--experimental_cache_probe_exclude_deps=//ignored");
+    TargetPatternPhaseValue result = assertNoErrors(tester.load("//root:root"));
+    assertThat(result.getTargetLabels()).isEmpty();
   }
 
   @Test
@@ -1828,6 +1862,7 @@ public final class LoadingPhaseRunnerTest {
     private final List<Path> changes = new ArrayList<>();
 
     private LoadingOptions options;
+    private boolean cacheProbe;
     private final StoredEventHandler storedErrors;
 
     private PathFragment relativeWorkingDirectory = PathFragment.EMPTY_FRAGMENT;
@@ -1976,7 +2011,8 @@ public final class LoadingPhaseRunnerTest {
               // We load very few packages, and everything is in memory; two should be plenty.
               /* threadCount= */ 2,
               keepGoing,
-              determineTests);
+              determineTests,
+              cacheProbe);
       this.targetParsingCompleteEvent = findPost(TargetParsingCompleteEvent.class);
       this.loadingPhaseCompleteEvent = findPost(LoadingPhaseCompleteEvent.class);
       if (!keepGoing) {
@@ -2103,6 +2139,7 @@ public final class LoadingPhaseRunnerTest {
    */
   private static final class CustomInMemoryFs extends InMemoryFileSystem {
     private final Map<PathFragment, IOException> pathsToErrorOnGetInputStream = new HashMap<>();
+    private Consumer<PathFragment> beforeInputStream = unused -> {};
 
     CustomInMemoryFs(ManualClock manualClock) {
       super(manualClock, DigestHashFunction.SHA256);
@@ -2113,12 +2150,15 @@ public final class LoadingPhaseRunnerTest {
     }
 
     @Override
-    public synchronized InputStream getInputStream(PathFragment path) throws IOException {
-      IOException exnToThrow = pathsToErrorOnGetInputStream.get(path);
-      if (exnToThrow != null) {
-        throw exnToThrow;
+    public InputStream getInputStream(PathFragment path) throws IOException {
+      beforeInputStream.accept(path);
+      synchronized (this) {
+        IOException exnToThrow = pathsToErrorOnGetInputStream.get(path);
+        if (exnToThrow != null) {
+          throw exnToThrow;
+        }
+        return super.getInputStream(path);
       }
-      return super.getInputStream(path);
     }
   }
 }
