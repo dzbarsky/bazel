@@ -338,13 +338,9 @@ public class ActionExecutionFunction implements SkyFunction {
         if (state.cacheProbeInputBatches.stoppedOnMiss()) {
           ImmutableSet.Builder<SkyKey> requestedKeys = ImmutableSet.builder();
           requestedKeys.addAll(requested);
-          Predicate<Artifact> isMandatoryInput = makeMandatoryInputPredicate(action);
-          for (Artifact input :
-              Iterables.concat(allInputs.toList(), action.getSchedulingDependencies().toList())) {
-            if (input.isSourceArtifact() && isMandatoryInput.test(input)) {
-              requestedKeys.add(Artifact.key(input));
-            }
-          }
+          addSourceInputDeps(
+              action.discoversInputs() ? action.getMandatoryInputs() : allInputs, requestedKeys);
+          addSourceInputDeps(action.getSchedulingDependencies(), requestedKeys);
           inputDepKeys = requestedKeys.build();
         }
       }
@@ -1018,6 +1014,19 @@ public class ActionExecutionFunction implements SkyFunction {
     }
   }
 
+  private static void addSourceInputDeps(
+      NestedSet<Artifact> inputs, ImmutableSet.Builder<SkyKey> depKeys) {
+    // Keep shared children without restoring derived-input requests pruned after a cache miss.
+    ArtifactNestedSetKey.visitDirectDeps(
+        inputs,
+        input -> {
+          if (input.isSourceArtifact()) {
+            depKeys.add(Artifact.key(input));
+          }
+        },
+        child -> depKeys.add(child.forSourceArtifacts()));
+  }
+
   private static Predicate<Artifact> makeMandatoryInputPredicate(Action action) {
     if (!action.discoversInputs()) {
       return Predicates.alwaysTrue();
@@ -1103,15 +1112,15 @@ public class ActionExecutionFunction implements SkyFunction {
       return null;
     }
 
-    ImmutableList<Artifact> allInputsList = allInputs.toList();
-
     if (hasMissingInputs && actionExecutionFunctionExceptionHandler.firstCacheProbeMiss != null) {
       // Missing source values need classification before an expected miss can be propagated.
       // Do not look up failed derived inputs here: those have no value, not missing-file metadata.
       CompactHashSet<Artifact> seen = CompactHashSet.create();
+      NestedSet<Artifact> mandatoryInputs =
+          action.discoversInputs() ? action.getMandatoryInputs() : allInputs;
       for (Artifact input :
-          Iterables.concat(allInputsList, action.getSchedulingDependencies().toList())) {
-        if (input.isSourceArtifact() && seen.add(input) && isMandatoryInput.test(input)) {
+          Iterables.concat(mandatoryInputs.toList(), action.getSchedulingDependencies().toList())) {
+        if (input.isSourceArtifact() && seen.add(input)) {
           // A skipped batch may contain dirty source nodes from an earlier command. Their old
           // missing-file values are not evidence about this invocation.
           SkyKey inputKey = Artifact.key(input);
@@ -1130,6 +1139,7 @@ public class ActionExecutionFunction implements SkyFunction {
 
     // When there are no missing values or there was an error, we can start checking individual
     // files. We don't bother to optimize the error-ful case since it's rare.
+    ImmutableList<Artifact> allInputsList = allInputs.toList();
     ActionInputMap inputArtifactData = new ActionInputMap(allInputsList.size());
     List<Artifact> undoneInputs = new ArrayList<>(0);
 
