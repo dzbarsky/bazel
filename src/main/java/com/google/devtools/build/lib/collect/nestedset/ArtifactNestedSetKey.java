@@ -28,7 +28,8 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 /**
- * {@link SkyKey} for requesting all artifacts in a {@link NestedSet}.
+ * {@link SkyKey} for requesting artifacts in a {@link NestedSet} without flattening its structure.
+ * The default key requests all artifacts; {@link #forSourceArtifacts} excludes generating actions.
  *
  * <p>{@link com.google.devtools.build.lib.skyframe.ArtifactNestedSetFunction} requests the keys
  * returned by {@link #getDirectDepKeys} to ensure that the Skyframe graph mirrors the {@link
@@ -43,7 +44,7 @@ import java.util.function.Consumer;
  * that to save memory, this class does not retain a {@link NestedSet.Node}). This means that two
  * instances are not guaranteed to compare equal even if they contain the same set of artifacts.
  */
-public final class ArtifactNestedSetKey implements ExecutionPhaseSkyKey {
+public sealed class ArtifactNestedSetKey implements ExecutionPhaseSkyKey {
 
   private static final SkyKeyInterner<ArtifactNestedSetKey> interner = SkyKey.newInterner();
 
@@ -66,6 +67,28 @@ public final class ArtifactNestedSetKey implements ExecutionPhaseSkyKey {
     this.children = children;
   }
 
+  /** Requests only source artifacts, preserving the shared nested-set structure. */
+  public ArtifactNestedSetKey forSourceArtifacts() {
+    return interner.intern(new SourceArtifactsKey(children));
+  }
+
+  public boolean isSourceArtifactsOnly() {
+    return this instanceof SourceArtifactsKey;
+  }
+
+  private ArtifactNestedSetKey childKey(Object[] children) {
+    return isSourceArtifactsOnly()
+        ? interner.intern(new SourceArtifactsKey(children))
+        : createInternal(children);
+  }
+
+  // Encode the mode in the class, without adding a field to every ordinary nested-set key.
+  private static final class SourceArtifactsKey extends ArtifactNestedSetKey {
+    private SourceArtifactsKey(Object[] children) {
+      super(children);
+    }
+  }
+
   @Override
   public boolean canBeDeletedWhenUnreferenced() {
     return true;
@@ -79,9 +102,11 @@ public final class ArtifactNestedSetKey implements ExecutionPhaseSkyKey {
     ImmutableList.Builder<SkyKey> depKeys = ImmutableList.builderWithExpectedSize(children.length);
     for (Object child : children) {
       if (child instanceof Artifact artifact) {
-        depKeys.add(Artifact.key(artifact));
+        if (!isSourceArtifactsOnly() || artifact.isSourceArtifact()) {
+          depKeys.add(Artifact.key(artifact));
+        }
       } else {
-        depKeys.add(createInternal((Object[]) child));
+        depKeys.add(childKey((Object[]) child));
       }
     }
     return depKeys.build();
@@ -90,7 +115,8 @@ public final class ArtifactNestedSetKey implements ExecutionPhaseSkyKey {
   /** Applies a consumer function to the direct artifacts of this nested set. */
   public void applyToDirectArtifacts(DirectArtifactConsumer function) throws InterruptedException {
     for (Object child : children) {
-      if (child instanceof Artifact artifact) {
+      if (child instanceof Artifact artifact
+          && (!isSourceArtifactsOnly() || artifact.isSourceArtifact())) {
         function.accept(artifact);
       }
     }
@@ -134,7 +160,13 @@ public final class ArtifactNestedSetKey implements ExecutionPhaseSkyKey {
    */
   public ImmutableList<Artifact> expandToArtifacts() {
     // Depth is not accurate, but doesn't matter.
-    return NestedSet.<Artifact>create(Order.STABLE_ORDER, /* depth= */ 3, children).toList();
+    ImmutableList<Artifact> artifacts =
+        NestedSet.<Artifact>create(Order.STABLE_ORDER, /* depth= */ 3, children).toList();
+    return isSourceArtifactsOnly()
+        ? artifacts.stream()
+            .filter(Artifact::isSourceArtifact)
+            .collect(ImmutableList.toImmutableList())
+        : artifacts;
   }
 
   /**
@@ -195,12 +227,13 @@ public final class ArtifactNestedSetKey implements ExecutionPhaseSkyKey {
     boolean anyFound = false;
     for (Object child : node.children) {
       if (child instanceof Artifact artifact) {
-        if (lostArtifacts.contains(artifact)) {
+        if ((!node.isSourceArtifactsOnly() || artifact.isSourceArtifact())
+            && lostArtifacts.contains(artifact)) {
           rewindGraph.putEdge(node, Artifact.key(artifact));
           anyFound = true;
         }
       } else {
-        ArtifactNestedSetKey nextNode = createInternal((Object[]) child);
+        ArtifactNestedSetKey nextNode = node.childKey((Object[]) child);
         if (searchForLostArtifacts(nextNode, rewindGraph, lostArtifacts, seen)) {
           rewindGraph.putEdge(node, nextNode);
           anyFound = true;
@@ -224,7 +257,7 @@ public final class ArtifactNestedSetKey implements ExecutionPhaseSkyKey {
 
   @Override
   public int hashCode() {
-    return System.identityHashCode(children);
+    return System.identityHashCode(children) ^ (isSourceArtifactsOnly() ? 1 : 0);
   }
 
   @Override
@@ -233,12 +266,13 @@ public final class ArtifactNestedSetKey implements ExecutionPhaseSkyKey {
       return true;
     }
     return that instanceof ArtifactNestedSetKey artifactNestedSetKey
+        && getClass() == that.getClass()
         && children == artifactNestedSetKey.children;
   }
 
   @Override
   public String toString() {
-    return String.format("ArtifactNestedSetKey[%s]@%s", children.length, hashCode());
+    return String.format("%s[%s]@%s", getClass().getSimpleName(), children.length, hashCode());
   }
 
   /** A consumer to be applied to each direct artifact. */
