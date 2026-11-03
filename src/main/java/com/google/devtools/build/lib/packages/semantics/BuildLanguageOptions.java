@@ -145,8 +145,7 @@ public abstract class BuildLanguageOptions extends OptionsBase {
       effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
       metadataTags = {OptionMetadataTag.EXPERIMENTAL},
       help =
-          "Retain compiled programs for external .bzl files so byte-identical rewrites do not"
-              + " invalidate their consumers. May increase retained memory.")
+          "Use source digests to preserve external .bzl loads across byte-identical rewrites.")
   public abstract boolean getExperimentalPruneUnchangedExternalBzl();
 
   @Option(

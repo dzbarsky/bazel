@@ -63,7 +63,6 @@ import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -149,16 +148,16 @@ public class BzlLoadFunction implements SkyFunction {
     return new BzlLoadFunction(
         ruleClassProvider,
         directories,
-        // When we are not inlining BzlLoadValue nodes, we normally inline BzlCompileFunction
-        // to save memory. computeInternal selects an explicit compile node when change pruning
-        // is enabled for the file.
+        // When we are not inlining BzlLoadValue nodes, there is no need to have separate
+        // BzlCompileValue nodes for bzl files. Instead we inline BzlCompileFunction for a
+        // strict memory win, at a small code complexity cost.
         //
         // Detailed explanation:
         // (1) The BzlCompileValue node for a bzl file is used only for the computation of
         // that file's BzlLoadValue node. So there's no concern about duplicate work that would
         // otherwise get deduped by Skyframe.
-        // (2) Without change pruning, there is no benefit to evaluating a BzlCompileValue
-        // independently of its consumer.
+        // (2) BzlCompileValue has no equality relation for change pruning. When external
+        // .bzl pruning is enabled, an independent source digest node handles equality.
         // (3) A BzlCompileValue node lets us avoid redoing work on a BzlLoadFunction Skyframe
         // restart, but we can also achieve that result ourselves with a cache that persists between
         // Skyframe restarts.
@@ -566,13 +565,9 @@ public class BzlLoadFunction implements SkyFunction {
     if (compileKey == null) {
       return null;
     }
-    ValueGetter compileGetter =
-        BzlCompileFunction.useExternalBzlPruning(compileKey, builtins.starlarkSemantics)
-            ? RegularSkyframeGetter.INSTANCE
-            : getter;
     BzlCompileValue compileValue;
     try {
-      compileValue = compileGetter.getBzlCompileValue(compileKey, env);
+      compileValue = getter.getBzlCompileValue(compileKey, env);
     } catch (BzlCompileFunction.FailedIOException e) {
       throw errorReadingBzl(filePath, e);
     }
@@ -589,7 +584,7 @@ public class BzlLoadFunction implements SkyFunction {
       completed = result != null;
     } finally {
       if (completed) { // only false on unexceptional null result
-        compileGetter.doneWithBzlCompileValue(compileKey);
+        getter.doneWithBzlCompileValue(compileKey);
       }
     }
     return result;
@@ -1527,16 +1522,15 @@ public class BzlLoadFunction implements SkyFunction {
         // The cache hit may have been populated on behalf of a different BzlLoadValue node with
         // the same compile key; make sure this node depends on the .bzl file (and allowlist file,
         // if oversized) too.
-        var bzlFileKey = key.getBzlFileKey();
-        if (bzlFileKey != null) {
-          try {
-            var bzlFileValue = env.getValueOrThrow(bzlFileKey, IOException.class);
-            if (bzlFileValue == null
-                || !BzlCompileFunction.registerAllowlistDepIfOversized(key, bzlFileValue, env)) {
-              return null;
-            }
-          } catch (IOException e) {
-            throw new BzlCompileFunction.FailedIOException(e, Transience.PERSISTENT);
+        if (key.getBzlFileKey() != null) {
+          StarlarkSemantics semantics = PrecomputedValue.STARLARK_SEMANTICS.get(env);
+          if (semantics == null) {
+            return null;
+          }
+          var bzlFileValue = BzlCompileFunction.getBzlFileValue(key, env, semantics);
+          if (bzlFileValue == null
+              || !BzlCompileFunction.registerAllowlistDepIfOversized(key, bzlFileValue, env)) {
+            return null;
           }
         }
       }

@@ -39,9 +39,11 @@ import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
+import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -96,10 +98,97 @@ public class BzlCompileFunction implements SkyFunction {
         && key.label.getName().endsWith(".bzl");
   }
 
+  // Keep source identity in Skyframe so inlined compiles can still release their programs.
+  private record SourceKey(BzlCompileValue.Key key) implements SkyKey {
+    @Override
+    public SkyFunctionName functionName() {
+      return key.functionName();
+    }
+
+    @Override
+    public boolean valueIsShareable() {
+      return false;
+    }
+  }
+
+  private record SourceValue(FileValue file, @Nullable byte[] digest) implements SkyValue {
+    @Override
+    public boolean equals(Object other) {
+      return this == other
+          || (digest != null
+              && other instanceof SourceValue value
+              && Arrays.equals(digest, value.digest)
+              && file.getSize() == value.file.getSize());
+    }
+
+    @Override
+    public int hashCode() {
+      return digest == null ? System.identityHashCode(this) : Arrays.hashCode(digest);
+    }
+  }
+
+  @Nullable
+  private static FileValue getSourceMetadata(BzlCompileValue.Key key, Environment env)
+      throws FailedIOException, InterruptedException {
+    try {
+      return (FileValue) env.getValueOrThrow(key.getBzlFileKey(), IOException.class);
+    } catch (IOException e) {
+      throw new FailedIOException(e, Transience.PERSISTENT);
+    }
+  }
+
+  @Nullable
+  private static SourceValue computeSource(BzlCompileValue.Key key, Environment env)
+      throws FailedIOException, InterruptedException {
+    FileValue file = getSourceMetadata(key, env);
+    StarlarkSemantics semantics = PrecomputedValue.STARLARK_SEMANTICS.get(env);
+    if (file == null || semantics == null) {
+      return null;
+    }
+    if (!file.isFile() || file.isSpecialFile()) {
+      return new SourceValue(file, null);
+    }
+    long maxSize = semantics.get(BuildLanguageOptions.MAX_BZL_FILE_SIZE);
+    if (maxSize > 0 && file.getSize() > maxSize) {
+      // Let the compiler report oversized files. Avoid opening files it will reject.
+      AllowlistCheckResult allowlist = isFileAllowlisted(key, file.getSize(), maxSize, semantics, env);
+      if (allowlist == null) {
+        return null;
+      }
+      if (!allowlist.allowlisted()) {
+        return new SourceValue(file, null);
+      }
+    }
+    byte[] digest = file.getDigest();
+    if (digest == null) {
+      try {
+        digest = RootedPath.toRootedPath(key.root, key.label.toPathFragment()).asPath().getDigest();
+      } catch (IOException e) {
+        throw new FailedIOException(e, Transience.TRANSIENT);
+      }
+    }
+    return new SourceValue(file, digest);
+  }
+
+  @Nullable
+  static FileValue getBzlFileValue(
+      BzlCompileValue.Key key, Environment env, StarlarkSemantics semantics)
+      throws FailedIOException, InterruptedException {
+    if (!useExternalBzlPruning(key, semantics)) {
+      return getSourceMetadata(key, env);
+    }
+    SourceValue value =
+        (SourceValue) env.getValueOrThrow(new SourceKey(key), FailedIOException.class);
+    return value == null ? null : value.file;
+  }
+
   @Override
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws SkyFunctionException, InterruptedException {
     try {
+      if (skyKey instanceof SourceKey sourceKey) {
+        return computeSource(sourceKey.key, env);
+      }
       return computeInline(
           (BzlCompileValue.Key) skyKey.argument(),
           env,
@@ -123,7 +212,6 @@ public class BzlCompileFunction implements SkyFunction {
     byte[] digest;
     String inputName;
     RootedPath rootedPath = null;
-    BzlCompileValue.PruningInputs pruningInputs = null;
 
     StarlarkSemantics semantics = PrecomputedValue.STARLARK_SEMANTICS.get(env);
     if (semantics == null) {
@@ -138,13 +226,7 @@ public class BzlCompileFunction implements SkyFunction {
     } else {
       // Obtain the file.
       rootedPath = RootedPath.toRootedPath(key.root, key.label.toPathFragment());
-      SkyKey fileSkyKey = FileValue.key(rootedPath);
-      FileValue fileValue = null;
-      try {
-        fileValue = (FileValue) env.getValueOrThrow(fileSkyKey, IOException.class);
-      } catch (IOException e) {
-        throw new FailedIOException(e, Transience.PERSISTENT);
-      }
+      FileValue fileValue = getBzlFileValue(key, env, semantics);
       if (fileValue == null) {
         return null;
       }
@@ -195,9 +277,6 @@ public class BzlCompileFunction implements SkyFunction {
           }
         }
 
-        if (!fileValue.isSpecialFile() && useExternalBzlPruning(key, semantics)) {
-          pruningInputs = new BzlCompileValue.PruningInputs(key, semantics);
-        }
         digest = fileValue.getDigest(); // may be null
         inputName = path.toString();
       } else {
@@ -309,7 +388,7 @@ public class BzlCompileFunction implements SkyFunction {
       if (key.kind == BzlCompileValue.Kind.NORMAL) {
         packageLoadingListener.onBzlCompileCompleteAndSuccessful(rootedPath, bytes.length);
       }
-      return BzlCompileValue.withProgram(prog, digest, typeOptions, pruningInputs);
+      return BzlCompileValue.withProgram(prog, digest, typeOptions);
     } catch (SyntaxError.Exception ex) {
       addSyntaxErrorsToListener(env.getListener(), ex.errors(), key);
       return BzlCompileValue.noFile(
