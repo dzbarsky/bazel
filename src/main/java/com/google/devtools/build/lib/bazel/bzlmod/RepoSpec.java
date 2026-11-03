@@ -14,8 +14,10 @@
 
 package com.google.devtools.build.lib.bazel.bzlmod;
 
+import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.ryanharter.auto.value.gson.GenerateTypeAdapter;
+import javax.annotation.Nullable;
 
 /**
  * Contains information about a repo definition, including the ID of the underlying repo rule, and
@@ -23,7 +25,18 @@ import com.ryanharter.auto.value.gson.GenerateTypeAdapter;
  *
  * @param repoRuleId The repo rule backing this repo.
  * @param attributes All attribute values provided to the repo rule, except for <code>name</code>.
+ * @param visibleSiblings Apparent sibling names available in this repository, or null for all.
  */
 @AutoCodec
 @GenerateTypeAdapter
-public record RepoSpec(RepoRuleId repoRuleId, AttributeValues attributes) {}
+public record RepoSpec(
+    RepoRuleId repoRuleId,
+    AttributeValues attributes,
+    @Nullable ImmutableList<String> visibleSiblings) {
+  @AutoCodec.Instantiator
+  public RepoSpec {}
+
+  public RepoSpec(RepoRuleId repoRuleId, AttributeValues attributes) {
+    this(repoRuleId, attributes, null);
+  }
+}

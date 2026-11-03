@@ -38,13 +38,25 @@ public class RepositoryMapping {
 
   private final ImmutableMap<String, RepositoryName> entries;
   private final RepositoryName contextRepo;
+  /** How runfiles manifests may represent this repository as the source of a lookup. */
+  public enum RunfilesSource {
+    MODULE,
+    SHARED_EXTENSION,
+    SCOPED_EXTENSION
+  }
+
+  private final RunfilesSource runfilesSource;
   // entries has an expensive hashCode() method that isn't cached.
   private final int hashCode;
 
   private RepositoryMapping(
-      Map<String, RepositoryName> entries, int entriesHashCode, RepositoryName contextRepo) {
+      Map<String, RepositoryName> entries,
+      int entriesHashCode,
+      RepositoryName contextRepo,
+      RunfilesSource runfilesSource) {
     this.entries = ImmutableMap.copyOf(entries);
     this.contextRepo = contextRepo;
+    this.runfilesSource = runfilesSource;
     this.hashCode = 31 * entriesHashCode + contextRepo.hashCode();
   }
 
@@ -61,10 +73,15 @@ public class RepositoryMapping {
     return contextRepo;
   }
 
+  public RunfilesSource runfilesSource() {
+    return runfilesSource;
+  }
+
   @Override
   public boolean equals(Object o) {
     return this == o
         || (o instanceof RepositoryMapping that
+            && runfilesSource == that.runfilesSource
             && Objects.equals(entries, that.entries)
             && Objects.equals(contextRepo, that.contextRepo));
   }
@@ -92,13 +109,21 @@ public class RepositoryMapping {
    * <p>Avoids repeated recomputation for RepositoryMapping instances with identical entries maps.
    */
   public static RepositoryMapping createWithKnownEntriesHashCode(
+      ImmutableMap<String, RepositoryName> entries, int entriesHashCode, RepositoryName contextRepo) {
+    return createWithKnownEntriesHashCode(
+        entries, entriesHashCode, contextRepo, RunfilesSource.MODULE);
+  }
+
+  public static RepositoryMapping createWithKnownEntriesHashCode(
       ImmutableMap<String, RepositoryName> entries,
       int entriesHashCode,
-      RepositoryName contextRepo) {
+      RepositoryName contextRepo,
+      RunfilesSource runfilesSource) {
     return new RepositoryMapping(
         Preconditions.checkNotNull(entries),
         entriesHashCode,
-        Preconditions.checkNotNull(contextRepo));
+        Preconditions.checkNotNull(contextRepo),
+        runfilesSource);
   }
 
   /**
@@ -107,13 +132,17 @@ public class RepositoryMapping {
    */
   public RepositoryMapping withAdditionalMappings(
       ImmutableMap<String, RepositoryName> additionalMappings) {
-    return create(
+    var merged =
         ImmutableMap.<String, RepositoryName>builderWithExpectedSize(
                 entries().size() + additionalMappings.size())
             .putAll(additionalMappings)
             .putAll(entries())
-            .buildKeepingLast(),
-        contextRepo());
+            .buildKeepingLast();
+    return createWithKnownEntriesHashCode(
+        merged,
+        merged.hashCode(),
+        contextRepo(),
+        runfilesSource == RunfilesSource.MODULE ? RunfilesSource.MODULE : RunfilesSource.SCOPED_EXTENSION);
   }
 
   /**
@@ -161,7 +190,7 @@ public class RepositoryMapping {
       inverse.putIfAbsent(entry.getValue(), entry.getKey());
     }
     var inverseCopy = ImmutableMap.copyOf(inverse);
-    return new RepositoryMapping(entries, entries.hashCode(), contextRepo) {
+    return new RepositoryMapping(entries, entries.hashCode(), contextRepo, runfilesSource) {
       @Override
       public Optional<String> getInverse(RepositoryName postMappingName) {
         return Optional.ofNullable(inverseCopy.get(postMappingName));

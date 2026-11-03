@@ -143,6 +143,6 @@ public final class DelegateTypeAdapterFactory<I, R extends I, D extends I>
       public T read(JsonReader in) throws IOException {
         return (T) delegateToRaw.apply((D) delegateAdapter.read(in));
       }
-    };
+    }.nullSafe();
   }
 }

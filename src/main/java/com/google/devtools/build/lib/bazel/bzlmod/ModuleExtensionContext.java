@@ -37,7 +37,9 @@ import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.NoneType;
 import net.starlark.java.eval.Sequence;
 import net.starlark.java.eval.StarlarkList;
+import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkThread;
 
 /** The Starlark object passed to the implementation function of module extensions. */
 @StarlarkBuiltin(
@@ -202,6 +204,28 @@ public class ModuleExtensionContext extends StarlarkBaseExternalContext {
       structField = true)
   public boolean rootModuleHasNonDevDependency() {
     return rootModuleHasNonDevDependency;
+  }
+
+  @StarlarkMethod(
+      name = "set_repo_siblings",
+      doc = "Limits the sibling repository names visible inside a generated repository. "
+          + "Call after declaring the repository. The host module's dependencies are visible "
+          + "by default. Listed sibling and injected names take precedence when available. "
+          + "This also controls late label lookups and runfiles mappings in the repository. "
+          + "Repository rule attribute labels are resolved where the extension declares the rule.",
+      parameters = {
+        @Param(name = "repo", named = true, doc = "The internal name of a repository already declared."),
+        @Param(name = "siblings", named = true, doc = "The sibling names that this repository may reference."),
+      },
+      useStarlarkThread = true)
+  public NoneType setRepoSiblings(String repo, Sequence<?> siblings, StarlarkThread thread)
+      throws EvalException {
+    var eval = ModuleExtensionEvalStarlarkThreadContext.fromOrNull(thread);
+    if (eval == null) {
+      throw Starlark.errorf("set_repo_siblings must be called during module extension evaluation");
+    }
+    eval.setRepoSiblings(repo, Sequence.cast(siblings, String.class, "siblings"));
+    return Starlark.NONE;
   }
 
   @StarlarkMethod(

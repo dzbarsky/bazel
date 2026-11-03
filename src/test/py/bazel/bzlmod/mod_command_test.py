@@ -1038,6 +1038,56 @@ class ModCommandTest(test_base.TestBase):
         foo_mapping.items(),
     )
 
+  def testScopedSiblingMappings(self):
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'module(name = "root")',
+            'e = use_extension("//:ext.bzl", "e")',
+            'use_repo(e, imported_a = "a", imported_b = "b", imported_c = "c")',
+        ],
+    )
+    self.ScratchFile('BUILD')
+    self.ScratchFile(
+        'ext.bzl',
+        [
+            'def _repo(ctx):',
+            '    ctx.file("BUILD.bazel", "")',
+            'repo = repository_rule(implementation = _repo)',
+            'def _extension(ctx):',
+            '    repo(name = "a")',
+            '    ctx.set_repo_siblings(repo = "a", siblings = ["b", "future"])',
+            '    repo(name = "b")',
+            '    ctx.set_repo_siblings(repo = "b", siblings = [])',
+            '    repo(name = "c")',
+            'e = module_extension(implementation = _extension)',
+        ],
+    )
+
+    def mappings(mode):
+      _, out, _ = self.RunBazel(
+          ['mod', 'dump_repo_mapping', '', '--lockfile_mode=' + mode]
+      )
+      host = json.loads(out[0])
+      repos = [host['imported_' + n] for n in ['a', 'b', 'c']]
+      _, out, _ = self.RunBazel(
+          ['mod', 'dump_repo_mapping', *repos, '--lockfile_mode=' + mode]
+      )
+      return repos, [json.loads(line) for line in out]
+
+    repos, [a, b, c] = mappings('update')
+    self.assertEqual(a['b'], repos[1])
+    self.assertNotIn('c', a)
+    self.assertNotIn('future', a)
+    self.assertNotIn('a', b)
+    self.assertEqual(b['imported_a'], repos[0])
+    self.assertEqual(c['a'], repos[0])
+    self.assertEqual(c['b'], repos[1])
+
+    # The lockfile also carries the scope. Read it again on a fresh server.
+    self.RunBazel(['shutdown'])
+    self.assertEqual(mappings('error'), (repos, [a, b, c]))
+
   def testDumpRepoMappingThrowsNoRepos(self):
     _, _, stderr = self.RunBazel(
         ['mod', 'dump_repo_mapping'],

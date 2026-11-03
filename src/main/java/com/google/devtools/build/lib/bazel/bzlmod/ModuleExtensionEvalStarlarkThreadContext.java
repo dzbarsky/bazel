@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.bazel.bzlmod;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.bazel.repository.RepoRule;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -73,6 +74,21 @@ public final class ModuleExtensionEvalStarlarkThreadContext implements StarlarkT
   private final ImmutableMap<String, RepositoryName> repoOverrides;
   private final ExtendedEventHandler eventHandler;
   private final Map<String, RepoRuleCall> deferredRepos = new LinkedHashMap<>();
+  private final Map<String, ImmutableList<String>> visibleSiblings = new LinkedHashMap<>();
+
+  void setRepoSiblings(String repo, Iterable<String> siblings) throws EvalException {
+    if (!deferredRepos.containsKey(repo)) {
+      throw Starlark.errorf("set_repo_siblings: repository '%s' has not been declared", repo);
+    }
+    for (String name : siblings) {
+      RepositoryName.validateUserProvidedRepoName(name);
+    }
+    var names = ImmutableList.sortedCopyOf(ImmutableSet.copyOf(siblings));
+    if (visibleSiblings.putIfAbsent(repo, names) != null) {
+      throw Starlark.errorf("set_repo_siblings specified twice for repository '%s'", repo);
+    }
+  }
+
   // A worker environment whose lookups block until the value is available.
   private final SkyFunction.Environment env;
 
@@ -159,14 +175,17 @@ public final class ModuleExtensionEvalStarlarkThreadContext implements StarlarkT
     for (var entry : deferredRepos.entrySet()) {
       String name = entry.getKey();
       RepoRuleCall repoRuleCall = entry.getValue();
-      repoSpecs.put(
-          name,
+      var spec =
           repoRuleCall.repoRule.instantiate(
               repoRuleCall.kwargs,
               repoRuleCall.callStack,
               labelConverter,
               eventHandler,
-              "in the extension '%s'".formatted(extensionId)));
+              "in the extension '%s'".formatted(extensionId));
+      var siblings = visibleSiblings.get(name);
+      repoSpecs.put(
+          name,
+          siblings == null ? spec : new RepoSpec(spec.repoRuleId(), spec.attributes(), siblings));
     }
     return repoSpecs.buildOrThrow();
   }

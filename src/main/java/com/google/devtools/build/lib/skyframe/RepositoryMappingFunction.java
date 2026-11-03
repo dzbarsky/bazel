@@ -123,12 +123,16 @@ public class RepositoryMappingFunction implements SkyFunction {
       if (repoMappingEntriesValue == null) {
         return null;
       }
+      var entries = repoMappingEntriesValue.forRepo(repositoryName);
       return RepositoryMappingValue.create(
           // Avoids repeated computation of the hash code for the same entries object.
           RepositoryMapping.createWithKnownEntriesHashCode(
-              repoMappingEntriesValue.entries(),
-              repoMappingEntriesValue.entriesHashCode(),
-              repositoryName),
+              entries.mapping(),
+              entries.mappingHash(),
+              repositoryName,
+              repoMappingEntriesValue.scopedEntries().isEmpty()
+                  ? RepositoryMapping.RunfilesSource.SHARED_EXTENSION
+                  : RepositoryMapping.RunfilesSource.SCOPED_EXTENSION),
           repoMappingEntriesValue.moduleKey().name(),
           repoMappingEntriesValue.moduleKey().version(),
           bazelDepGraphValue.getDepGraph().get(repoMappingEntriesValue.moduleKey()).getRepoName());
