@@ -1688,7 +1688,8 @@ public final class BuildEventStreamerTest extends BuildEventStreamerTestBase {
             stderr,
             success ? ErrorTiming.NO_ERROR : ErrorTiming.BEFORE_EXECUTION,
             /* startTime= */ null,
-            /* endTime= */ null);
+            /* endTime= */ null,
+            /* strategyDetails= */ ImmutableList.of());
 
     var proto = event.asStreamProto(getTestBuildEventContext(artifactGroupNamer));
 
