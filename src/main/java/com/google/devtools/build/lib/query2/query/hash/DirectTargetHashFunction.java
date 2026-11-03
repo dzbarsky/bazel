@@ -22,11 +22,15 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.hash.Hashing;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.config.ToolchainTypeRequirement;
+import com.google.devtools.build.lib.bazel.bzlmod.BazelDepGraphValue;
 import com.google.devtools.build.lib.bazel.bzlmod.ExternalDepsException;
+import com.google.devtools.build.lib.bazel.bzlmod.SingleExtensionValue;
 import com.google.devtools.build.lib.bazel.repository.RepoDefinition;
 import com.google.devtools.build.lib.bazel.repository.RepoDefinitionValue;
 import com.google.devtools.build.lib.bazel.repository.RepoRule;
+import com.google.devtools.build.lib.cmdline.ExtensionRepositoryMapping;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.io.InconsistentFilesystemException;
 import com.google.devtools.build.lib.packages.AggregatingAttributeMapper;
@@ -437,9 +441,31 @@ public final class DirectTargetHashFunction implements SkyFunction {
       // A repo that doesn't exist: the caller follows the label, which then hashes as missing.
       return null;
     }
+    RepositoryMapping.Explicit explicitMapping;
+    switch (mapping.repositoryMapping()) {
+      case RepositoryMapping.Explicit explicit -> explicitMapping = explicit;
+      case ExtensionRepositoryMapping extensionMapping -> {
+        // Hash every visible repository, including siblings of an extension-generated repository.
+        var depGraph = (BazelDepGraphValue) env.getValue(BazelDepGraphValue.KEY);
+        if (depGraph == null) {
+          return null;
+        }
+        var extensionId =
+            depGraph.getExtensionUniqueNames().entrySet().stream()
+                .filter(entry -> extensionMapping.repoPrefix().equals(entry.getValue() + "+"))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElseThrow();
+        var extension = (SingleExtensionValue) env.getValue(SingleExtensionValue.key(extensionId));
+        if (extension == null) {
+          return null;
+        }
+        explicitMapping = extensionMapping.toExplicit(extension.generatedRepoSpecs().keySet());
+      }
+    }
     Set<RepositoryName> seen = new HashSet<>();
     seen.add(repo);
-    for (RepositoryName visible : mapping.repositoryMapping().entries().values()) {
+    for (RepositoryName visible : explicitMapping.entries().values()) {
       if (!visible.isMain()) {
         seen.add(visible);
       }
