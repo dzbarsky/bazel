@@ -705,34 +705,25 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       return state.result;
     }
     var tagFilter = buildTagFilter(options);
+    Set<Label> unavailableLabels = new HashSet<>();
     while (!state.pendingLabels.isEmpty()) {
       ListMultimap<PackageIdentifier, Label> labelsByPackage = ArrayListMultimap.create();
       for (Label label : state.pendingLabels) {
         labelsByPackage.put(label.getPackageIdentifier(), label);
       }
       SkyframeLookupResult packages = env.getValuesAndExceptions(labelsByPackage.keySet());
-      if (env.valuesMissing()) {
-        return null;
-      }
-      Map<PackageIdentifier, PackageValue> availablePackages = new HashMap<>();
-      for (PackageIdentifier packageIdentifier : labelsByPackage.keySet()) {
+      Set<Label> nextLabels = new HashSet<>();
+      for (var entry : labelsByPackage.asMap().entrySet()) {
         PackageValue value;
         try {
           value =
-              (PackageValue) packages.getOrThrow(packageIdentifier, NoSuchPackageException.class);
+              (PackageValue) packages.getOrThrow(entry.getKey(), NoSuchPackageException.class);
         } catch (NoSuchPackageException e) {
           // Analysis reports a missing non-excluded dependency if its root survives filtering.
           continue;
         }
         if (value == null) {
-          return null;
-        }
-        availablePackages.put(packageIdentifier, value);
-      }
-      Set<Label> nextLabels = new HashSet<>();
-      for (var entry : labelsByPackage.asMap().entrySet()) {
-        PackageValue value = availablePackages.get(entry.getKey());
-        if (value == null) {
+          unavailableLabels.addAll(entry.getValue());
           continue;
         }
         for (Label label : entry.getValue()) {
@@ -815,6 +806,11 @@ final class TargetPatternPhaseFunction implements SkyFunction {
         }
       }
       state.pendingLabels = nextLabels;
+    }
+    // Follow ready packages before waiting, so independent repository fetches can overlap.
+    state.pendingLabels = unavailableLabels;
+    if (env.valuesMissing()) {
+      return null;
     }
     // Exclusion is conservative per label: a suite required in full by another root can also
     // exclude that suite's independently requested filtered expansion.
