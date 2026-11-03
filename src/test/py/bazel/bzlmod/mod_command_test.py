@@ -1038,6 +1038,61 @@ class ModCommandTest(test_base.TestBase):
         foo_mapping.items(),
     )
 
+  def testImplicitSiblingVisibility(self):
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'module(name = "root")',
+            'e = use_extension("//:ext.bzl", "explicit")',
+            'use_repo(e, ea = "a", eb = "b")',
+            'override_repo(e, replaced = "root")',
+            'inject_repo(e, injected = "root")',
+            'd = use_extension("//:ext.bzl", "defaults")',
+            'use_repo(d, da = "a", db = "b")',
+        ],
+    )
+    self.ScratchFile('BUILD', ['exports_files(["data"])'])
+    self.ScratchFile('data')
+    self.ScratchFile(
+        'ext.bzl',
+        [
+            'def _repo(ctx):',
+            '    ctx.file("data", "")',
+            '    build = \'exports_files(["data"])\'',
+            '    if ctx.attr.target:',
+            '        build += \'\\nalias(name="picked", actual=%r)\' % str(ctx.attr.target)',
+            '    ctx.file("BUILD.bazel", build)',
+            'repo = repository_rule(implementation = _repo, attrs = {"target": attr.label()})',
+            'def _extension(ctx):',
+            '    repo(name = "a", target = "@replaced//:data")',
+            '    repo(name = "b")',
+            '    repo(name = "replaced")',
+            'explicit = module_extension(implementation = _extension,'
+            ' implicit_sibling_visibility = False)',
+            'defaults = module_extension(implementation = _extension)',
+        ],
+    )
+
+    def mappings(mode):
+      cmd = ['mod', 'dump_repo_mapping', '--lockfile_mode=' + mode]
+      _, out, _ = self.RunBazel(cmd + [''])
+      host = json.loads(out[0])
+      _, out, _ = self.RunBazel(cmd + [host['ea'], host['eb'], host['da']])
+      a, b, default = [json.loads(line) for line in out]
+      self.assertEqual(a, b)
+      self.assertNotIn('b', a)
+      self.assertEqual(a['eb'], host['eb'])
+      self.assertEqual(a['replaced'], host['root'])
+      self.assertEqual(a['injected'], host['root'])
+      self.assertEqual(default['b'], host['db'])
+      return a
+
+    before = mappings('update')
+    self.RunBazel(['shutdown'])
+    self.assertEqual(mappings('error'), before)
+    _, labels, _ = self.RunBazel(['query', 'labels(actual, @ea//:picked)'])
+    self.assertEqual(labels, ['//:data'])
+
   def testDumpRepoMappingThrowsNoRepos(self):
     _, _, stderr = self.RunBazel(
         ['mod', 'dump_repo_mapping'],

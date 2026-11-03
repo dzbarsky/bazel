@@ -212,6 +212,11 @@ final class RegularRunnableExtension implements RunnableExtension {
   }
 
   @Override
+  public boolean implicitSiblingVisibility() {
+    return extension.implicitSiblingVisibility();
+  }
+
+  @Override
   public int getFactsVersion() {
     return extension.factsVersion();
   }

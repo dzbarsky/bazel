@@ -51,7 +51,8 @@ public record SingleExtensionValue(
     Optional<LockFileModuleExtension.WithFactors> lockFileInfo,
     Optional<RootModuleFileFixup> fixup,
     Facts facts,
-    int factsVersion)
+    int factsVersion,
+    boolean implicitSiblingVisibility)
     implements SkyValue {
   public SingleExtensionValue {
     requireNonNull(generatedRepoSpecs, "generatedRepoSpecs");

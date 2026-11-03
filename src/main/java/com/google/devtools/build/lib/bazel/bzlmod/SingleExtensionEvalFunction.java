@@ -305,6 +305,7 @@ public class SingleExtensionEvalFunction implements SkyFunction {
         lockFileInfo,
         newFacts,
         currentFactsVersion,
+        extension.implicitSiblingVisibility(),
         env);
   }
 
@@ -387,6 +388,7 @@ public class SingleExtensionEvalFunction implements SkyFunction {
           Optional.of(new LockFileModuleExtension.WithFactors(evalFactors, lockedExtension)),
           facts,
           extension.getFactsVersion(),
+          extension.implicitSiblingVisibility(),
           env);
     }
     // Reproducible extensions are always locked in the hidden lockfile to provide best-effort
@@ -452,6 +454,7 @@ public class SingleExtensionEvalFunction implements SkyFunction {
       Optional<LockFileModuleExtension.WithFactors> lockFileInfo,
       Facts facts,
       int factsVersion,
+      boolean implicitSiblingVisibility,
       Environment env)
       throws SingleExtensionEvalFunctionException {
     Optional<RootModuleFileFixup> fixup = Optional.empty();
@@ -493,7 +496,8 @@ public class SingleExtensionEvalFunction implements SkyFunction {
         lockFileInfo,
         fixup,
         facts,
-        factsVersion);
+        factsVersion,
+        implicitSiblingVisibility);
   }
 
   private static SingleExtensionEvalFunctionException createOutdatedLockfileException(

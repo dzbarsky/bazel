@@ -202,6 +202,7 @@ instantiate and return a repository rule. Created by \
       Sequence<?> environ, // <String>
       boolean osDependent,
       boolean archDependent,
+      boolean implicitSiblingVisibility,
       StarlarkInt factsVersion,
       StarlarkThread thread)
       throws EvalException {
@@ -220,6 +221,7 @@ instantiate and return a repository rule. Created by \
         .setLocation(thread.getCallerLocation())
         .setOsDependent(osDependent)
         .setArchDependent(archDependent)
+        .setImplicitSiblingVisibility(implicitSiblingVisibility)
         .setFactsVersion(factsVersionInt)
         .build();
   }
