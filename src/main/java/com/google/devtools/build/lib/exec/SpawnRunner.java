@@ -244,6 +244,9 @@ public interface SpawnRunner {
     void lockOutputFiles(int exitCode, String errorMessage, FileOutErr outErr)
         throws InterruptedException;
 
+    /** Prepares deferred outputs before accepting cached metadata or materializing files. */
+    default void prepareOutputFiles() throws ExecException, InterruptedException {}
+
     /**
      * Returns whether this spawn may be executing concurrently under multiple spawn runners. If so,
      * {@link #lockOutputFiles} may raise {@link InterruptedException}.
@@ -331,6 +334,11 @@ public interface SpawnRunner {
     @Override
     public final <T extends ActionContext> T getContext(Class<T> identifyingType) {
       return actionExecutionContext.getContext(identifyingType);
+    }
+
+    @Override
+    public final void prepareOutputFiles() throws ExecException, InterruptedException {
+      actionExecutionContext.prepareOutputFiles();
     }
 
     @Override
