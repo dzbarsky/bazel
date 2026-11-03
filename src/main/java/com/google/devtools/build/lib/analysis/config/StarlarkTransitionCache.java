@@ -59,9 +59,12 @@ public final class StarlarkTransitionCache {
    *
    * <p>Since `--flag_alias` is non-configurable, we can assume that during a single build, the set
    * of starlark build settings for a given transition won't change.
+   *
+   * <p>Identity keys avoid comparing target attributes during metadata lookup. Weak keys also let
+   * obsolete transitions be reclaimed, even when their cached value is the shared empty set.
    */
   private Cache<ConfigurationTransition, ImmutableSet<Label>> starlarkBuildSettingsCache =
-      Caffeine.newBuilder().softValues().build();
+      Caffeine.newBuilder().weakKeys().softValues().build();
 
   /**
    * Given a {@link ConfigurationTransition}, decompose (if possible) and find all referenced
@@ -218,7 +221,7 @@ public final class StarlarkTransitionCache {
 
   public void clear() {
     cache = Caffeine.newBuilder().softValues().build();
-    starlarkBuildSettingsCache = Caffeine.newBuilder().softValues().build();
+    starlarkBuildSettingsCache = Caffeine.newBuilder().weakKeys().softValues().build();
   }
 
   private static final class Key {
