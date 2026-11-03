@@ -94,6 +94,11 @@ public interface Action extends ActionExecutionMetadata {
       boolean cleanupArchivedArtifacts)
       throws IOException, InterruptedException;
 
+  /** Whether a cache probe can wait for a reusable spawn result before preparing outputs. */
+  default boolean canDeferOutputPreparationForCacheProbe() {
+    return false;
+  }
+
   /**
    * Executes this action. This method <i>unconditionally does the work of the Action</i>, although
    * it may delegate some of that work to {@link ActionContext} instances obtained from the {@link
