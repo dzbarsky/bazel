@@ -1125,6 +1125,11 @@ public abstract class BuildLanguageOptions extends OptionsBase {
 
               @Override
               public FlagConsumer setBool(String key, boolean ignored) {
+                // This controls reuse of identical .bzl files, not their semantics. Toggling it must
+                // not invalidate repository contents or serialized Starlark modules.
+                if (key.equals(EXPERIMENTAL_PRUNE_UNCHANGED_EXTERNAL_BZL)) {
+                  return this;
+                }
                 // Only fingerprint enabled options so that the fingerprint is stable across Bazel
                 // versions that only add new options (e.g., minor and patch versions). This relies
                 // on the assumption that disabled new options have no observable effect.

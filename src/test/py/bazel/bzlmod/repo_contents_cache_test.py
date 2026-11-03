@@ -180,6 +180,43 @@ class RepoContentsCacheTest(test_base.TestBase):
     )
     self.assertIn('JUST FETCHED', '\n'.join(stderr))
 
+  def testCachedAfterExternalBzlPruningFlagChange(self):
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'repo = use_repo_rule("//:repo.bzl", "repo")',
+            'repo(name = "my_repo")',
+        ],
+    )
+    self.ScratchFile('BUILD.bazel')
+    self.ScratchFile(
+        'repo.bzl',
+        [
+            'def _repo_impl(rctx):',
+            '  rctx.file("BUILD", "filegroup(name=\'haha\')")',
+            '  print("JUST FETCHED")',
+            '  return rctx.repo_metadata(reproducible=True)',
+            'repo = repository_rule(_repo_impl)',
+        ],
+    )
+    _, _, stderr = self.RunBazel([
+        'build', '--noexperimental_prune_unchanged_external_bzl', '@my_repo//:haha'
+    ])
+    self.assertIn('JUST FETCHED', '\n'.join(stderr))
+
+    self.RunBazel(['clean', '--expunge'])
+    _, _, stderr = self.RunBazel([
+        'build', '--experimental_prune_unchanged_external_bzl', '@my_repo//:haha'
+    ])
+    self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
+
+    # Actual language changes still invalidate repository contents.
+    self.RunBazel(['clean', '--expunge'])
+    _, _, stderr = self.RunBazel([
+        'build', '--incompatible_no_implicit_file_export=false', '@my_repo//:haha'
+    ])
+    self.assertIn('JUST FETCHED', '\n'.join(stderr))
+
   def testNotCachedWhenPredeclaredInputsChange(self):
     self.ScratchFile(
         'MODULE.bazel',
