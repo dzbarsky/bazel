@@ -67,7 +67,7 @@ final class ArtifactNestedSetFunction implements SkyFunction {
           (x) -> consumedArtifactsTrackerSupplier.get().registerConsumedArtifact(x));
     }
     ImmutableList<SkyKey> depKeys = artifactNestedSetKey.getDirectDepKeys();
-    if (cacheProbe.getAsBoolean()) {
+    if (cacheProbe.getAsBoolean() && !artifactNestedSetKey.isSourceArtifactsOnly()) {
       depKeys = env.getState(CacheProbeInputBatches::new).request(env, depKeys);
       if (depKeys == null) {
         return null;
