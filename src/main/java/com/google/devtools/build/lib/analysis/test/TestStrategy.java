@@ -128,19 +128,22 @@ public abstract class TestStrategy implements TestActionContext {
       @Nullable Path tmpDir,
       @Nullable ActionExecutionContext actionExecutionContext)
       throws IOException {
-    if (tmpDir != null) {
-      recreateDirectory(tmpDir);
-    }
+    // Probes never run a test process; cached outputs are staged by the spawn cache.
+    if (executionOptions.getCacheProbeOutput() == null) {
+      if (tmpDir != null) {
+        recreateDirectory(tmpDir);
+      }
 
-    ResolvedPaths resolvedPaths = testAction.resolve(execRoot);
-    if (testAction.isCoverageMode()) {
-      recreateDirectory(resolvedPaths.getCoverageDirectory());
-    }
+      ResolvedPaths resolvedPaths = testAction.resolve(execRoot);
+      if (testAction.isCoverageMode()) {
+        recreateDirectory(resolvedPaths.getCoverageDirectory());
+      }
 
-    resolvedPaths.getBaseDir().createDirectoryAndParents();
-    resolvedPaths.getUndeclaredOutputsDir().createDirectoryAndParents();
-    resolvedPaths.getUndeclaredOutputsAnnotationsDir().createDirectoryAndParents();
-    resolvedPaths.getSplitLogsDir().createDirectoryAndParents();
+      resolvedPaths.getBaseDir().createDirectoryAndParents();
+      resolvedPaths.getUndeclaredOutputsDir().createDirectoryAndParents();
+      resolvedPaths.getUndeclaredOutputsAnnotationsDir().createDirectoryAndParents();
+      resolvedPaths.getSplitLogsDir().createDirectoryAndParents();
+    }
 
     if (actionExecutionContext != null && actionExecutionContext.getOutputMetadataStore() != null) {
       // Reset output metadata to avoid stale information from previous attempts.
