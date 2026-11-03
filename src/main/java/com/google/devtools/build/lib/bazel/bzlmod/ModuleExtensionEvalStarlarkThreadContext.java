@@ -143,6 +143,8 @@ public final class ModuleExtensionEvalStarlarkThreadContext implements StarlarkT
     // Make it possible to refer to extension repos in the label attributes of another extension
     // repo. Wrapping a label in Label(...) ensures that it is evaluated with respect to the
     // containing module's repo mapping instead.
+    // This applies to typed attributes even when implicit sibling visibility is disabled inside
+    // the generated repos. Such extensions can pass a sibling as a Label and emit it canonically.
     ImmutableMap.Builder<String, RepositoryName> entries = ImmutableMap.builder();
     entries.putAll(baseRepoMapping.entries());
     entries.putAll(

@@ -43,6 +43,7 @@ public record ModuleExtension(
     ImmutableList<String> envVariables,
     boolean osDependent,
     boolean archDependent,
+    boolean implicitSiblingVisibility,
     int factsVersion)
     implements StarlarkValue {
   public ModuleExtension {
@@ -55,7 +56,7 @@ public record ModuleExtension(
   }
 
   public static Builder builder() {
-    return new AutoBuilder_ModuleExtension_Builder();
+    return new AutoBuilder_ModuleExtension_Builder().setImplicitSiblingVisibility(true);
   }
 
   /** Builder for {@link ModuleExtension}. */
@@ -76,6 +77,8 @@ public record ModuleExtension(
     public abstract Builder setOsDependent(boolean osDependent);
 
     public abstract Builder setArchDependent(boolean archDependent);
+
+    public abstract Builder setImplicitSiblingVisibility(boolean implicitSiblingVisibility);
 
     public abstract Builder setFactsVersion(int factsVersion);
 

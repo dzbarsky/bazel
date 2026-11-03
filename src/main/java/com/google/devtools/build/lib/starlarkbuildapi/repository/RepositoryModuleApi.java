@@ -214,6 +214,17 @@ public interface RepositoryModuleApi {
             named = true,
             positional = false),
         @Param(
+            name = "implicit_sibling_visibility",
+            named = true,
+            positional = false,
+            defaultValue = "True",
+            doc =
+                "Makes generated repositories visible to each other under their generated names."
+                    + " Set to False when generated repositories use canonical labels for"
+                    + " cross-repository references, including runtime lookups. The extension's"
+                    + " host module dependencies and explicit repository overrides and injections"
+                    + " are still visible."),
+        @Param(
             name = "facts_version",
             defaultValue = "0",
             doc =
@@ -240,6 +251,7 @@ public interface RepositoryModuleApi {
       Sequence<?> environ, // <String>
       boolean osDependent,
       boolean archDependent,
+      boolean implicitSiblingVisibility,
       StarlarkInt factsVersion,
       StarlarkThread thread)
       throws EvalException;

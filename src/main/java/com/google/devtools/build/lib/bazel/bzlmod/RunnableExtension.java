@@ -46,6 +46,11 @@ interface RunnableExtension {
    */
   int getFactsVersion();
 
+  /** Whether generated repositories can resolve each other's internal names. */
+  default boolean implicitSiblingVisibility() {
+    return true;
+  }
+
   /** Runs the extension. Returns null if a Skyframe restart is required. */
   @Nullable
   RunModuleExtensionResult run(

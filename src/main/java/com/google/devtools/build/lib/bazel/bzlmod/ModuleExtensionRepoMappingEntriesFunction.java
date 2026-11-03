@@ -83,7 +83,9 @@ public class ModuleExtensionRepoMappingEntriesFunction implements SkyFunction {
     // LINT.IfChange
     ImmutableMap.Builder<String, RepositoryName> entries = ImmutableMap.builder();
     entries.putAll(moduleRepoMapping.entries());
-    entries.putAll(extensionEvalValue.canonicalRepoNameToInternalNames().inverse());
+    if (extensionEvalValue.implicitSiblingVisibility()) {
+      entries.putAll(extensionEvalValue.canonicalRepoNameToInternalNames().inverse());
+    }
     entries.putAll(bazelDepGraphValue.getRepoOverrides().row(extensionId));
     var builtEntries = entries.buildKeepingLast();
     return ModuleExtensionRepoMappingEntriesValue.create(
