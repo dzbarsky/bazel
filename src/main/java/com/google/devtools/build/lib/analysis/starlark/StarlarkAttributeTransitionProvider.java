@@ -20,6 +20,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.BuildOptionsView;
@@ -35,6 +36,7 @@ import com.google.devtools.build.lib.packages.StructProvider;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.starlarkbuildapi.SplitTransitionProviderApi;
 import java.util.Objects;
+import java.util.function.Supplier;
 import net.starlark.java.eval.Printer;
 import net.starlark.java.eval.StarlarkSemantics;
 
@@ -60,8 +62,9 @@ public class StarlarkAttributeTransitionProvider
   protected final StarlarkDefinedConfigTransition starlarkDefinedConfigTransition;
 
   // Weak identity keys release mappers when analysis no longer uses them.
-  private final transient Cache<ConfiguredAttributeMapper, FunctionSplitTransition>
-      transitionInstances = Caffeine.newBuilder().weakKeys().build();
+  // Initialize lazily because exec transitions have no attribute mapper and never use this cache.
+  private final transient Supplier<Cache<ConfiguredAttributeMapper, FunctionSplitTransition>>
+      transitionInstances = Suppliers.memoize(() -> Caffeine.newBuilder().weakKeys().build());
 
   public StarlarkAttributeTransitionProvider(
       StarlarkDefinedConfigTransition starlarkDefinedConfigTransition) {
@@ -95,6 +98,7 @@ public class StarlarkAttributeTransitionProvider
       return new FunctionSplitTransition(starlarkDefinedConfigTransition, null);
     }
     return transitionInstances
+        .get()
         .get(
             (ConfiguredAttributeMapper) attributeMap,
             mapper -> new FunctionSplitTransition(starlarkDefinedConfigTransition, mapper));
