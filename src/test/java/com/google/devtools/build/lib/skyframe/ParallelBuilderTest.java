@@ -24,6 +24,8 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.google.common.eventbus.Subscribe;
 import com.google.common.flogger.GoogleLogger;
+import com.google.common.graph.GraphBuilder;
+import com.google.common.graph.MutableGraph;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionExecutedEvent;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
@@ -35,6 +37,7 @@ import com.google.devtools.build.lib.actions.FileStateValue;
 import com.google.devtools.build.lib.actions.cache.ActionCache;
 import com.google.devtools.build.lib.actions.util.TestAction;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.collect.nestedset.ArtifactNestedSetKey;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
@@ -57,6 +60,11 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
+import com.google.devtools.build.skyframe.ErrorInfo;
+import com.google.devtools.build.skyframe.EvaluationProgressReceiver;
+import com.google.devtools.build.skyframe.GroupedDeps;
+import com.google.devtools.build.skyframe.SkyKey;
+import com.google.devtools.build.skyframe.SkyValue;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -67,6 +75,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -281,6 +290,116 @@ public class ParallelBuilderTest extends TimestampBuilderTestCase {
     assertCacheProbePrunesInputRequests(/* nestedInputs= */ true);
   }
 
+  @Test
+  public void cacheProbeMissPreservesSharedSourceDependencies() throws Exception {
+    options.parse("--experimental_cache_probe_output=probe.json");
+    NestedSetBuilder<Artifact> headers = NestedSetBuilder.stableOrder();
+    for (int i = 0; i < 32; i++) {
+      Artifact header = createSourceArtifact("shared-" + i + ".h");
+      BlazeTestUtils.makeEmptyFile(header.getPath());
+      headers.add(header);
+    }
+    NestedSet<Artifact> shared = headers.build();
+    NestedSet<Artifact> misses = createProbeInputs(32, new AtomicInteger(), new AtomicBoolean());
+    Artifact tail = createDerivedArtifact("tail");
+    registerAction(new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(tail)));
+    Artifact optional = createSourceArtifact("missing-optional.h");
+    Artifact one = createDerivedArtifact("one");
+    Artifact two = createDerivedArtifact("two");
+    for (Artifact output : ImmutableSet.of(one, two)) {
+      Artifact unique = createSourceArtifact(output.getFilename() + ".h");
+      BlazeTestUtils.makeEmptyFile(unique.getPath());
+      NestedSetBuilder<Artifact> inputs =
+          NestedSetBuilder.<Artifact>stableOrder()
+              .addAll(misses.toList())
+              .add(tail)
+              .add(unique)
+              .addTransitive(shared);
+      NestedSet<Artifact> mandatory = inputs.build();
+      boolean discoversInputs = output.equals(two);
+      if (discoversInputs) {
+        inputs.add(optional);
+      }
+      NestedSet<Artifact> knownInputs = inputs.build();
+      registerAction(
+          new TestAction(TestAction.NO_EFFECT, knownInputs, ImmutableSet.of(output)) {
+            @Override
+            public NestedSet<Artifact> getInputs() {
+              // TestAction's constructor otherwise flattens the shared structure.
+              return knownInputs;
+            }
+
+            @Override
+            public boolean discoversInputs() {
+              return discoversInputs;
+            }
+
+            @Override
+            public NestedSet<Artifact> getMandatoryInputs() {
+              return mandatory;
+            }
+          });
+    }
+
+    var dependencies = new ConcurrentHashMap<SkyKey, ImmutableSet<SkyKey>>();
+    var builder =
+        createBuilder(
+            cache,
+            2,
+            true,
+            new EvaluationProgressReceiver() {
+              @Override
+              public void evaluated(
+                  SkyKey key,
+                  EvaluationState state,
+                  SkyValue value,
+                  ErrorInfo error,
+                  GroupedDeps deps) {
+                if (deps != null) {
+                  dependencies.put(key, ImmutableSet.copyOf(deps.getAllElementsAsIterable()));
+                }
+              }
+            });
+    reporter.removeHandler(failFastHandler);
+    assertThrows(BuildFailedException.class, () -> buildArtifacts(builder, one, two));
+
+    for (Artifact output : ImmutableSet.of(one, two)) {
+      assertThat(dependencies).containsKey(Artifact.key(output));
+      assertThat(dependencies.get(Artifact.key(output)))
+          .containsNoneIn(Artifact.keys(shared.toList()));
+    }
+    for (Artifact header : shared.toList()) {
+      int parents = 0;
+      for (var entry : dependencies.entrySet()) {
+        if (entry.getValue().contains(Artifact.key(header))) {
+          assertThat(entry.getKey()).isInstanceOf(ArtifactNestedSetKey.class);
+          parents++;
+        }
+      }
+      // The ordinary input batch may also have requested the shared set before finding a miss.
+      assertThat(parents).isAtLeast(1);
+      assertThat(parents).isAtMost(2);
+    }
+    assertThat(dependencies).doesNotContainKey(Artifact.key(tail));
+    assertThat(dependencies).doesNotContainKey(Artifact.key(optional));
+
+    Artifact lostHeader = shared.toList().get(0);
+    MutableGraph<SkyKey> rewindGraph = GraphBuilder.directed().build();
+    for (Artifact output : ImmutableSet.of(one, two)) {
+      ArtifactNestedSetKey.addNestedSetPathsToRewindGraph(
+          rewindGraph,
+          Artifact.key(output),
+          dependencies.get(Artifact.key(output)),
+          ImmutableSet.of(lostHeader, tail));
+    }
+    assertThat(rewindGraph.nodes())
+        .containsAtLeast(Artifact.key(one), Artifact.key(two), Artifact.key(lostHeader));
+    assertThat(rewindGraph.nodes()).doesNotContain(Artifact.key(tail));
+    for (var edge : rewindGraph.edges()) {
+      assertThat(dependencies.get(edge.source())).contains(edge.target());
+    }
+  }
+
   private void assertCacheProbePrunesInputRequests(boolean nestedInputs) throws Exception {
     options.parse("--experimental_cache_probe_output=probe.json");
     AtomicInteger checks = new AtomicInteger();
@@ -293,7 +412,7 @@ public class ParallelBuilderTest extends TimestampBuilderTestCase {
       inputs = NestedSetBuilder.<Artifact>stableOrder().add(sibling).addTransitive(inputs).build();
     }
     Artifact output = createDerivedArtifact("output");
-    registerAction(new TestAction(TestAction.NO_EFFECT, inputs, ImmutableSet.of(output)));
+    registerProbeAction(inputs, output);
     reporter.removeHandler(failFastHandler);
     BuilderWithResult builder = createBuilder(cache, DEFAULT_NUM_JOBS, true);
 
@@ -313,6 +432,17 @@ public class ParallelBuilderTest extends TimestampBuilderTestCase {
     options.parse("--experimental_cache_probe_output=probe.json");
     buildArtifacts(builder, output);
     assertThat(checks.get()).isEqualTo(32 + 1024);
+  }
+
+  private void registerProbeAction(NestedSet<Artifact> inputs, Artifact output) {
+    registerAction(
+        new TestAction(TestAction.NO_EFFECT, inputs, ImmutableSet.of(output)) {
+          @Override
+          public NestedSet<Artifact> getInputs() {
+            // TestAction's constructor otherwise flattens nested inputs.
+            return inputs;
+          }
+        });
   }
 
   @Test
@@ -440,7 +570,7 @@ public class ParallelBuilderTest extends TimestampBuilderTestCase {
           NestedSetBuilder.<Artifact>stableOrder().add(sibling).addTransitive(actionInputs).build();
     }
     Artifact output = createDerivedArtifact("output");
-    registerAction(new TestAction(TestAction.NO_EFFECT, actionInputs, ImmutableSet.of(output)));
+    registerProbeAction(actionInputs, output);
 
     ActionExecutionException failure = failureFor(output);
 
@@ -471,7 +601,7 @@ public class ParallelBuilderTest extends TimestampBuilderTestCase {
       }
     }
     Artifact output = createDerivedArtifact("output");
-    registerAction(new TestAction(TestAction.NO_EFFECT, inputs, ImmutableSet.of(output)));
+    registerProbeAction(inputs, output);
 
     ActionExecutionException failure = failureFor(output);
 
