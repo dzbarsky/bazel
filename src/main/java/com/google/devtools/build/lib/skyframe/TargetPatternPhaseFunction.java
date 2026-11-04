@@ -40,6 +40,7 @@ import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.AggregatingAttributeMapper;
+import com.google.devtools.build.lib.packages.InputFile;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.NonconfigurableAttributeMapper;
 import com.google.devtools.build.lib.packages.OutputFile;
@@ -791,12 +792,13 @@ final class TargetPatternPhaseFunction implements SkyFunction {
               .visitAllLabels(
                   (attribute, prerequisite) -> {
                     PackageIdentifier dependencyPackage = prerequisite.getPackageIdentifier();
+                    boolean excludedDependency = excludedPackage(dependencyPackage, prefixes);
                     // Suite membership selects roots, unlike an ordinary required dependency.
                     // Filter members before traversing them or propagating their exclusions.
                     if (filterSuiteMembers
                         && (attribute.getName().equals("tests")
                             || attribute.getName().equals("$implicit_tests"))
-                        && !excludedPackage(dependencyPackage, prefixes)) {
+                        && !excludedDependency) {
                       state
                           .suiteMemberships
                           .computeIfAbsent(prerequisite, unused -> new ArrayList<>())
@@ -804,11 +806,18 @@ final class TargetPatternPhaseFunction implements SkyFunction {
                       nextLabels.add(prerequisite);
                       return;
                     }
+                    // Source files in this package cannot lead to an excluded dependency.
+                    if (!excludedDependency
+                        && dependencyPackage.equals(rule.getLabel().getPackageIdentifier())
+                        && value.getPackage().getTargetOrNull(prerequisite.getName())
+                            instanceof InputFile) {
+                      return;
+                    }
                     state
                         .reverse
                         .computeIfAbsent(prerequisite, unused -> new ArrayList<>())
                         .add(rule.getLabel());
-                    if (excludedPackage(dependencyPackage, prefixes)) {
+                    if (excludedDependency) {
                       state.excluded.add(prerequisite);
                     } else if (!state.visitedLabels.contains(prerequisite)
                         || state.filteredSuites.contains(prerequisite)) {
