@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.buildtool;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.AnalysisResult;
 import com.google.devtools.build.lib.analysis.ConfiguredAspect;
@@ -35,6 +36,7 @@ import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
 import com.google.devtools.build.lib.query2.engine.QueryUtil;
 import com.google.devtools.build.lib.query2.engine.QueryUtil.AggregateAllOutputFormatterCallback;
+import com.google.devtools.build.lib.query2.engine.TargetLiteral;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.QueryRuntimeHelper;
@@ -105,13 +107,25 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
     }
 
     CommonQueryOptions options = getQueryOptions(env);
-    boolean hashing = options instanceof CqueryOptions cqueryOptions && cqueryOptions.getGenerateHashes();
+    CqueryOptions cqueryOptions = options instanceof CqueryOptions configured ? configured : null;
+    boolean hashing = cqueryOptions != null && cqueryOptions.getGenerateHashes();
+    boolean topLevelHashOutput = cqueryOptions != null && cqueryOptions.useTopLevelHashOutput();
+    // With this literal as both the query and the analysis scope, analysis already found every
+    // top-level target the formatter could emit. Other expressions may select a subset.
+    boolean useAnalyzedRoots =
+        cqueryOptions != null
+            && topLevelHashOutput
+            && cqueryOptions.getUniverseScope().isEmpty()
+            && queryExpression instanceof TargetLiteral literal
+            && literal.getPattern().equals("//...")
+            && request.getTargets().equals(ImmutableList.of("//..."))
+            && !request.getLoadingOptions().getCompileOneDependency()
+            && !request.getLoadingOptions().getBuildTestsOnly();
     var topLevelConfigurations =
         new TopLevelConfigurations(
-            analysisResult.getTopLevelTargetsWithConfigs(),
-            options instanceof CqueryOptions cqueryOptions && cqueryOptions.useTopLevelHashOutput()
-                ? analysisResult.getTargetsToBuild()
-                : Set.of());
+            useAnalyzedRoots ? ImmutableList.of() : analysisResult.getTopLevelTargetsWithConfigs(),
+            topLevelHashOutput ? analysisResult.getTargetsToBuild() : Set.of(),
+            useAnalyzedRoots);
     try (QueryRuntimeHelper queryRuntimeHelper =
         env.getRuntime().getQueryRuntimeHelperFactory().create(env, options)) {
       doPostAnalysisQuery(
@@ -120,7 +134,9 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
           runtime,
           topLevelConfigurations,
           analysisResult.getAspectsMap(),
-          env.getSkyframeExecutor().getTransitiveConfigurationKeys(),
+          useAnalyzedRoots
+              ? ImmutableList.of()
+              : env.getSkyframeExecutor().getTransitiveConfigurationKeys(),
           queryRuntimeHelper,
           queryExpression,
           hashing);
