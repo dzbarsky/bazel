@@ -258,6 +258,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/query2/engine",
         "//src/main/java/com/google/devtools/build/lib/runtime:blaze_command_cluster",
         "//src/main/java/com/google/devtools/build/lib/runtime:blaze_command_result",
+        "//src/main/java/com/google/devtools/build/lib/runtime:client_options",
         "//src/main/java/com/google/devtools/build/lib/runtime:command_line_event",
         "//src/main/java/com/google/devtools/build/lib/runtime:exec_root_event",
         "//src/main/java/com/google/devtools/build/lib/runtime:instrumentation_output",

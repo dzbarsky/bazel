@@ -232,6 +232,11 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
             .append(BaseEncoding.base16().lowerCase().encode(hash))
             .append(options.getLineTerminator());
       }
+      // Keep-going reports individual failed digests as blank rows and still completes the
+      // stream. Fail-fast returns before emitting any rows or the completion marker.
+      if (options.getHashStreamReceipt()) {
+        printStream.append("# complete\n");
+      }
       printStream.flush();
     }
   }
