@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.query2.cquery;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.devtools.build.lib.util.StringEncoding.internalToUnicode;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -29,6 +30,7 @@ import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.packages.NativeAspectClass;
 import com.google.devtools.build.lib.packages.StarlarkAspectClass;
 import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.query2.PostAnalysisQueryEnvironment.TopLevelConfigurations;
 import com.google.devtools.build.lib.query2.SkyQueryEnvironment;
 import com.google.devtools.build.lib.query2.common.CqueryNode;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.TargetAccessor;
@@ -84,6 +86,7 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
 
   private final SkyframeExecutor skyframeExecutor;
   private final DepsRetriever depsRetriever;
+  @Nullable private final TopLevelConfigurations topLevelConfigurations;
   private final LabelPrinter labelPrinter;
   private final boolean keepGoing;
 
@@ -94,11 +97,13 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       SkyframeExecutor skyframeExecutor,
       TargetAccessor<CqueryNode> accessor,
       DepsRetriever depsRetriever,
+      @Nullable TopLevelConfigurations topLevelConfigurations,
       LabelPrinter labelPrinter,
       boolean keepGoing) {
     super(eventHandler, options, out, skyframeExecutor, accessor, /* uniquifyResults= */ false);
     this.skyframeExecutor = skyframeExecutor;
     this.depsRetriever = depsRetriever;
+    this.topLevelConfigurations = topLevelConfigurations;
     this.labelPrinter = labelPrinter;
     this.keepGoing = keepGoing;
   }
@@ -209,6 +214,10 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       for (HashTarget target : roots) {
         CqueryNode root = target.node;
         byte[] hash = target.hash;
+        if (topLevelConfigurations != null) {
+          writeTopLevelRow(root, hash);
+          continue;
+        }
         if (hash == null) {
           continue;
         }
@@ -225,6 +234,20 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       }
       printStream.flush();
     }
+  }
+
+  private void writeTopLevelRow(CqueryNode root, @Nullable byte[] hash) throws IOException {
+    String checksum = root.getConfigurationChecksum();
+    CqueryNode actual = root.getActual();
+    printStream
+        .append(internalToUnicode(root.getOriginalLabel().getCanonicalForm()))
+        .append('\t')
+        .append(checksum == null ? "none" : checksum)
+        .append('\t')
+        .append(hash == null ? "" : BaseEncoding.base16().lowerCase().encode(hash))
+        .append('\t')
+        .append(actual == root ? "" : internalToUnicode(actual.getLabel().getCanonicalForm()))
+        .append(options.getLineTerminator());
   }
 
   private static final int PROJECTION_BATCH_SIZE = 4096;
@@ -328,9 +351,11 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       throws IOException, InterruptedException {
     Map<ActionLookupKey, HashTarget> seen = new HashMap<>();
     for (CqueryNode node : partialResult) {
-      if (!seen.containsKey(node.getLookupKey())) {
+      ActionLookupKey key = node.getLookupKey();
+      if ((topLevelConfigurations == null || topLevelConfigurations.containsConfiguredTargetKey(key))
+          && !seen.containsKey(key)) {
         HashTarget target = new HashTarget(roots.size(), node, pool != null);
-        seen.put(node.getLookupKey(), target);
+        seen.put(key, target);
         roots.add(target);
       }
     }
