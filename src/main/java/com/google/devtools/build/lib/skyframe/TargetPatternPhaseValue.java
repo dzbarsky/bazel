@@ -164,7 +164,8 @@ public final class TargetPatternPhaseValue implements SkyValue {
         expandTestSuites,
         testFilter,
         keepGoing,
-        false,
+        /* cacheProbe= */ false,
+        /* targetsAreLabels= */ false,
         ImmutableList.of());
   }
 
@@ -180,6 +181,7 @@ public final class TargetPatternPhaseValue implements SkyValue {
       @Nullable TestFilter testFilter,
       boolean keepGoing,
       boolean cacheProbe,
+      boolean targetsAreLabels,
       ImmutableList<PackageIdentifier> excludedDependencyPackages) {
     return new TargetPatternPhaseKey(
         targetPatterns,
@@ -193,6 +195,7 @@ public final class TargetPatternPhaseValue implements SkyValue {
         testFilter,
         keepGoing,
         cacheProbe,
+        targetsAreLabels,
         excludedDependencyPackages);
   }
 
@@ -217,7 +220,8 @@ public final class TargetPatternPhaseValue implements SkyValue {
         false,
         null,
         keepGoing,
-        false,
+        /* cacheProbe= */ false,
+        /* targetsAreLabels= */ false,
         ImmutableList.of());
   }
 
@@ -236,6 +240,7 @@ public final class TargetPatternPhaseValue implements SkyValue {
     @Nullable private final TestFilter testFilter;
     private final boolean keepGoing;
     private final boolean cacheProbe;
+    private final boolean targetsAreLabels;
     private final ImmutableList<PackageIdentifier> excludedDependencyPackages;
 
     private TargetPatternPhaseKey(
@@ -250,6 +255,7 @@ public final class TargetPatternPhaseValue implements SkyValue {
         @Nullable TestFilter testFilter,
         boolean keepGoing,
         boolean cacheProbe,
+        boolean targetsAreLabels,
         ImmutableList<PackageIdentifier> excludedDependencyPackages) {
       this.targetPatterns = Preconditions.checkNotNull(targetPatterns);
       this.offset = Preconditions.checkNotNull(offset);
@@ -262,6 +268,7 @@ public final class TargetPatternPhaseValue implements SkyValue {
       this.testFilter = testFilter;
       this.keepGoing = keepGoing;
       this.cacheProbe = cacheProbe;
+      this.targetsAreLabels = targetsAreLabels;
       this.excludedDependencyPackages = excludedDependencyPackages;
       if (buildTestsOnly || determineTests) {
         Preconditions.checkNotNull(testFilter);
@@ -313,6 +320,10 @@ public final class TargetPatternPhaseValue implements SkyValue {
       return keepGoing;
     }
 
+    boolean targetsAreLabels() {
+      return targetsAreLabels;
+    }
+
     boolean isCacheProbe() {
       return cacheProbe;
     }
@@ -334,6 +345,7 @@ public final class TargetPatternPhaseValue implements SkyValue {
       result.append(expandTestSuites ? " EXPAND_TEST_SUITES" : "");
       result.append(testFilter != null ? " " + testFilter : "");
       result.append(keepGoing ? " KEEP_GOING" : "");
+      result.append(targetsAreLabels ? " EXACT_LABELS" : "");
       return result.toString();
     }
 
@@ -350,6 +362,7 @@ public final class TargetPatternPhaseValue implements SkyValue {
           testFilter,
           keepGoing,
           cacheProbe,
+          targetsAreLabels,
           excludedDependencyPackages);
     }
 
@@ -372,6 +385,7 @@ public final class TargetPatternPhaseValue implements SkyValue {
           && Objects.equals(other.testFilter, testFilter)
           && other.keepGoing == keepGoing
           && other.cacheProbe == cacheProbe
+          && other.targetsAreLabels == targetsAreLabels
           && other.excludedDependencyPackages.equals(excludedDependencyPackages);
     }
   }

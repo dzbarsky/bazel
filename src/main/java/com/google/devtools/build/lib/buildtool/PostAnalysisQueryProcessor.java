@@ -119,15 +119,16 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
     boolean hashing = cqueryOptions != null && cqueryOptions.getGenerateHashes();
     boolean topLevelHashOutput = cqueryOptions != null && cqueryOptions.useTopLevelHashOutput();
     boolean hashStreamReceipt = cqueryOptions != null && cqueryOptions.getHashStreamReceipt();
-    // With this literal as both the query and the analysis scope, analysis already found every
+    // With the label file or literal //... as the entire query, analysis already found every
     // top-level target the formatter could emit. Other expressions may select a subset.
     boolean useAnalyzedRoots =
         cqueryOptions != null
             && topLevelHashOutput
-            && cqueryOptions.getUniverseScope().isEmpty()
-            && queryExpression instanceof TargetLiteral literal
-            && literal.getPattern().equals("//...")
-            && request.getTargets().equals(ImmutableList.of("//..."))
+            && (request.targetsAreLabels()
+                || (cqueryOptions.getUniverseScope().isEmpty()
+                    && queryExpression instanceof TargetLiteral literal
+                    && literal.getPattern().equals("//...")
+                    && request.getTargets().equals(ImmutableList.of("//..."))))
             && !request.getLoadingOptions().getCompileOneDependency()
             && !request.getLoadingOptions().getBuildTestsOnly();
     var topLevelConfigurations =
@@ -137,7 +138,10 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
             useAnalyzedRoots);
     try (QueryRuntimeHelper queryRuntimeHelper =
         env.getRuntime().getQueryRuntimeHelperFactory().create(env, options)) {
-      if (hashStreamReceipt && (!useAnalyzedRoots || !options.getLineTerminator().equals("\n"))) {
+      if (hashStreamReceipt
+          && (request.targetsAreLabels()
+              || !useAnalyzedRoots
+              || !options.getLineTerminator().equals("\n"))) {
         throw new OptionsParsingException(
             "A hash stream receipt requires top-level hashes for //... with LF line endings");
       }
