@@ -30,6 +30,7 @@ import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.analysis.AliasProvider;
 import com.google.devtools.build.lib.analysis.AspectValue;
+import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.analysis.TargetAndConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
@@ -1030,8 +1031,16 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
     /** Null-configured top-level targets, indexed for repeated configuration selection. */
     private final ImmutableSet<Label> nulls;
 
+    private final ImmutableSet<ActionLookupKey> configuredTopLevelKeys;
+
     public TopLevelConfigurations(
         Collection<TargetAndConfiguration> topLevelTargetsAndConfigurations) {
+      this(topLevelTargetsAndConfigurations, Set.of());
+    }
+
+    public TopLevelConfigurations(
+        Collection<TargetAndConfiguration> topLevelTargetsAndConfigurations,
+        Set<ConfiguredTarget> configuredTopLevelTargets) {
       ImmutableMap.Builder<Label, BuildConfigurationValue> nonNullsBuilder =
           ImmutableMap.builderWithExpectedSize(topLevelTargetsAndConfigurations.size());
       ImmutableSet.Builder<Label> nullsBuilder = ImmutableSet.builder();
@@ -1048,6 +1057,17 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
           ImmutableSortedSet.copyOf(
               Comparator.comparing(BuildConfigurationValue::checksum), nonNulls.values());
       nulls = nullsBuilder.build();
+      var keys =
+          ImmutableSet.<ActionLookupKey>builderWithExpectedSize(configuredTopLevelTargets.size());
+      for (ConfiguredTarget target : configuredTopLevelTargets) {
+        keys.add(target.getLookupKey());
+      }
+      configuredTopLevelKeys = keys.build();
+    }
+
+    /** Tests the exact key returned by top-level analysis, including any rule transition. */
+    public boolean containsConfiguredTargetKey(ActionLookupKey key) {
+      return configuredTopLevelKeys.contains(key);
     }
 
     public int size() {

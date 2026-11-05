@@ -106,13 +106,19 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
 
     CommonQueryOptions options = getQueryOptions(env);
     boolean hashing = options instanceof CqueryOptions cqueryOptions && cqueryOptions.getGenerateHashes();
+    var topLevelConfigurations =
+        new TopLevelConfigurations(
+            analysisResult.getTopLevelTargetsWithConfigs(),
+            options instanceof CqueryOptions cqueryOptions && cqueryOptions.useTopLevelHashOutput()
+                ? analysisResult.getTargetsToBuild()
+                : Set.of());
     try (QueryRuntimeHelper queryRuntimeHelper =
         env.getRuntime().getQueryRuntimeHelperFactory().create(env, options)) {
       doPostAnalysisQuery(
           request,
           env,
           runtime,
-          new TopLevelConfigurations(analysisResult.getTopLevelTargetsWithConfigs()),
+          topLevelConfigurations,
           analysisResult.getAspectsMap(),
           env.getSkyframeExecutor().getTransitiveConfigurationKeys(),
           queryRuntimeHelper,
