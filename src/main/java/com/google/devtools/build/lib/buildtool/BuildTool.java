@@ -274,6 +274,7 @@ public class BuildTool {
                 env.getRelativeWorkingDirectory(),
                 request.getKeepGoing(),
                 request.getTargets(),
+                request.targetsAreLabels(),
                 request.getLoadingOptions(),
                 request.getLoadingPhaseThreadCount(),
                 request.shouldRunTests(),
@@ -294,6 +295,7 @@ public class BuildTool {
                   env.getRelativeWorkingDirectory(),
                   request.getKeepGoing(),
                   targetsForProjectResolution,
+                  /* targetsAreLabels= */ false,
                   request.getLoadingOptions(),
                   request.getLoadingPhaseThreadCount(),
                   request.shouldRunTests(),
@@ -513,6 +515,7 @@ public class BuildTool {
       PathFragment relativeWorkingDirectory,
       boolean keepGoing,
       List<String> targets,
+      boolean targetsAreLabels,
       LoadingOptions loadingOptions,
       int loadingPhaseThreadCount,
       boolean shouldRunTests,
@@ -528,7 +531,8 @@ public class BuildTool {
             loadingPhaseThreadCount,
             keepGoing,
             shouldRunTests,
-            cacheProbe);
+            cacheProbe,
+            targetsAreLabels);
     if (validator != null) {
       ImmutableSet<Target> targetLabels =
           result.getTargets(reporter, skyframeExecutor.getPackageManager());
