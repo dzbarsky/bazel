@@ -447,12 +447,12 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
         && !settings.contains(Setting.ONLY_TARGET_DEPS)
         && !settings.contains(Setting.NO_IMPLICIT_DEPS)) {
       // Neither filter consumes edge classification. Passing a null parent marks all edges
-      // implicit while preserving the same configured, aspect and toolchain projection.
+      // implicit. The hash collector already deduplicates canonical configured dependency keys.
       ImmutableList.Builder<T> raw = ImmutableList.builder();
       targetifyInto(
           null,
           direct,
-          new HashSet<>(),
+          /* knownCtDeps= */ null,
           new HashSet<>(),
           unavailable,
           (node, implicit) -> node,
@@ -765,7 +765,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
   private <R> void targetifyInto(
       @Nullable T parent,
       Iterable<? extends SkyKey> dependencies,
-      Set<SkyKey> knownCtDeps,
+      @Nullable Set<SkyKey> knownCtDeps,
       Set<AspectClass> resolvedAspectClasses,
       @Nullable List<SkyKey> unavailable,
       DependencyProjection<T, R> projection,
@@ -779,8 +779,8 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       }
     }
 
-    boolean explicitAspects =
-        settings.containsAll(ImmutableSet.of(Setting.INCLUDE_ASPECTS, Setting.EXPLICIT_ASPECTS));
+    boolean includeAspects = settings.contains(Setting.INCLUDE_ASPECTS);
+    boolean explicitAspects = includeAspects && settings.contains(Setting.EXPLICIT_ASPECTS);
 
     // TODO(bazel-team): The end-goal approach is to treat aspects and toolchains as
     // first-class query nodes just like targets. In other words, let query expressions reference
@@ -791,7 +791,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
     // implemented behind the --experimental_explicit_aspects flag.
     // See https://github.com/bazelbuild/bazel/issues/16310 for details.
     for (SkyKey key : dependencies) {
-      if (knownCtDeps.contains(key)) {
+      if (knownCtDeps != null && knownCtDeps.contains(key)) {
         continue;
       }
       if (key.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
@@ -847,9 +847,10 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
         }
 
         values.add(projection.apply(dependency, implicitDep));
-        knownCtDeps.add(key);
-      } else if (settings.contains(Setting.INCLUDE_ASPECTS)
-          && key.functionName().equals(SkyFunctions.ASPECT)) {
+        if (knownCtDeps != null) {
+          knownCtDeps.add(key);
+        }
+      } else if (includeAspects && key.functionName().equals(SkyFunctions.ASPECT)) {
         Preconditions.checkState(!settings.contains(Setting.EXPLICIT_ASPECTS));
         if (resolvedAspectClasses.contains(((AspectKey) key).getAspectClass())) {
           continue;
