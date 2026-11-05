@@ -1032,15 +1032,17 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
     private final ImmutableSet<Label> nulls;
 
     private final ImmutableSet<ActionLookupKey> configuredTopLevelKeys;
+    @Nullable private final ImmutableSet<ConfiguredTarget> analyzedRoots;
 
     public TopLevelConfigurations(
         Collection<TargetAndConfiguration> topLevelTargetsAndConfigurations) {
-      this(topLevelTargetsAndConfigurations, Set.of());
+      this(topLevelTargetsAndConfigurations, Set.of(), /* useAnalyzedRoots= */ false);
     }
 
     public TopLevelConfigurations(
         Collection<TargetAndConfiguration> topLevelTargetsAndConfigurations,
-        Set<ConfiguredTarget> configuredTopLevelTargets) {
+        Set<ConfiguredTarget> configuredTopLevelTargets,
+        boolean useAnalyzedRoots) {
       ImmutableMap.Builder<Label, BuildConfigurationValue> nonNullsBuilder =
           ImmutableMap.builderWithExpectedSize(topLevelTargetsAndConfigurations.size());
       ImmutableSet.Builder<Label> nullsBuilder = ImmutableSet.builder();
@@ -1063,6 +1065,13 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
         keys.add(target.getLookupKey());
       }
       configuredTopLevelKeys = keys.build();
+      analyzedRoots = useAnalyzedRoots ? ImmutableSet.copyOf(configuredTopLevelTargets) : null;
+    }
+
+    /** Returns the analyzed roots when the analysis scope exactly matches the hash query. */
+    @Nullable
+    public ImmutableSet<ConfiguredTarget> getAnalyzedRoots() {
+      return analyzedRoots;
     }
 
     /** Tests the exact key returned by top-level analysis, including any rule transition. */
