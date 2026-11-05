@@ -69,6 +69,23 @@ public abstract class CqueryOptions extends CommonQueryOptions {
   public abstract boolean getGenerateHashes();
 
   @Option(
+      name = "experimental_cquery_hash_top_level",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "With --experimental_generate_hashes, limit output to the analyzed top-level"
+              + " configured keys in the query result. Print tab-separated canonical label,"
+              + " full configuration checksum (or 'none'), hash (empty if unavailable),"
+              + " and actual label (empty for non-aliases).")
+  public abstract boolean getTopLevelHashOutput();
+
+  public final boolean useTopLevelHashOutput() {
+    return getGenerateHashes() && getTopLevelHashOutput();
+  }
+
+  @Option(
       name = "experimental_cquery_hash_workers",
       converter = NonNegativeIntegerConverter.class,
       defaultValue = "1",
