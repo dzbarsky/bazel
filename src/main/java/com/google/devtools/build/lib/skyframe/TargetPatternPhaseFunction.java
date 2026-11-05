@@ -368,8 +368,12 @@ final class TargetPatternPhaseFunction implements SkyFunction {
     List<TargetPatternKey> patternSkyKeys = new ArrayList<>(options.getTargetPatterns().size());
     for (String pattern : options.getTargetPatterns()) {
       try {
-        TargetPatternKey patternKey =
-            probePatternKey(env, SignedTargetPattern.parse(pattern, parser), policy, options);
+        SignedTargetPattern parsed =
+            options.targetsAreLabels()
+                ? SignedTargetPattern.create(
+                    TargetPattern.parseExactLabel(pattern), SignedTargetPattern.Sign.POSITIVE)
+                : SignedTargetPattern.parse(pattern, parser);
+        TargetPatternKey patternKey = probePatternKey(env, parsed, policy, options);
         if (patternKey != null) {
           patternSkyKeys.add(patternKey);
         }
