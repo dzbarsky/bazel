@@ -86,6 +86,17 @@ public abstract class CqueryOptions extends CommonQueryOptions {
   }
 
   @Option(
+      name = "experimental_cquery_hash_stream_receipt",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "Frame whole-workspace top-level hash output with the invocation ID, an options"
+              + " fingerprint, and a completion record.")
+  public abstract boolean getHashStreamReceipt();
+
+  @Option(
       name = "experimental_cquery_hash_workers",
       converter = NonNegativeIntegerConverter.class,
       defaultValue = "1",
