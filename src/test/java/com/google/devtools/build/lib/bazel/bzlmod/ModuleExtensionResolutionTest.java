@@ -1202,6 +1202,12 @@ public class ModuleExtensionResolutionTest extends BuildViewTestCase {
     evaluateOrThrow(
         PackageIdentifier.create(
             RepositoryName.createUnvalidated("+ext+baz"), PathFragment.EMPTY_FRAGMENT));
+
+    // Importing the repo under its internal name doesn't change the extension's mapping either.
+    scratch.appendFile("MODULE.bazel", "use_repo(ext, 'baz')");
+    invalidatePackages(false);
+    assertThat(((PackageValue) evaluateOrThrow(packageKey)).getPackage()).isSameInstanceAs(pkg);
+    assertThat((BzlLoadValue) evaluateOrThrow(bzlKey)).isSameInstanceAs(bzl);
   }
 
   private <T extends SkyValue> T evaluateOrThrow(SkyKey key) throws Exception {
