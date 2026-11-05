@@ -3406,7 +3406,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         threadCount,
         keepGoing,
         determineTests,
-        false);
+        /* cacheProbe= */ false,
+        /* targetsAreLabels= */ false);
   }
 
   public TargetPatternPhaseValue loadTargetPatternsWithFilters(
@@ -3417,7 +3418,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       int threadCount,
       boolean keepGoing,
       boolean determineTests,
-      boolean cacheProbe)
+      boolean cacheProbe,
+      boolean targetsAreLabels)
       throws TargetParsingException, InterruptedException {
     SkyKey key =
         TargetPatternPhaseValue.key(
@@ -3432,6 +3434,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
             TestFilter.forOptions(options),
             keepGoing,
             cacheProbe,
+            targetsAreLabels,
             cacheProbe
                 ? ImmutableList.copyOf(options.getCacheProbeExcludedDependencyPackages())
                 : ImmutableList.of());
