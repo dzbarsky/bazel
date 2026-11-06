@@ -2013,9 +2013,13 @@ function test_parallel_rule_catalog_preserves_rows_and_order() {
   local i workers
   mkdir -p "$pkg"
   echo 'fixture source' > "$pkg/source.txt"
-  for (( i = 0; i < 257; i++ )); do
-    printf 'filegroup(name = "rule_%03d", srcs = ["source.txt"])\n' "$i"
-  done > "$pkg/BUILD.bazel"
+  {
+    # Force a spill even though each individual row fits in memory.
+    echo 'long_tag = "x" * 10000'
+    for (( i = 0; i < 257; i++ )); do
+      printf 'filegroup(name = "rule_%03d", srcs = ["source.txt"], tags = [long_tag])\n' "$i"
+    done
+  } > "$pkg/BUILD.bazel"
 
   local -ar common=(
     --experimental_generate_hashes --experimental_cquery_hash_top_level
