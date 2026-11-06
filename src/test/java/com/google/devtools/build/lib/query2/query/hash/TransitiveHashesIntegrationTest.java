@@ -295,6 +295,23 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   }
 
   @Test
+  public void configuredDirectDigestMatchesQueryWithoutItsDependencyList() throws Exception {
+    var context =
+        EvaluationContext.newBuilder().setParallelism(1).setEventHandler(reporter).build();
+    for (String name : ImmutableList.of("//app:lib", "//tc:tc_ext", "//tc:a.txt")) {
+      var label = Label.parseCanonical(name);
+      var queryKey = DirectTargetHashFunction.key(label);
+      var configuredKey = DirectTargetHashFunction.configuredKey(label);
+      var result =
+          getSkyframeExecutor().prepareAndGet(ImmutableSet.of(queryKey, configuredKey), context);
+      var query = (DirectTargetHashFunction.Value) result.get(queryKey);
+      var configured = (DirectTargetHashFunction.Value) result.get(configuredKey);
+      assertThat(configured.getDirectHash()).isEqualTo(query.getDirectHash());
+      assertThat(configured.getDeps()).isEmpty();
+    }
+  }
+
+  @Test
   public void externalRepoRule_listsSamePackageSourceFilesAsDeps() throws Exception {
     EvaluationContext context =
         EvaluationContext.newBuilder().setParallelism(1).setEventHandler(reporter).build();

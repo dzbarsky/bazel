@@ -495,11 +495,11 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
   private static final int DIRECT_EVAL_BATCH = 16384;
 
   private static final class DirectDigest {
-    final DirectTargetHashFunction.Key key;
+    final SkyKey key;
     @Nullable byte[] bytes;
     @Nullable String error;
 
-    DirectDigest(DirectTargetHashFunction.Key key) {
+    DirectDigest(SkyKey key) {
       this.key = key;
     }
   }
@@ -515,7 +515,8 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
             .build();
     if (!nodes.isEmpty()) {
       // Flush any pending Skyframe invalidation before consulting done values directly.
-      SkyKey barrierKey = DirectTargetHashFunction.key(nodes.get(0).node.getOriginalLabel());
+      SkyKey barrierKey =
+          DirectTargetHashFunction.configuredKey(nodes.get(0).node.getOriginalLabel());
       skyframeExecutor.prepareAndGet(ImmutableSet.of(barrierKey), context);
     }
     for (int first = 0; first < nodes.size(); first += DIRECT_WINDOW) {
@@ -529,7 +530,7 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
         var label = nodes.get(first + i).node.getOriginalLabel();
         var slot = cache.get(label);
         if (slot == null) {
-          slot = new DirectDigest(DirectTargetHashFunction.key(label));
+          slot = new DirectDigest(DirectTargetHashFunction.configuredKey(label));
           cache.put(label, slot);
           fresh.add(slot);
         }
@@ -633,7 +634,7 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       throws InterruptedException {
     ImmutableSet<SkyKey> keys =
         batch.stream()
-            .map(target -> DirectTargetHashFunction.key(target.node.getOriginalLabel()))
+            .map(target -> DirectTargetHashFunction.configuredKey(target.node.getOriginalLabel()))
             .collect(toImmutableSet());
     EvaluationResult<SkyValue> result =
         skyframeExecutor.prepareAndGet(
@@ -644,7 +645,7 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
                 .build());
     for (HashTarget target : batch) {
       CqueryNode node = target.node;
-      var key = DirectTargetHashFunction.key(node.getOriginalLabel());
+      var key = DirectTargetHashFunction.configuredKey(node.getOriginalLabel());
       var value = (DirectTargetHashFunction.Value) result.get(key);
       if (value == null) {
         failed.add(target);
