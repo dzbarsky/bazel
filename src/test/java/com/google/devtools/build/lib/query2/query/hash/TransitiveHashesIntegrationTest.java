@@ -302,6 +302,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
       var label = Label.parseCanonical(name);
       var queryKey = DirectTargetHashFunction.key(label);
       var configuredKey = DirectTargetHashFunction.configuredKey(label);
+      assertThat(configuredKey.getCanonicalName()).isNotEqualTo(queryKey.getCanonicalName());
       var result =
           getSkyframeExecutor().prepareAndGet(ImmutableSet.of(queryKey, configuredKey), context);
       var query = (DirectTargetHashFunction.Value) result.get(queryKey);
