@@ -26,6 +26,7 @@ import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.cmdline.TargetPattern.Parser;
 import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.exec.ExecutionOptions;
 import com.google.devtools.build.lib.pkgcache.LoadingOptions;
 import com.google.devtools.build.lib.query2.cquery.ConfiguredTargetQueryEnvironment;
 import com.google.devtools.build.lib.query2.cquery.CqueryOptions;
@@ -38,6 +39,7 @@ import com.google.devtools.build.lib.query2.engine.QueryParser;
 import com.google.devtools.build.lib.query2.engine.QuerySyntaxException;
 import com.google.devtools.build.lib.query2.engine.SetExpression;
 import com.google.devtools.build.lib.query2.engine.SomePathFunction;
+import com.google.devtools.build.lib.query2.engine.TargetLiteral;
 import com.google.devtools.build.lib.runtime.BlazeCommand;
 import com.google.devtools.build.lib.runtime.BlazeCommandResult;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
@@ -222,6 +224,27 @@ public final class CqueryCommand implements BlazeCommand {
                 || functionExpr.getFunction() instanceof AllPathsFunction)) {
           targetsForProjectResolution = ImmutableList.of(targetPatternSet.getFirst());
         }
+      }
+    }
+    if (!cqueryOptions.getRuleCatalogOutput().isEmpty()) {
+      LoadingOptions loading = options.getOptions(LoadingOptions.class);
+      if (!cqueryOptions.useTopLevelHashOutput()
+          || !(expr instanceof TargetLiteral literal && literal.getPattern().equals("//..."))
+          || !cqueryOptions.getQueryFile().isEmpty()
+          || !cqueryOptions.getUniverseScope().isEmpty()
+          || !buildOptions.getTargetPatternFile().isEmpty()
+          || !buildOptions.getTargetQuery().isEmpty()
+          || !buildOptions.getTargetQueryFile().isEmpty()
+          || options.getOptions(ExecutionOptions.class).getCacheProbeOutput() != null
+          || !loading.getBuildManualTests()
+          || !loading.getBuildTagFilterList().isEmpty()
+          || loading.getCompileOneDependency()
+          || loading.getBuildTestsOnly()) {
+        String message =
+            "--experimental_cquery_rule_catalog requires top-level hash output for the literal"
+                + " //... query with manual rules and without loading filters or a custom scope";
+        env.getReporter().handle(Event.error(message));
+        return createFailureResult(message, Code.FILTERS_NOT_SUPPORTED);
       }
     }
     BlazeRuntime runtime = env.getRuntime();
