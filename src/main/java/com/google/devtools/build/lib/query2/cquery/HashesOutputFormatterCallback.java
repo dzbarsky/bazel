@@ -24,6 +24,7 @@ import com.google.devtools.build.lib.actions.ActionAnalysisMetadata.AnalysisTime
 import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.concurrent.MoreFutures;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.LabelPrinter;
@@ -62,6 +63,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import javax.annotation.Nullable;
 
 /**
@@ -357,7 +359,8 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
     Map<ActionLookupKey, HashTarget> seen = new HashMap<>();
     for (CqueryNode node : partialResult) {
       ActionLookupKey key = node.getLookupKey();
-      if ((topLevelConfigurations == null || topLevelConfigurations.containsConfiguredTargetKey(key))
+      if ((topLevelConfigurations == null
+              || topLevelConfigurations.containsConfiguredTargetKey(key))
           && !seen.containsKey(key)) {
         HashTarget target = new HashTarget(roots.size(), node, pool != null);
         seen.put(key, target);
@@ -367,24 +370,13 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
     List<HashTarget> nodes = new ArrayList<>(roots);
     for (int i = 0; i < nodes.size(); ) {
       int end = nodes.size();
+      ProjectionBatch batch = pool == null ? null : projectBatch(nodes, i, end, pool);
       while (i < end) {
         int first = i;
         int limit = pool == null ? end : Math.min(end, first + PROJECTION_BATCH_SIZE);
-        @SuppressWarnings("unchecked")
-        Iterable<CqueryNode>[] prefetched =
-            pool == null ? null : (Iterable<CqueryNode>[]) new Iterable<?>[limit - first];
-        if (pool != null) {
-          ranges(
-              pool,
-              first,
-              limit,
-              64,
-              (a, b) -> {
-                for (int j = a; j < b; j++) {
-                  prefetched[j - first] = depsRetriever.getDirectDeps(nodes.get(j).node);
-                }
-              });
-        }
+        Iterable<CqueryNode>[] prefetched = batch == null ? null : batch.await();
+        // Project the next batch while this thread interns the current batch's edges.
+        batch = pool == null || limit == end ? null : projectBatch(nodes, limit, end, pool);
         while (i < limit) {
           HashTarget target = nodes.get(i++);
           ImmutableList.Builder<HashTarget> ordered = ImmutableList.builder();
@@ -447,6 +439,39 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
           });
     }
     return nodes;
+  }
+
+  private record ProjectionBatch(Iterable<CqueryNode>[] deps, List<Future<Void>> work) {
+    Iterable<CqueryNode>[] await() throws IOException, InterruptedException {
+      for (var task : work) {
+        MoreFutures.waitForFutureAndGetWithCheckedException(
+            task, /* cancelOnInterrupt= */ true, IOException.class);
+      }
+      return deps;
+    }
+  }
+
+  private ProjectionBatch projectBatch(
+      List<HashTarget> nodes, int first, int end, ExecutorService pool) {
+    int limit = Math.min(end, first + PROJECTION_BATCH_SIZE);
+    // The collector can append to nodes while the workers read this snapshot.
+    var targets = nodes.subList(first, limit).toArray(HashTarget[]::new);
+    @SuppressWarnings("unchecked")
+    Iterable<CqueryNode>[] deps = (Iterable<CqueryNode>[]) new Iterable<?>[targets.length];
+    var work = new ArrayList<Future<Void>>();
+    for (int start = 0; start < targets.length; start += 64) {
+      int left = start;
+      int right = Math.min(start + 64, targets.length);
+      work.add(
+          pool.submit(
+              () -> {
+                for (int i = left; i < right; i++) {
+                  deps[i] = depsRetriever.getDirectDeps(targets[i].node);
+                }
+                return null;
+              }));
+    }
+    return new ProjectionBatch(deps, work);
   }
 
   private static void sortAndCheck(HashTarget target) throws IOException {
