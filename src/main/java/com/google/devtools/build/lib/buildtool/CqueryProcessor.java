@@ -20,6 +20,7 @@ import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
+import com.google.devtools.build.lib.concurrent.MoreFutures;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.packages.NoSuchTargetException;
 import com.google.devtools.build.lib.packages.Package;
@@ -33,6 +34,7 @@ import com.google.devtools.build.lib.query2.cquery.ConfiguredTargetQueryEnvironm
 import com.google.devtools.build.lib.query2.cquery.CqueryOptions;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
+import com.google.devtools.build.lib.query2.query.aspectresolvers.AspectResolver;
 import com.google.devtools.build.lib.query2.query.output.StreamedJSONProtoOutputFormatter;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
@@ -42,12 +44,20 @@ import com.google.devtools.build.lib.skyframe.TargetPatternPhaseValue;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.skyframe.WalkableGraph;
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import net.starlark.java.eval.StarlarkSemantics;
 
 /** Performs {@code cquery} processing. */
 public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode> {
+  private static final int CATALOG_CHUNK_SIZE = 128;
 
   public CqueryProcessor(
       QueryExpression queryExpression, TargetPattern.Parser mainRepoTargetParser) {
@@ -110,20 +120,70 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
     Path staging = parent.createTempDirectory(".rule-catalog-");
     try {
       Path temporary = staging.getChild("catalog");
-      try (var out = new BufferedOutputStream(temporary.getOutputStream(), 16384)) {
+      int available = Runtime.getRuntime().availableProcessors();
+      int requested = options.getHashWorkers();
+      int workers = requested == 0 ? available : Math.min(available, requested);
+      // Rule class metadata is emitted only for the first occurrence of each rule class.
+      // Precise aspect resolution can also load packages while formatting.
+      boolean parallel =
+          workers > 1
+              && !options.getProtoRuleClasses()
+              && options.getAspectDeps() != AspectResolver.Mode.PRECISE;
+      try (var out = new BufferedOutputStream(temporary.getOutputStream(), 16384);
+          var pool =
+              parallel
+                  ? Executors.newFixedThreadPool(
+                      workers, Thread.ofPlatform().name("cquery-rule-catalog-", 0).factory())
+                  : null) {
         var packages = new HashMap<PackageIdentifier, Package>();
-        for (var label : loadingResult.getNonExpandedLabels()) {
-          var id = label.getPackageIdentifier();
-          Package pkg = packages.get(id);
-          if (pkg == null) {
-            pkg = executor.getExistingPackage(id);
+        var pending = new ArrayDeque<Future<ByteArrayOutputStream>>();
+        var chunk = new ArrayList<Rule>(CATALOG_CHUNK_SIZE);
+        try {
+          for (var label : loadingResult.getNonExpandedLabels()) {
+            var id = label.getPackageIdentifier();
+            Package pkg = packages.get(id);
             if (pkg == null) {
-              throw new IOException("Loaded package is missing from the graph: " + id);
+              pkg = executor.getExistingPackage(id);
+              if (pkg == null) {
+                throw new IOException("Loaded package is missing from the graph: " + id);
+              }
+              packages.put(id, pkg);
             }
-            packages.put(id, pkg);
+            if (!(pkg.getTarget(label.getName()) instanceof Rule rule)) {
+              continue;
+            }
+            if (pool == null) {
+              formatter.writeTarget(rule, labelPrinter, out);
+              continue;
+            }
+            chunk.add(rule);
+            if (chunk.size() == CATALOG_CHUNK_SIZE) {
+              // Bound queued chunks and drain in target-pattern order.
+              if (pending.size() == 2 * workers) {
+                writeCatalogChunk(pending.removeFirst(), out);
+              }
+              List<Rule> rules = chunk;
+              pending.addLast(
+                  pool.submit(
+                      () -> {
+                        var bytes = new ByteArrayOutputStream();
+                        for (var target : rules) {
+                          formatter.writeTarget(target, labelPrinter, bytes);
+                        }
+                        return bytes;
+                      }));
+              chunk = new ArrayList<>(CATALOG_CHUNK_SIZE);
+            }
           }
-          if (pkg.getTarget(label.getName()) instanceof Rule rule) {
+          while (!pending.isEmpty()) {
+            writeCatalogChunk(pending.removeFirst(), out);
+          }
+          for (var rule : chunk) {
             formatter.writeTarget(rule, labelPrinter, out);
+          }
+        } finally {
+          if (pool != null) {
+            pool.shutdownNow();
           }
         }
       }
@@ -131,6 +191,13 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
     } finally {
       staging.deleteTree();
     }
+  }
+
+  private static void writeCatalogChunk(Future<ByteArrayOutputStream> chunk, OutputStream out)
+      throws IOException, InterruptedException {
+    MoreFutures.waitForFutureAndGetWithCheckedException(
+            chunk, /* cancelOnInterrupt= */ true, IOException.class)
+        .writeTo(out);
   }
 
   @Override
