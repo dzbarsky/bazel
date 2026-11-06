@@ -606,7 +606,7 @@ public class IncrementalLoadingTest {
       Path path = workspace.getRelative(fileName);
       Preconditions.checkState(path.exists());
       clock.advanceMillis(1);
-      path.setLastModifiedTime(clock.currentTimeMillis());
+      path.setLastModifiedTimeNanos(clock.currentTimeMillis() * 1_000_000L);
       changes.add(path);
     }
 
