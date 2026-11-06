@@ -24,8 +24,10 @@ import com.google.devtools.build.lib.bazel.bzlmod.RepoSpec;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import com.google.devtools.build.skyframe.SkyFunction;
+import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import javax.annotation.Nullable;
@@ -49,6 +51,39 @@ final class RepoDefinitionInputs {
       ImmutableMap<RepositoryName, RepoSpec> moduleSpecs,
       ImmutableMap<ModuleExtensionId, String> extensionUniqueNames)
       implements SkyValue {}
+
+  /** Which entry in the resolved graph supplies this repository's definition. */
+  sealed interface ResolvedRepo extends SkyValue {
+    @AutoCodec
+    record Module(RepoSpec spec) implements ResolvedRepo {}
+
+    @AutoCodec
+    record Extension(ModuleExtensionId id, String uniqueName) implements ResolvedRepo {}
+
+    enum Missing implements ResolvedRepo {
+      INSTANCE
+    }
+  }
+
+  @AutoCodec
+  record ResolvedRepoKey(RepositoryName name) implements SkyKey {
+    private static final SkyKeyInterner<ResolvedRepoKey> interner = SkyKey.newInterner();
+
+    @AutoCodec.Instantiator
+    static ResolvedRepoKey create(RepositoryName name) {
+      return interner.intern(new ResolvedRepoKey(name));
+    }
+
+    @Override
+    public SkyFunctionName functionName() {
+      return SkyFunctions.RESOLVED_REPO_DEFINITION;
+    }
+
+    @Override
+    public SkyKeyInterner<ResolvedRepoKey> getSkyKeyInterner() {
+      return interner;
+    }
+  }
 
   // Non-registry override repos can be needed during module resolution, so the root inputs must
   // be available without the resolved module graph.
@@ -93,7 +128,8 @@ final class RepoDefinitionInputs {
       return null;
     }
     var specs = ImmutableMap.<RepositoryName, RepoSpec>builder();
-    graph.getCanonicalRepoNameLookup()
+    graph
+        .getCanonicalRepoNameLookup()
         .forEach(
             (repo, moduleKey) -> {
               RepoSpec spec = graph.getDepGraph().get(moduleKey).getRepoSpec();
@@ -102,6 +138,27 @@ final class RepoDefinitionInputs {
               }
             });
     return new Resolved(specs.buildOrThrow(), graph.getExtensionUniqueNames());
+  }
+
+  // A change to one module's spec should not recreate unrelated repository definitions.
+  @Nullable
+  static ResolvedRepo computeResolvedRepo(SkyKey key, SkyFunction.Environment env)
+      throws InterruptedException {
+    var resolved = (Resolved) env.getValue(RESOLVED_KEY);
+    if (resolved == null) {
+      return null;
+    }
+    RepositoryName name = ((ResolvedRepoKey) key).name();
+    RepoSpec spec = resolved.moduleSpecs().get(name);
+    if (spec != null) {
+      return new ResolvedRepo.Module(spec);
+    }
+    for (var entry : resolved.extensionUniqueNames().entrySet()) {
+      if (name.getName().startsWith(entry.getValue() + "+")) {
+        return new ResolvedRepo.Extension(entry.getKey(), entry.getValue());
+      }
+    }
+    return ResolvedRepo.Missing.INSTANCE;
   }
 
   private RepoDefinitionInputs() {}
