@@ -158,7 +158,7 @@ public final class StarlarkAttrTransitionProviderTest extends BuildViewTestCase 
     return Iterables.getOnlyElement(
             transition.apply(TransitionUtil.restrict(transition, options), reporter).values())
         .get(DummyTestOptions.class)
-        .foo;
+        .getFoo();
   }
 
   @Test
@@ -232,8 +232,8 @@ public final class StarlarkAttrTransitionProviderTest extends BuildViewTestCase 
                   .computeIfAbsent(
                       options, first, StarlarkBuildSettingsDetailsValue.EMPTY, reporter)
                   .values());
-      assertThat(result.get(DummyTestOptions.class).foo)
-          .isEqualTo("ordinary:" + options.get(DummyTestOptions.class).foo);
+      assertThat(result.get(DummyTestOptions.class).getFoo())
+          .isEqualTo("ordinary:" + options.get(DummyTestOptions.class).getFoo());
     }
   }
 
@@ -469,8 +469,8 @@ public final class StarlarkAttrTransitionProviderTest extends BuildViewTestCase 
                     StarlarkBuildSettingsDetailsValue.EMPTY,
                     reporter)
                 .values());
-    assertThat(firstResult.get(DummyTestOptions.class).foo).isEqualTo("one|a,b");
-    assertThat(secondResult.get(DummyTestOptions.class).foo).isEqualTo("two|b,a");
+    assertThat(firstResult.get(DummyTestOptions.class).getFoo()).isEqualTo("one|a,b");
+    assertThat(secondResult.get(DummyTestOptions.class).getFoo()).isEqualTo("two|b,a");
     assertThat(second).isNotSameInstanceAs(first);
     assertThat(createTransition(provider, secondMapper)).isSameInstanceAs(second);
   }
