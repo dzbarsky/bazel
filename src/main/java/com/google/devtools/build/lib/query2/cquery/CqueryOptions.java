@@ -97,6 +97,19 @@ public abstract class CqueryOptions extends CommonQueryOptions {
   public abstract boolean getHashStreamReceipt();
 
   @Option(
+      name = "experimental_cquery_rule_catalog",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "Write unconfigured rules matching the literal //... query to this file using"
+              + " streamed_jsonproto and the --proto options. Requires top-level hash output."
+              + " The catalog includes rules that fail analysis and is written only if loading"
+              + " succeeds.")
+  public abstract String getRuleCatalogOutput();
+
+  @Option(
       name = "experimental_cquery_hash_workers",
       converter = NonNegativeIntegerConverter.class,
       defaultValue = "1",
