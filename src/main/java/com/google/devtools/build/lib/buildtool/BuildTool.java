@@ -167,6 +167,10 @@ public class BuildTool {
 
   /** Hook for inserting extra post-analysis-phase processing. Used for implementing {a,c}query. */
   public interface AnalysisPostProcessor {
+    default void afterTargetPatternLoading(
+        BuildRequest request, CommandEnvironment env, TargetPatternPhaseValue loadingResult)
+        throws InterruptedException, ViewCreationFailedException {}
+
     void process(
         BuildRequest request,
         CommandEnvironment env,
@@ -274,12 +278,14 @@ public class BuildTool {
                 env.getRelativeWorkingDirectory(),
                 request.getKeepGoing(),
                 request.getTargets(),
+                request.targetsAreLabels(),
                 request.getLoadingOptions(),
                 request.getLoadingPhaseThreadCount(),
                 request.shouldRunTests(),
                 request.getExecutionOptions().getCacheProbeOutput() != null,
                 validator);
       }
+      analysisPostProcessor.afterTargetPatternLoading(request, env, targetPatternPhaseValue);
 
       env.getEventBus().post(new ExecRootEvent(env.getExecRoot()));
 
@@ -294,6 +300,7 @@ public class BuildTool {
                   env.getRelativeWorkingDirectory(),
                   request.getKeepGoing(),
                   targetsForProjectResolution,
+                  /* targetsAreLabels= */ false,
                   request.getLoadingOptions(),
                   request.getLoadingPhaseThreadCount(),
                   request.shouldRunTests(),
@@ -513,6 +520,7 @@ public class BuildTool {
       PathFragment relativeWorkingDirectory,
       boolean keepGoing,
       List<String> targets,
+      boolean targetsAreLabels,
       LoadingOptions loadingOptions,
       int loadingPhaseThreadCount,
       boolean shouldRunTests,
@@ -528,7 +536,8 @@ public class BuildTool {
             loadingPhaseThreadCount,
             keepGoing,
             shouldRunTests,
-            cacheProbe);
+            cacheProbe,
+            targetsAreLabels);
     if (validator != null) {
       ImmutableSet<Target> targetLabels =
           result.getTargets(reporter, skyframeExecutor.getPackageManager());
