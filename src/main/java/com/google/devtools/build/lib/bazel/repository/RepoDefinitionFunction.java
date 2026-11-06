@@ -20,10 +20,10 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.bazel.bzlmod.ExternalDepsException;
-import com.google.devtools.build.lib.bazel.bzlmod.ModuleExtensionId;
 import com.google.devtools.build.lib.bazel.bzlmod.NonRegistryOverride;
 import com.google.devtools.build.lib.bazel.bzlmod.RepoRuleId;
 import com.google.devtools.build.lib.bazel.bzlmod.RepoSpec;
+import com.google.devtools.build.lib.bazel.repository.RepoDefinitionInputs.ResolvedRepo;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
@@ -42,7 +42,6 @@ import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Optional;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.Starlark;
@@ -66,6 +65,7 @@ public final class RepoDefinitionFunction implements SkyFunction {
         RepoDefinitionValue.REPO_DEFINITION, new RepoDefinitionFunction(directories),
         SkyFunctions.ROOT_REPO_DEFINITION_INPUTS, RepoDefinitionInputs::computeRoot,
         SkyFunctions.RESOLVED_REPO_DEFINITION_INPUTS, RepoDefinitionInputs::computeResolved,
+        SkyFunctions.RESOLVED_REPO_DEFINITION, RepoDefinitionInputs::computeResolvedRepo,
         SkyFunctions.EXTENSION_REPO_SPEC, new ExtensionRepoSpecFunction());
   }
 
@@ -105,7 +105,8 @@ public final class RepoDefinitionFunction implements SkyFunction {
     }
 
     // The resolved graph can depend on repos found in Step 1.
-    var resolved = (RepoDefinitionInputs.Resolved) env.getValue(RepoDefinitionInputs.RESOLVED_KEY);
+    var resolved =
+        (ResolvedRepo) env.getValue(RepoDefinitionInputs.ResolvedRepoKey.create(repositoryName));
     if (resolved == null) {
       return null;
     }
@@ -120,31 +121,30 @@ public final class RepoDefinitionFunction implements SkyFunction {
       return new RepoDefinitionValue.RepoOverride(apparentNameOverrides.get(repositoryName));
     }
 
-    // Step 3: Look for repositories derived from Bazel Modules.
-    RepoSpec repoSpec = resolved.moduleSpecs().get(repositoryName);
-    if (repoSpec != null) {
-      return createRepoDefinitionFromSpec(
-          repoSpec, repositoryName, /* originalName= */ null, basicMainRepoMapping, env);
-    }
+    // Step 3: Look for repositories derived from Bazel modules or module extensions.
+    return switch (resolved) {
+      case ResolvedRepo.Module(RepoSpec spec) ->
+          createRepoDefinitionFromSpec(
+              spec, repositoryName, /* originalName= */ null, basicMainRepoMapping, env);
+      case ResolvedRepo.Extension extension ->
+          checkRepoFromExtension(extension, repositoryName, basicMainRepoMapping, env);
+      case ResolvedRepo.Missing unused -> RepoDefinitionValue.NOT_FOUND;
+    };
+  }
 
-    // Step 4: look for the repo from module extension evaluation results.
-    Optional<ModuleExtensionId> extensionId =
-        resolved.extensionUniqueNames().entrySet().stream()
-            .filter(e -> repositoryName.getName().startsWith(e.getValue() + "+"))
-            .map(Entry::getKey)
-            .findFirst();
-
-    if (extensionId.isEmpty()) {
-      return RepoDefinitionValue.NOT_FOUND;
-    }
-
-    ModuleExtensionId id = extensionId.get();
-    String extensionUniqueName = resolved.extensionUniqueNames().get(id);
+  @Nullable
+  private RepoDefinitionValue checkRepoFromExtension(
+      ResolvedRepo.Extension extension,
+      RepositoryName repositoryName,
+      RepositoryMapping basicMainRepoMapping,
+      Environment env)
+      throws RepoDefinitionFunctionException, InterruptedException {
     // Compare the selected spec before reloading the repo rule or checking the repository marker.
     var extensionRepo =
         (ExtensionRepoSpecFunction.Value)
             env.getValue(
-                ExtensionRepoSpecFunction.Key.create(id, repositoryName, extensionUniqueName));
+                ExtensionRepoSpecFunction.Key.create(
+                    extension.id(), repositoryName, extension.uniqueName()));
     return switch (extensionRepo) {
       case null -> null;
       case ExtensionRepoSpecFunction.NotFound(String detail) ->
@@ -177,11 +177,7 @@ public final class RepoDefinitionFunction implements SkyFunction {
     }
     return Optional.ofNullable(
         createRepoDefinitionFromSpec(
-            override.spec(),
-            repositoryName,
-            /* originalName= */ null,
-            basicMainRepoMapping,
-            env));
+            override.spec(), repositoryName, /* originalName= */ null, basicMainRepoMapping, env));
   }
 
   @Nullable
