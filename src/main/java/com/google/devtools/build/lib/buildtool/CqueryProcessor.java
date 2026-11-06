@@ -16,9 +16,16 @@ package com.google.devtools.build.lib.buildtool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.ConfiguredAspect;
+import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
+import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.packages.NoSuchTargetException;
+import com.google.devtools.build.lib.packages.Package;
+import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
+import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.query2.PostAnalysisQueryEnvironment.TopLevelConfigurations;
 import com.google.devtools.build.lib.query2.common.CommonQueryOptions;
 import com.google.devtools.build.lib.query2.common.CqueryNode;
@@ -26,9 +33,17 @@ import com.google.devtools.build.lib.query2.cquery.ConfiguredTargetQueryEnvironm
 import com.google.devtools.build.lib.query2.cquery.CqueryOptions;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
+import com.google.devtools.build.lib.query2.query.output.StreamedJSONProtoOutputFormatter;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
+import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator;
+import com.google.devtools.build.lib.skyframe.TargetPatternPhaseValue;
+import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.skyframe.WalkableGraph;
+import java.io.BufferedOutputStream;
+import java.io.IOException;
+import java.util.HashMap;
 import net.starlark.java.eval.StarlarkSemantics;
 
 /** Performs {@code cquery} processing. */
@@ -42,6 +57,80 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
   @Override
   protected CommonQueryOptions getQueryOptions(CommandEnvironment env) {
     return env.getOptions().getOptions(CqueryOptions.class);
+  }
+
+  @Override
+  public void afterTargetPatternLoading(
+      BuildRequest request, CommandEnvironment env, TargetPatternPhaseValue loadingResult)
+      throws InterruptedException, ViewCreationFailedException {
+    CqueryOptions options = request.getOptions(CqueryOptions.class);
+    if (options.getRuleCatalogOutput().isEmpty()) {
+      return;
+    }
+    if (loadingResult.hasError() || loadingResult.hasPostExpansionError()) {
+      env.getReporter().handle(Event.warn("Skipping rule catalog because target loading failed."));
+      return;
+    }
+    Path output = env.getWorkingDirectory().getRelative(options.getRuleCatalogOutput());
+    try (var unused = Profiler.instance().profile("cquery.writeRuleCatalog")) {
+      writeRuleCatalog(env, options, loadingResult, output);
+    } catch (IOException | NoSuchTargetException e) {
+      String message = "Error writing cquery rule catalog: " + e.getMessage();
+      throw new ViewCreationFailedException(
+          message,
+          FailureDetail.newBuilder()
+              .setMessage(message)
+              .setQuery(Query.newBuilder().setCode(Query.Code.OUTPUT_FORMATTER_IO_EXCEPTION))
+              .build());
+    }
+  }
+
+  private void writeRuleCatalog(
+      CommandEnvironment env,
+      CqueryOptions options,
+      TargetPatternPhaseValue loadingResult,
+      Path output)
+      throws IOException, NoSuchTargetException, InterruptedException {
+    Path parent = output.getParentDirectory();
+    if (parent == null) {
+      throw new IOException("Catalog output must be a file: " + output);
+    }
+    var executor = env.getSkyframeExecutor();
+    var starlarkSemantics =
+        executor.getEffectiveStarlarkSemantics(
+            env.getOptions().getOptions(BuildLanguageOptions.class));
+    var labelPrinter =
+        options.getLabelPrinter(starlarkSemantics, mainRepoTargetParser.getRepoMapping());
+    var formatter = new StreamedJSONProtoOutputFormatter();
+    formatter.setOptions(
+        options,
+        options.getAspectDeps().createResolver(env.getPackageManager(), env.getReporter()),
+        env.getRuntime().getFileSystem().getDigestFunction().getHashFunction());
+
+    Path staging = parent.createTempDirectory(".rule-catalog-");
+    try {
+      Path temporary = staging.getChild("catalog");
+      try (var out = new BufferedOutputStream(temporary.getOutputStream(), 16384)) {
+        var packages = new HashMap<PackageIdentifier, Package>();
+        for (var label : loadingResult.getNonExpandedLabels()) {
+          var id = label.getPackageIdentifier();
+          Package pkg = packages.get(id);
+          if (pkg == null) {
+            pkg = executor.getExistingPackage(id);
+            if (pkg == null) {
+              throw new IOException("Loaded package is missing from the graph: " + id);
+            }
+            packages.put(id, pkg);
+          }
+          if (pkg.getTarget(label.getName()) instanceof Rule rule) {
+            formatter.writeTarget(rule, labelPrinter, out);
+          }
+        }
+      }
+      temporary.renameTo(output);
+    } finally {
+      staging.deleteTree();
+    }
   }
 
   @Override
