@@ -166,6 +166,10 @@ public class BuildTool {
 
   /** Hook for inserting extra post-analysis-phase processing. Used for implementing {a,c}query. */
   public interface AnalysisPostProcessor {
+    default void afterTargetPatternLoading(
+        BuildRequest request, CommandEnvironment env, TargetPatternPhaseValue loadingResult)
+        throws InterruptedException, ViewCreationFailedException {}
+
     void process(
         BuildRequest request,
         CommandEnvironment env,
@@ -280,6 +284,7 @@ public class BuildTool {
                 request.getExecutionOptions().getCacheProbeOutput() != null,
                 validator);
       }
+      analysisPostProcessor.afterTargetPatternLoading(request, env, targetPatternPhaseValue);
 
       env.getEventBus().post(new ExecRootEvent(env.getExecRoot()));
 
