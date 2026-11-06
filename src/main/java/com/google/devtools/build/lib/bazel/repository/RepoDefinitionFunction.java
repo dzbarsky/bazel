@@ -19,16 +19,11 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
-import com.google.devtools.build.lib.bazel.bzlmod.BazelDepGraphValue;
 import com.google.devtools.build.lib.bazel.bzlmod.ExternalDepsException;
-import com.google.devtools.build.lib.bazel.bzlmod.ModuleExtensionId;
-import com.google.devtools.build.lib.bazel.bzlmod.ModuleFileValue;
-import com.google.devtools.build.lib.bazel.bzlmod.ModuleFileValue.RootModuleFileValue;
-import com.google.devtools.build.lib.bazel.bzlmod.ModuleKey;
 import com.google.devtools.build.lib.bazel.bzlmod.NonRegistryOverride;
 import com.google.devtools.build.lib.bazel.bzlmod.RepoRuleId;
 import com.google.devtools.build.lib.bazel.bzlmod.RepoSpec;
-import com.google.devtools.build.lib.bazel.bzlmod.SingleExtensionValue;
+import com.google.devtools.build.lib.bazel.repository.RepoDefinitionInputs.ResolvedRepo;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
@@ -38,14 +33,15 @@ import com.google.devtools.build.lib.skyframe.BzlLoadFailedException;
 import com.google.devtools.build.lib.skyframe.BzlLoadValue;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.RepositoryMappingValue;
+import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
+import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Optional;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.Starlark;
@@ -59,36 +55,29 @@ public final class RepoDefinitionFunction implements SkyFunction {
       new PrecomputedValue.Precomputed<>("repository_overrides");
   private final BlazeDirectories directories;
 
-  public RepoDefinitionFunction(BlazeDirectories directories) {
+  private RepoDefinitionFunction(BlazeDirectories directories) {
     this.directories = directories;
+  }
+
+  public static ImmutableMap<SkyFunctionName, SkyFunction> skyFunctions(
+      BlazeDirectories directories) {
+    return ImmutableMap.of(
+        RepoDefinitionValue.REPO_DEFINITION, new RepoDefinitionFunction(directories),
+        SkyFunctions.ROOT_REPO_DEFINITION_INPUTS, RepoDefinitionInputs::computeRoot,
+        SkyFunctions.RESOLVED_REPO_DEFINITION_INPUTS, RepoDefinitionInputs::computeResolved,
+        SkyFunctions.RESOLVED_REPO_DEFINITION, RepoDefinitionInputs::computeResolvedRepo,
+        SkyFunctions.EXTENSION_REPO_SPEC, new ExtensionRepoSpecFunction());
   }
 
   @Nullable
   @Override
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws SkyFunctionException, InterruptedException {
-    RootModuleFileValue root =
-        (RootModuleFileValue) env.getValue(ModuleFileValue.KEY_FOR_ROOT_MODULE);
-    if (env.valuesMissing()) {
+    var root = (RepoDefinitionInputs.Root) env.getValue(RepoDefinitionInputs.ROOT_KEY);
+    if (root == null) {
       return null;
     }
-
-    // Sometimes, the attributes in the repo specs contain label strings instead of label objects.
-    // This really only happens for attributes like `patches` that come from an `archive_override`
-    // or `git_override` in MODULE.bazel. (This is because those overrides just store all attributes
-    // unparsed and unvalidated in the repo spec.) In other words, this can only happen for Step 1
-    // below -- but for consistency's sake, we pass this mapping for all 3 cases.
-    //
-    // In such cases, we need to provide a "basic repo mapping", so that we can properly turn those
-    // label strings into label objects. Since we only accept patches from the main repo anyway, we
-    // only need the two simple entries pointing into the main repo itself.
-    RepositoryMapping basicMainRepoMapping =
-        RepositoryMapping.create(
-            ImmutableMap.<String, RepositoryName>builder()
-                .put("", RepositoryName.MAIN)
-                .put(root.module().getRepoName(), RepositoryName.MAIN)
-                .buildKeepingLast(),
-            RepositoryName.MAIN);
+    RepositoryMapping basicMainRepoMapping = root.basicMainRepoMapping();
 
     RepositoryName repositoryName = ((RepoDefinitionValue.Key) skyKey).argument();
 
@@ -115,17 +104,16 @@ public final class RepoDefinitionFunction implements SkyFunction {
       return nonRegistryOverride.get();
     }
 
-    // BazelDepGraphValue is affected by repos found in Step 1, therefore it should NOT
-    // be requested in Step 1 to avoid cycle dependency.
-    BazelDepGraphValue bazelDepGraphValue =
-        (BazelDepGraphValue) env.getValue(BazelDepGraphValue.KEY);
-    if (env.valuesMissing()) {
+    // The resolved graph can depend on repos found in Step 1.
+    var resolved =
+        (ResolvedRepo) env.getValue(RepoDefinitionInputs.ResolvedRepoKey.create(repositoryName));
+    if (resolved == null) {
       return null;
     }
 
     // Step 2: Look for repository overrides via apparent names.
     ImmutableMap<RepositoryName, PathFragment> apparentNameOverrides =
-        getApparentNameOverrides(env);
+        getApparentNameOverrides(overrides, env);
     if (env.valuesMissing()) {
       return null;
     }
@@ -133,93 +121,77 @@ public final class RepoDefinitionFunction implements SkyFunction {
       return new RepoDefinitionValue.RepoOverride(apparentNameOverrides.get(repositoryName));
     }
 
-    // Step 3: Look for repositories derived from Bazel Modules.
-    Optional<RepoSpec> repoSpec = checkRepoFromBazelModules(bazelDepGraphValue, repositoryName);
-    if (repoSpec.isPresent()) {
-      return createRepoDefinitionFromSpec(
-          repoSpec.get(), repositoryName, /* originalName= */ null, basicMainRepoMapping, env);
-    }
+    // Step 3: Look for repositories derived from Bazel modules or module extensions.
+    return switch (resolved) {
+      case ResolvedRepo.Module(RepoSpec spec) ->
+          createRepoDefinitionFromSpec(
+              spec, repositoryName, /* originalName= */ null, basicMainRepoMapping, env);
+      case ResolvedRepo.Extension extension ->
+          checkRepoFromExtension(extension, repositoryName, basicMainRepoMapping, env);
+      case ResolvedRepo.Missing unused -> RepoDefinitionValue.NOT_FOUND;
+    };
+  }
 
-    // Step 4: look for the repo from module extension evaluation results.
-    Optional<ModuleExtensionId> extensionId =
-        bazelDepGraphValue.getExtensionUniqueNames().entrySet().stream()
-            .filter(e -> repositoryName.getName().startsWith(e.getValue() + "+"))
-            .map(Entry::getKey)
-            .findFirst();
-
-    if (extensionId.isEmpty()) {
-      return RepoDefinitionValue.NOT_FOUND;
-    }
-
-    SingleExtensionValue extensionValue =
-        (SingleExtensionValue) env.getValue(SingleExtensionValue.key(extensionId.get()));
-    if (extensionValue == null) {
-      return null;
-    }
-
-    String internalRepo = extensionValue.canonicalRepoNameToInternalNames().get(repositoryName);
-    if (internalRepo == null) {
-      // Repos generated by module extensions resolve all apparent names that could refer to a repo
-      // generated by the extension to a canonical name with the extension's prefix (see
-      // ExtensionRepositoryMapping). Explain the error in terms of the apparent name.
-      String internalName =
-          repositoryName
-              .getName()
-              .substring(
-                  bazelDepGraphValue.getExtensionUniqueNames().get(extensionId.get()).length() + 1);
-      return new RepoDefinitionValue.NotFound(
-          String.format(
-              "the module extension '%s' defined in %s doesn't generate a repo named '%s'%s",
-              extensionId.get().extensionName(),
-              extensionId.get().bzlFileLabel(),
-              internalName,
-              SpellChecker.didYouMean(internalName, extensionValue.generatedRepoSpecs().keySet())));
-    }
-    RepoSpec extRepoSpec = extensionValue.generatedRepoSpecs().get(internalRepo);
-    return createRepoDefinitionFromSpec(
-        extRepoSpec, repositoryName, internalRepo, basicMainRepoMapping, env);
+  @Nullable
+  private RepoDefinitionValue checkRepoFromExtension(
+      ResolvedRepo.Extension extension,
+      RepositoryName repositoryName,
+      RepositoryMapping basicMainRepoMapping,
+      Environment env)
+      throws RepoDefinitionFunctionException, InterruptedException {
+    // Compare the selected spec before reloading the repo rule or checking the repository marker.
+    var extensionRepo =
+        (ExtensionRepoSpecFunction.Value)
+            env.getValue(
+                ExtensionRepoSpecFunction.Key.create(
+                    extension.id(), repositoryName, extension.uniqueName()));
+    return switch (extensionRepo) {
+      case null -> null;
+      case ExtensionRepoSpecFunction.NotFound(String detail) ->
+          new RepoDefinitionValue.NotFound(detail);
+      case ExtensionRepoSpecFunction.Found(String internalName, RepoSpec spec) ->
+          createRepoDefinitionFromSpec(
+              spec, repositoryName, internalName, basicMainRepoMapping, env);
+    };
   }
 
   // Callers must check env.valuesMissing() and ignore the result if true.
   private Optional<RepoDefinitionValue> checkRepoFromNonRegistryOverrides(
-      RootModuleFileValue root,
+      RepoDefinitionInputs.Root root,
       RepositoryName repositoryName,
       Map<String, PathFragment> overrides,
       RepositoryMapping basicMainRepoMapping,
       Environment env)
       throws RepoDefinitionFunctionException, InterruptedException {
-    String moduleName = root.nonRegistryOverrideCanonicalRepoToModuleName().get(repositoryName);
-    if (moduleName == null) {
+    var override = root.nonRegistryOverrides().get(repositoryName);
+    if (override == null) {
       return Optional.empty();
     }
     // If this module is a direct dep of the root module, its apparent name may be named by the
     // --override_repository flag, which takes precedence over the non-registry override.
-    String moduleRepoName = root.nonRegistryOverrideModuleToRepoName().get(moduleName);
-    if (moduleRepoName != null) {
-      PathFragment commandLineOverride = overrides.get(moduleRepoName);
+    if (override.apparentName() != null) {
+      PathFragment commandLineOverride = overrides.get(override.apparentName());
       if (commandLineOverride != null) {
         return Optional.of(new RepoDefinitionValue.RepoOverride(commandLineOverride));
       }
     }
-    var override = (NonRegistryOverride) root.overrides().get(moduleName);
     return Optional.ofNullable(
         createRepoDefinitionFromSpec(
-            override.repoSpec(),
-            repositoryName,
-            /* originalName= */ null,
-            basicMainRepoMapping,
-            env));
+            override.spec(), repositoryName, /* originalName= */ null, basicMainRepoMapping, env));
   }
 
   @Nullable
-  private ImmutableMap<RepositoryName, PathFragment> getApparentNameOverrides(Environment env)
+  private ImmutableMap<RepositoryName, PathFragment> getApparentNameOverrides(
+      Map<String, PathFragment> overrides, Environment env)
       throws InterruptedException, RepoDefinitionFunctionException {
+    if (overrides.isEmpty()) {
+      return ImmutableMap.of();
+    }
     var mainRepoMapping =
         (RepositoryMappingValue) env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN));
     if (mainRepoMapping == null) {
       return null;
     }
-    Map<String, PathFragment> overrides = Preconditions.checkNotNull(REPOSITORY_OVERRIDES.get(env));
     var apparentNameOverrides = ImmutableMap.<RepositoryName, PathFragment>builder();
     for (Map.Entry<String, PathFragment> entry : overrides.entrySet()) {
       if (!RepositoryName.isApparent(entry.getKey())) {
@@ -246,15 +218,6 @@ public final class RepoDefinitionFunction implements SkyFunction {
       apparentNameOverrides.put(canonicalName, entry.getValue());
     }
     return apparentNameOverrides.buildOrThrow();
-  }
-
-  private Optional<RepoSpec> checkRepoFromBazelModules(
-      BazelDepGraphValue bazelDepGraphValue, RepositoryName repositoryName) {
-    ModuleKey moduleKey = bazelDepGraphValue.getCanonicalRepoNameLookup().get(repositoryName);
-    if (moduleKey == null) {
-      return Optional.empty();
-    }
-    return Optional.ofNullable(bazelDepGraphValue.getDepGraph().get(moduleKey).getRepoSpec());
   }
 
   @Nullable
