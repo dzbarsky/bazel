@@ -2012,7 +2012,8 @@ public final class LoadingPhaseRunnerTest {
               /* threadCount= */ 2,
               keepGoing,
               determineTests,
-              cacheProbe);
+              cacheProbe,
+              /* targetsAreLabels= */ false);
       this.targetParsingCompleteEvent = findPost(TargetParsingCompleteEvent.class);
       this.loadingPhaseCompleteEvent = findPost(LoadingPhaseCompleteEvent.class);
       if (!keepGoing) {
