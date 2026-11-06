@@ -2035,7 +2035,14 @@ function test_generate_hashes_rejects_dependency_filters() {
 }
 
 function test_parallel_rule_catalog_preserves_rows_and_order() {
+  local workspace
+  workspace=$(mktemp -d "$TEST_TMPDIR/catalog.XXXXXXXX")
+  workspaces+=("$workspace")
+  cd "$workspace"
+  setup_module_dot_bazel >/dev/null
+
   local -r pkg=$FUNCNAME
+  local i workers
   mkdir -p "$pkg"
   echo 'fixture source' > "$pkg/source.txt"
   for (( i = 0; i < 257; i++ )); do
