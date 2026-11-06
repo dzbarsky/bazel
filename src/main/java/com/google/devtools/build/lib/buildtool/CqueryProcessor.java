@@ -58,6 +58,7 @@ import net.starlark.java.eval.StarlarkSemantics;
 /** Performs {@code cquery} processing. */
 public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode> {
   private static final int CATALOG_CHUNK_SIZE = 128;
+  private static final int CATALOG_CHUNK_MEMORY_LIMIT = 1 << 20;
 
   public CqueryProcessor(
       QueryExpression queryExpression, TargetPattern.Parser mainRepoTargetParser) {
@@ -136,7 +137,8 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
                       workers, Thread.ofPlatform().name("cquery-rule-catalog-", 0).factory())
                   : null) {
         var packages = new HashMap<PackageIdentifier, Package>();
-        var pending = new ArrayDeque<Future<ByteArrayOutputStream>>();
+        var pending = new ArrayDeque<Future<CatalogChunk>>();
+        int nextChunk = 0;
         var chunk = new ArrayList<Rule>(CATALOG_CHUNK_SIZE);
         try {
           for (var label : loadingResult.getNonExpandedLabels()) {
@@ -163,14 +165,16 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
                 writeCatalogChunk(pending.removeFirst(), out);
               }
               List<Rule> rules = chunk;
+              Path spill = staging.getChild("chunk-" + nextChunk++);
               pending.addLast(
                   pool.submit(
                       () -> {
-                        var bytes = new ByteArrayOutputStream();
-                        for (var target : rules) {
-                          formatter.writeTarget(target, labelPrinter, bytes);
+                        try (var bytes = new CatalogChunk(spill)) {
+                          for (var target : rules) {
+                            formatter.writeTarget(target, labelPrinter, bytes);
+                          }
+                          return bytes;
                         }
-                        return bytes;
                       }));
               chunk = new ArrayList<>(CATALOG_CHUNK_SIZE);
             }
@@ -193,11 +197,57 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
     }
   }
 
-  private static void writeCatalogChunk(Future<ByteArrayOutputStream> chunk, OutputStream out)
+  private static void writeCatalogChunk(Future<CatalogChunk> chunk, OutputStream out)
       throws IOException, InterruptedException {
     MoreFutures.waitForFutureAndGetWithCheckedException(
             chunk, /* cancelOnInterrupt= */ true, IOException.class)
         .writeTo(out);
+  }
+
+  /** Keeps ordinary chunks in memory and spills larger ones beside the staged catalog. */
+  private static final class CatalogChunk extends OutputStream {
+    private final Path spill;
+    private OutputStream out = new ByteArrayOutputStream();
+
+    private CatalogChunk(Path spill) {
+      this.spill = spill;
+    }
+
+    @Override
+    public void write(int value) throws IOException {
+      spillIfNeeded(1);
+      out.write(value);
+    }
+
+    @Override
+    public void write(byte[] bytes, int offset, int length) throws IOException {
+      spillIfNeeded(length);
+      out.write(bytes, offset, length);
+    }
+
+    private void spillIfNeeded(int length) throws IOException {
+      if (out instanceof ByteArrayOutputStream memory
+          && length > CATALOG_CHUNK_MEMORY_LIMIT - memory.size()) {
+        out = new BufferedOutputStream(spill.getOutputStream());
+        memory.writeTo(out);
+      }
+    }
+
+    @Override
+    public void close() throws IOException {
+      out.close();
+    }
+
+    private void writeTo(OutputStream destination) throws IOException {
+      if (out instanceof ByteArrayOutputStream memory) {
+        memory.writeTo(destination);
+        return;
+      }
+      try (var input = spill.getInputStream()) {
+        input.transferTo(destination);
+      }
+      spill.delete();
+    }
   }
 
   @Override
