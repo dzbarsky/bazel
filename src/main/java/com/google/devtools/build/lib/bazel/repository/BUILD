@@ -191,6 +191,7 @@ java_library(
 java_library(
     name = "repo_definition_function",
     srcs = [
+        "ExtensionRepoSpecFunction.java",
         "RepoDefinitionFunction.java",
         "RepoDefinitionInputs.java",
     ],
@@ -209,6 +210,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/skyframe:precomputed_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:repository_mapping_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:sky_functions",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
