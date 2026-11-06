@@ -126,6 +126,11 @@ public final class DirectTargetHashFunction implements SkyFunction {
     }
 
     @Override
+    public String getCanonicalName() {
+      return NAME + ":configured:" + argument().toString().replace('\n', '_');
+    }
+
+    @Override
     public SkyKeyInterner<ConfiguredKey> getSkyKeyInterner() {
       return interner;
     }
