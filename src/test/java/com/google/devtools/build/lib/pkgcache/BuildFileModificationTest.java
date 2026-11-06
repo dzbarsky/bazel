@@ -228,7 +228,7 @@ public class BuildFileModificationTest extends FoundationTestCase {
     var oldPkg = getPackage("pkg");
     // Change ctime to 1.
     clock.advanceMillis(1);
-    bzl.setLastModifiedTime(1001);
+    bzl.setLastModifiedTimeNanos(1_001_000_000L);
 
     invalidatePackages();
 
