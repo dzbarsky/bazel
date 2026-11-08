@@ -474,9 +474,8 @@ class MethodLibrary {
               @ParamType(type = StarlarkIterable.class, generic1 = Object.class),
               @ParamType(type = String.class)
             })
-      },
-      useStarlarkThread = true)
-  public int len(Object x, StarlarkThread thread) throws EvalException {
+      })
+  public int len(Object x) throws EvalException {
     int len = Starlark.len(x);
     if (len < 0) {
       throw Starlark.errorf("%s is not iterable", Starlark.type(x));
