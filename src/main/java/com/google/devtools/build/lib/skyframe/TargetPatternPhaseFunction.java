@@ -30,6 +30,7 @@ import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
@@ -44,6 +45,7 @@ import com.google.devtools.build.lib.packages.InputFile;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.NonconfigurableAttributeMapper;
 import com.google.devtools.build.lib.packages.OutputFile;
+import com.google.devtools.build.lib.packages.Package;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.packages.TargetUtils;
@@ -69,6 +71,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -98,9 +101,25 @@ final class TargetPatternPhaseFunction implements SkyFunction {
             : null;
     // Determine targets to build:
     List<String> failedPatterns = new ArrayList<>();
-    List<ExpandedPattern> expandedPatterns;
+    List<ExpandedPattern> expandedPatterns = ImmutableList.of();
+    ExactLabelSelection exactSelection = null;
+    if (options.targetsAreLabels()
+        && options.isKeepGoing()
+        && !options.isCacheProbe()
+        && !options.getCompileOneDependency()
+        && !options.getDetermineTests()
+        && !options.getBuildTestsOnly()
+        && !options.isExpandTestSuites()
+        && !env.inErrorBubbling()) {
+      exactSelection = tryResolveExactLabels(env, options);
+      if (env.valuesMissing()) {
+        return null;
+      }
+    }
     ResolvedTargets<Target> targets;
-    if (probeState != null && probeState.selection != null) {
+    if (exactSelection != null) {
+      targets = exactSelection.targets();
+    } else if (probeState != null && probeState.selection != null) {
       expandedPatterns = probeState.selection.expandedPatterns();
       targets = probeState.selection.selectedTargets();
     } else {
@@ -309,7 +328,10 @@ final class TargetPatternPhaseFunction implements SkyFunction {
                 options.getTargetPatterns(),
                 expandedTargets.getTargets(),
                 ImmutableList.copyOf(failedPatterns),
-                mapOriginalPatternsToLabels(expandedPatterns, targets.getTargets()),
+                exactSelection == null
+                    ? mapOriginalPatternsToLabels(expandedPatterns, targets.getTargets())
+                    : exactSelection.mapPatternsToLabels(
+                        options.getTargetPatterns(), nonExpandedLabels),
                 options.isCacheProbe()
                     ? filterSuiteExpansions(testSuiteExpansions.buildOrThrow(), selectedLabels)
                     : testSuiteExpansions.buildOrThrow()));
@@ -341,6 +363,81 @@ final class TargetPatternPhaseFunction implements SkyFunction {
                     rule.getLabel(),
                     NonconfigurableAttributeMapper.of(rule).get("deprecation", Type.STRING))));
       }
+    }
+  }
+
+  /**
+   * Resolves clean exact-label requests directly from their packages. The regular pattern path
+   * handles diagnostic reporting when any label or package cannot be resolved.
+   */
+  @Nullable
+  private static ExactLabelSelection tryResolveExactLabels(
+      Environment env, TargetPatternPhaseKey options) throws InterruptedException {
+    List<Label> labels = new ArrayList<>(options.getTargetPatterns().size());
+    Set<PackageIdentifier> packageIds = new LinkedHashSet<>();
+    Set<RepositoryName> repositories = new LinkedHashSet<>();
+    try {
+      for (String pattern : options.getTargetPatterns()) {
+        Label label = Label.parseCanonical(pattern);
+        labels.add(label);
+        packageIds.add(label.getPackageIdentifier());
+        repositories.add(label.getRepository());
+      }
+    } catch (LabelSyntaxException e) {
+      return null;
+    }
+
+    // SingleTarget does not apply ignore patterns, but TargetPatternFunction still loads them.
+    List<SkyKey> ignoreKeys =
+        repositories.stream()
+            .map(IgnoredSubdirectoriesValue::key)
+            .collect(ImmutableList.toImmutableList());
+    List<SkyKey> dependencies = new ArrayList<>(ignoreKeys.size() + packageIds.size());
+    dependencies.addAll(ignoreKeys);
+    dependencies.addAll(packageIds);
+    SkyframeLookupResult values = env.getValuesAndExceptions(dependencies);
+    for (SkyKey ignoreKey : ignoreKeys) {
+      if (values.get(ignoreKey) == null) {
+        return null;
+      }
+    }
+
+    Map<PackageIdentifier, Package> packages = new HashMap<>();
+    try {
+      for (PackageIdentifier id : packageIds) {
+        PackageValue value = (PackageValue) values.getOrThrow(id, NoSuchPackageException.class);
+        if (value == null || value.getPackage().containsErrors()) {
+          return null;
+        }
+        packages.put(id, value.getPackage());
+      }
+    } catch (NoSuchPackageException e) {
+      return null;
+    }
+
+    ResolvedTargets.Builder<Target> targets = ResolvedTargets.builder();
+    for (Label label : labels) {
+      Target target = packages.get(label.getPackageIdentifier()).getTargetOrNull(label.getName());
+      if (target == null) {
+        return null;
+      }
+      // Exact labels, including manually tagged targets, are explicit requests.
+      targets.add(target);
+    }
+    return new ExactLabelSelection(targets.filter(buildTagFilter(options)).build(), labels);
+  }
+
+  private record ExactLabelSelection(ResolvedTargets<Target> targets, List<Label> labels) {
+    ImmutableSetMultimap<String, Label> mapPatternsToLabels(
+        List<String> patterns, Set<Label> includedLabels) {
+      ImmutableSetMultimap.Builder<String, Label> expansions = ImmutableSetMultimap.builder();
+      for (int i = 0; i < labels.size(); i++) {
+        Label label = labels.get(i);
+        if (includedLabels.contains(label)) {
+          expansions.put(patterns.get(i), label);
+        }
+      }
+      return expansions.build();
     }
   }
 
