@@ -182,7 +182,7 @@ public abstract class BuildLanguageOptions extends OptionsBase {
       name = "experimental_disable_build_prelude",
       oldName = "incompatible_disable_build_prelude",
       oldNameWarning = false,
-      defaultValue = "false",
+      defaultValue = "true",
       documentationCategory = OptionDocumentationCategory.STARLARK_SEMANTICS,
       effectTags = {OptionEffectTag.BUILD_FILE_SEMANTICS},
       metadataTags = {OptionMetadataTag.EXPERIMENTAL},
@@ -1146,7 +1146,7 @@ public abstract class BuildLanguageOptions extends OptionsBase {
   public static final String CHECK_BZL_VISIBILITY = "+check_bzl_visibility";
   public static final String EXPERIMENTAL_CC_SHARED_LIBRARY = "-experimental_cc_shared_library";
   public static final String EXPERIMENTAL_DISABLE_BUILD_PRELUDE =
-      "-experimental_disable_build_prelude";
+      "+experimental_disable_build_prelude";
   public static final String EXPERIMENTAL_SINGLE_PACKAGE_TOOLCHAIN_BINDING =
       "-experimental_single_package_toolchain_binding";
   public static final String EXPERIMENTAL_ENABLE_FIRST_CLASS_MACROS =
