@@ -77,6 +77,53 @@ class RemoteRepoContentsCacheTest(
     self.assertIn('JUST FETCHED', '\n'.join(stderr))
     self.assertTrue(os.path.exists(os.path.join(repo_dir, 'BUILD')))
 
+  def testRecheckReusesOverlayMarker(self):
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'repo = use_repo_rule("//:repo.bzl", "repo")',
+            'repo(name = "cached")',
+            'repo(name = "unrelated")',
+        ],
+    )
+    self.ScratchFile('BUILD.bazel')
+    self.ScratchFile('override/BUILD.bazel')
+    self.ScratchFile('version', ['before'])
+    self.ScratchFile(
+        'repo.bzl',
+        [
+            'def _impl(ctx):',
+            '  version = ctx.read(Label("@//:version")).strip()',
+            '  ctx.file("BUILD.bazel", "filegroup(name=%r)" % version)',
+            '  print("JUST FETCHED")',
+            '  return ctx.repo_metadata(reproducible=True)',
+            'repo = repository_rule(_impl)',
+        ],
+    )
+
+    repo_dir = self.RepoDir('cached')
+    query = ['query', '@cached//:before']
+    _, _, stderr = self.RunBazel(query)
+    self.assertIn('JUST FETCHED', '\n'.join(stderr))
+    self.RunBazel(['clean', '--expunge'])
+    _, _, stderr = self.RunBazel(query)
+    self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
+    self.assertFalse(os.path.exists(os.path.join(repo_dir, 'BUILD.bazel')))
+
+    # An unrelated CLI override forces the definition to be checked again.
+    # The repository should survive even when the remote entry is gone.
+    self.ClearRemoteCache()
+    override = '--override_repository=unrelated=%workspace%/override'
+    _, stdout, stderr = self.RunBazel(query + [override])
+    self.assertEqual(stdout, ['@cached//:before'])
+    self.assertNotIn('JUST FETCHED', '\n'.join(stderr))
+
+    # An actual change to a recorded input still invalidates the overlay.
+    self.ScratchFile('version', ['after'])
+    _, stdout, stderr = self.RunBazel(['query', '@cached//:after', override])
+    self.assertEqual(stdout, ['@cached//:after'])
+    self.assertIn('JUST FETCHED', '\n'.join(stderr))
+
   def testWatchTreeRefetchesNonUtf8Inputs(self):
     if not self.IsLinux():
       self.skipTest('requires arbitrary POSIX filename bytes')

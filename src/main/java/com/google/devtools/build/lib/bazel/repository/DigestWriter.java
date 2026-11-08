@@ -121,24 +121,31 @@ public class DigestWriter {
         return Optional.of("repo hasn't been fetched yet");
       }
       String content = FileSystemUtils.readContent(markerPath, ISO_8859_1);
-      Optional<ImmutableList<RepoRecordedInput.WithValue>> recordedInputValues =
-          readMarkerFile(content, Preconditions.checkNotNull(predeclaredInputHash));
-      if (recordedInputValues.isEmpty()) {
-        return Optional.of("Bazel version, flags, repo rule definition or attributes changed");
-      }
-      // Check inputs in batches to prevent Skyframe cycles caused by outdated dependencies.
-      for (ImmutableList<RepoRecordedInput.WithValue> batch :
-          RepoRecordedInput.WithValue.splitIntoBatches(recordedInputValues.get())) {
-        Optional<String> outdatedReason =
-            RepoRecordedInput.isAnyValueOutdated(env, directories, batch);
-        if (outdatedReason.isPresent()) {
-          return outdatedReason;
-        }
-      }
-      return Optional.empty();
+      return checkMarkerContents(env, directories, content, predeclaredInputHash);
     } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
     }
+  }
+
+  /** Checks a marker's fingerprint and recorded inputs, returning the reason if it is stale. */
+  public static Optional<String> checkMarkerContents(
+      Environment env, BlazeDirectories directories, String content, String predeclaredInputHash)
+      throws InterruptedException {
+    Optional<ImmutableList<RepoRecordedInput.WithValue>> recordedInputValues =
+        readMarkerFile(content, Preconditions.checkNotNull(predeclaredInputHash));
+    if (recordedInputValues.isEmpty()) {
+      return Optional.of("Bazel version, flags, repo rule definition or attributes changed");
+    }
+    // Check inputs in batches to prevent Skyframe cycles caused by outdated dependencies.
+    for (ImmutableList<RepoRecordedInput.WithValue> batch :
+        RepoRecordedInput.WithValue.splitIntoBatches(recordedInputValues.get())) {
+      Optional<String> outdatedReason =
+          RepoRecordedInput.isAnyValueOutdated(env, directories, batch);
+      if (outdatedReason.isPresent()) {
+        return outdatedReason;
+      }
+    }
+    return Optional.empty();
   }
 
   /**

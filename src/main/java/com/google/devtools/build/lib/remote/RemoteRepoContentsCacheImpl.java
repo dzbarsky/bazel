@@ -271,6 +271,19 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     if (!context.getReadCachePolicy().allowRemoteCache()) {
       return false;
     }
+    if (!remoteFs.shouldValidateRepoContents()) {
+      String overlayMarker = remoteFs.getOverlayMarker(repoName);
+      if (overlayMarker != null) {
+        var outdatedReason =
+            DigestWriter.checkMarkerContents(env, directories, overlayMarker, predeclaredInputHash);
+        if (env.valuesMissing()) {
+          return false;
+        }
+        if (outdatedReason.isEmpty()) {
+          return true;
+        }
+      }
+    }
     var finalEntry = fetchFinalCacheEntry(env, context, predeclaredInputHash);
     if (env.valuesMissing() || finalEntry == null) {
       return false;
