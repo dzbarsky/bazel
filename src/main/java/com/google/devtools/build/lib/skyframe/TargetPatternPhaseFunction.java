@@ -285,8 +285,10 @@ final class TargetPatternPhaseFunction implements SkyFunction {
     }
     ResolvedTargets<Label> targetLabels = expandedLabelsBuilder.build();
     ResolvedTargets<Target> expandedTargets =
-        TestsForTargetPatternFunction.labelsToTargets(
-            env, targetLabels.getTargets(), targetLabels.hasError());
+        exactSelection != null
+            ? targets
+            : TestsForTargetPatternFunction.labelsToTargets(
+                env, targetLabels.getTargets(), targetLabels.hasError());
     if (expandedTargets == null) {
       return null;
     }
