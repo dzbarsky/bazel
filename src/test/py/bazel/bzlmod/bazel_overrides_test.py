@@ -124,6 +124,21 @@ class BazelOverridesTest(test_base.TestBase):
     self.assertIn('bbb@1.1 => aaa@1.0 (locally patched)', stdout)
 
   def testRegistryModulePatchDoesNotRecheckUnrelatedRepo(self):
+    self._assertOverrideDoesNotRecheckUnrelatedRepo([
+        'single_version_override(',
+        '  module_name = "aaa",',
+        '  patches = ["//:aaa.patch"],',
+        '  patch_strip = 1,',
+        ')',
+    ])
+
+  def testLocalPathOverrideDoesNotRecheckUnrelatedRepo(self):
+    project = self.main_registry.projects.joinpath('aaa', '1.1')
+    self._assertOverrideDoesNotRecheckUnrelatedRepo([
+        f'local_path_override(module_name = "aaa", path = "{project.as_posix()}")',
+    ])
+
+  def _assertOverrideDoesNotRecheckUnrelatedRepo(self, override):
     self.writeMainProjectFiles()
     self.ScratchFile(
         'MODULE.bazel',
@@ -135,17 +150,7 @@ class BazelOverridesTest(test_base.TestBase):
     self.AddBazelDep('rules_shell')
     query = ['cquery', 'set(@aaa//:lib_aaa @ddd//:lib_ddd)']
     self.RunBazel(query)
-    self.ScratchFile(
-        'MODULE.bazel',
-        [
-            'single_version_override(',
-            '  module_name = "aaa",',
-            '  patches = ["//:aaa.patch"],',
-            '  patch_strip = 1,',
-            ')',
-        ],
-        mode='a',
-    )
+    self.ScratchFile('MODULE.bazel', override, mode='a')
     self.RunBazel(
         query
         + [

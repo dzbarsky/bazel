@@ -64,6 +64,7 @@ public final class RepoDefinitionFunction implements SkyFunction {
     return ImmutableMap.of(
         RepoDefinitionValue.REPO_DEFINITION, new RepoDefinitionFunction(directories),
         SkyFunctions.ROOT_REPO_DEFINITION_INPUTS, RepoDefinitionInputs::computeRoot,
+        SkyFunctions.ROOT_REPO_DEFINITION, RepoDefinitionInputs::computeRootRepo,
         SkyFunctions.RESOLVED_REPO_DEFINITION_INPUTS, RepoDefinitionInputs::computeResolved,
         SkyFunctions.RESOLVED_REPO_DEFINITION, RepoDefinitionInputs::computeResolvedRepo,
         SkyFunctions.EXTENSION_REPO_SPEC, new ExtensionRepoSpecFunction());
@@ -73,13 +74,14 @@ public final class RepoDefinitionFunction implements SkyFunction {
   @Override
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws SkyFunctionException, InterruptedException {
-    var root = (RepoDefinitionInputs.Root) env.getValue(RepoDefinitionInputs.ROOT_KEY);
+    RepositoryName repositoryName = ((RepoDefinitionValue.Key) skyKey).argument();
+    var root =
+        (RepoDefinitionInputs.RootRepo)
+            env.getValue(RepoDefinitionInputs.RootRepoKey.create(repositoryName));
     if (root == null) {
       return null;
     }
     RepositoryMapping basicMainRepoMapping = root.basicMainRepoMapping();
-
-    RepositoryName repositoryName = ((RepoDefinitionValue.Key) skyKey).argument();
 
     // Step 0: Look for repository overrides via canonical names. Requesting the main repo mapping
     // at this point would result in a cycle, so any lookup by apparent name requires special
@@ -157,13 +159,13 @@ public final class RepoDefinitionFunction implements SkyFunction {
 
   // Callers must check env.valuesMissing() and ignore the result if true.
   private Optional<RepoDefinitionValue> checkRepoFromNonRegistryOverrides(
-      RepoDefinitionInputs.Root root,
+      RepoDefinitionInputs.RootRepo root,
       RepositoryName repositoryName,
       Map<String, PathFragment> overrides,
       RepositoryMapping basicMainRepoMapping,
       Environment env)
       throws RepoDefinitionFunctionException, InterruptedException {
-    var override = root.nonRegistryOverrides().get(repositoryName);
+    var override = root.override();
     if (override == null) {
       return Optional.empty();
     }
