@@ -680,6 +680,22 @@ public class BzlLoadFunction implements SkyFunction {
     PackageIdentifier dirId = PackageIdentifier.create(label.getRepository(), dir);
     ContainingPackageLookupValue packageLookup;
     try {
+      if (key.isBuildPrelude() && dir.equals(label.getPackageFragment())) {
+        // If the named package is absent, an ancestor could only identify a different
+        // package. Skip that search so an absent prelude does not depend on ancestor BUILD files.
+        PackageLookupValue preludePackage =
+            (PackageLookupValue)
+                env.getValueOrThrow(
+                    PackageLookupValue.key(dirId),
+                    BuildFileNotFoundException.class,
+                    InconsistentFilesystemException.class);
+        if (preludePackage == null) {
+          return null;
+        }
+        return preludePackage.packageExists()
+            ? key.getCompileKey(preludePackage.getRoot())
+            : BzlCompileValue.EMPTY_PRELUDE_KEY;
+      }
       packageLookup =
           (ContainingPackageLookupValue)
               env.getValueOrThrow(
