@@ -190,11 +190,12 @@ final class TargetPatternPhaseFunction implements SkyFunction {
     }
 
     Map<Label, SkyKey> testExpansionKeys = new LinkedHashMap<>();
-    for (Target target : targets.getTargets()) {
-      if (TargetUtils.isTestSuiteRule(target) && options.isExpandTestSuites()) {
-        Label label = target.getLabel();
-        SkyKey testExpansionKey = TestsForTargetPatternValue.key(ImmutableSet.of(label));
-        testExpansionKeys.put(label, testExpansionKey);
+    if (options.isExpandTestSuites()) {
+      for (Target target : targets.getTargets()) {
+        if (TargetUtils.isTestSuiteRule(target)) {
+          Label label = target.getLabel();
+          testExpansionKeys.put(label, TestsForTargetPatternValue.key(ImmutableSet.of(label)));
+        }
       }
     }
     SkyframeLookupResult expandedTests = env.getValuesAndExceptions(testExpansionKeys.values());
@@ -265,32 +266,34 @@ final class TargetPatternPhaseFunction implements SkyFunction {
 
     maybeReportDeprecation(env.getListener(), targets.getTargets());
 
-    ResolvedTargets.Builder<Label> expandedLabelsBuilder = ResolvedTargets.builder();
     ImmutableMap.Builder<Label, ImmutableSet<Label>> testSuiteExpansions =
         ImmutableMap.builderWithExpectedSize(testExpansionKeys.size());
-    for (Target target : targets.getTargets()) {
-      Label label = target.getLabel();
-      if (TargetUtils.isTestSuiteRule(target) && options.isExpandTestSuites()) {
-        SkyKey expansionKey = Preconditions.checkNotNull(testExpansionKeys.get(label));
-        var value = (TestsForTargetPatternValue) expandedTests.get(expansionKey);
-        if (value == null) {
-          return null;
+    ImmutableSet<Label> selectedLabels = nonExpandedLabels;
+    ResolvedTargets<Target> expandedTargets = targets;
+    if (exactSelection == null) {
+      ResolvedTargets.Builder<Label> expandedLabelsBuilder = ResolvedTargets.builder();
+      for (Target target : targets.getTargets()) {
+        Label label = target.getLabel();
+        if (options.isExpandTestSuites() && TargetUtils.isTestSuiteRule(target)) {
+          SkyKey expansionKey = Preconditions.checkNotNull(testExpansionKeys.get(label));
+          var value = (TestsForTargetPatternValue) expandedTests.get(expansionKey);
+          if (value == null) {
+            return null;
+          }
+          ResolvedTargets<Label> testExpansion = value.getLabels();
+          expandedLabelsBuilder.merge(testExpansion);
+          testSuiteExpansions.put(label, testExpansion.getTargets());
+        } else {
+          expandedLabelsBuilder.add(label);
         }
-        ResolvedTargets<Label> testExpansion = value.getLabels();
-        expandedLabelsBuilder.merge(testExpansion);
-        testSuiteExpansions.put(label, testExpansion.getTargets());
-      } else {
-        expandedLabelsBuilder.add(label);
       }
-    }
-    ResolvedTargets<Label> targetLabels = expandedLabelsBuilder.build();
-    ResolvedTargets<Target> expandedTargets =
-        exactSelection != null
-            ? targets
-            : TestsForTargetPatternFunction.labelsToTargets(
-                env, targetLabels.getTargets(), targetLabels.hasError());
-    if (expandedTargets == null) {
-      return null;
+      ResolvedTargets<Label> targetLabels = expandedLabelsBuilder.build();
+      selectedLabels = targetLabels.getTargets();
+      expandedTargets =
+          TestsForTargetPatternFunction.labelsToTargets(env, selectedLabels, targetLabels.hasError());
+      if (expandedTargets == null) {
+        return null;
+      }
     }
     expandedTargets = filterProbeTargets(expandedTargets, options, probeExcluded);
     if (options.isCacheProbe()) {
@@ -299,11 +302,9 @@ final class TargetPatternPhaseFunction implements SkyFunction {
               .addAll(filteredTargets)
               .addAll(expandedTargets.getFilteredTargets())
               .build();
+      selectedLabels =
+          expandedTargets.getTargets().stream().map(Target::getLabel).collect(toImmutableSet());
     }
-    ImmutableSet<Label> selectedLabels =
-        options.isCacheProbe()
-            ? expandedTargets.getTargets().stream().map(Target::getLabel).collect(toImmutableSet())
-            : targetLabels.getTargets();
     Set<Target> testSuiteTargets =
         Sets.difference(targets.getTargets(), expandedTargets.getTargets());
     ImmutableSet<Label> testsToRunLabels = null;
