@@ -45,7 +45,7 @@ genrule(
 )
 EOF
 
-  bazel build :gr >&$TEST_log 2>&1 || fail "build failed"
+  bazel build --noincompatible_disable_build_prelude :gr >&"$TEST_log" 2>&1 || fail "build failed"
 
   output=$(cat bazel-genfiles/gr.out)
   check_eq "from test_prelude" "$output" "unexpected output in gr.out"
@@ -95,7 +95,8 @@ genrule(
 )
 EOF
 
-  bazel build :gr @imported_workspace//:gr_inner >&$TEST_log 2>&1 || fail "build failed"
+  bazel build --noincompatible_disable_build_prelude :gr @imported_workspace//:gr_inner \
+    >&"$TEST_log" 2>&1 || fail "build failed"
 
   output=$(cat bazel-genfiles/gr.out)
   check_eq "outer from test_prelude_external_repository, outer workspace" "$output" "unexpected output in gr.out"
@@ -103,10 +104,10 @@ EOF
   output=$(cat bazel-genfiles/external/+local_repository+imported_workspace/gr_inner.out)
   check_eq "inner from test_prelude_external_repository, inner workspace" "$output" "unexpected output in gr_inner.out"
 
-  bazel query --incompatible_disable_build_prelude :gr >&"$TEST_log" 2>&1 \
+  bazel query :gr >&"$TEST_log" 2>&1 \
     && fail "main repository still sees the prelude"
   expect_log "name 'PRELUDE_VAR' is not defined"
-  bazel query --incompatible_disable_build_prelude @imported_workspace//:gr_inner \
+  bazel query @imported_workspace//:gr_inner \
     >&"$TEST_log" 2>&1 && fail "external repository still sees the prelude"
   expect_log "name 'PRELUDE_VAR' is not defined"
 
@@ -124,7 +125,7 @@ EOF
   echo 'fail("main prelude evaluated")' > tools/build_rules/prelude_bazel
   echo 'fail("external prelude evaluated")' > imported_workspace/tools/build_rules/prelude_bazel
 
-  bazel query --incompatible_disable_build_prelude 'set(:gr @imported_workspace//:gr_inner)' \
+  bazel query 'set(:gr @imported_workspace//:gr_inner)' \
     >&"$TEST_log" 2>&1 || fail "Bazel evaluated a disabled prelude"
 }
 
