@@ -128,7 +128,11 @@ public sealed class BuiltinFunction implements StarlarkCallable
     if (desc.isUseStarlarkThread()) {
       n++;
     }
-    Object[] vector = new Object[n];
+    // In a full-arity call without synthetic parameters, every successful match must consume
+    // every parameter in order. A disabled or keyword-only parameter would leave surplus input.
+    boolean reusePositionals =
+        n == parameters.length && n == positional.length && !(obj instanceof String);
+    Object[] vector = reusePositionals ? positional : new Object[n];
 
     // positional arguments
     int paramIndex = 0;
@@ -153,7 +157,9 @@ public sealed class BuiltinFunction implements StarlarkCallable
 
       Object value = positional[argIndex++];
       checkParamValue(param, value);
-      vector[paramIndex] = value;
+      if (!reusePositionals) {
+        vector[paramIndex] = value;
+      }
     }
 
     // *args

@@ -70,6 +70,18 @@ public final class StarlarkFlagGuardingTest {
     }
 
     @StarlarkMethod(
+        name = "guarded_prefix",
+        documented = false,
+        parameters = {
+          @Param(name = "flag", enableOnlyWithFlag = EXPERIMENTAL_FLAG, defaultValue = "False"),
+          @Param(name = "number", defaultValue = "0"),
+          @Param(name = "text", defaultValue = "''"),
+        })
+    public String guardedPrefix(boolean flag, StarlarkInt number, String text) {
+      return number + text;
+    }
+
+    @StarlarkMethod(
         name = "keywords_only_method",
         documented = false,
         parameters = {
@@ -187,6 +199,19 @@ public final class StarlarkFlagGuardingTest {
             "in call to positionals_only_method(), parameter 'c' got value of type 'bool', want"
                 + " 'int'",
             "mock.positionals_only_method(1, True, 3)");
+  }
+
+  @Test
+  public void testFullArityWithDisabledPrefixPreservesArgumentOrder() throws Exception {
+    ev.new Scenario(FLAG1_TRUE)
+        .update("mock", new Mock())
+        .testEval("mock.guarded_prefix(True, 1, 'x')", "'1x'");
+    // When flag is disabled, number consumes 1 and text must see False from the original call.
+    ev.new Scenario(FLAG1_FALSE)
+        .update("mock", new Mock())
+        .testIfErrorContains(
+            "parameter 'text' got value of type 'bool', want 'string'",
+            "mock.guarded_prefix(1, False, 'extra')");
   }
 
   @Test
