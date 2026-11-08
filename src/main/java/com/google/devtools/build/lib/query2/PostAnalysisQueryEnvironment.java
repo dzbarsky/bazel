@@ -175,6 +175,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
           SkyframeExecutor skyframeExecutor,
           RuleClassProvider ruleClassProvider,
           PackageManager packageManager,
+          ImmutableMap<String, String> clientEnvironment,
           StarlarkSemantics starlarkSemantics)
           throws QueryException, InterruptedException;
 
