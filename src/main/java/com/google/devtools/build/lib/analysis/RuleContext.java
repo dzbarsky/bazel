@@ -128,7 +128,11 @@ import net.starlark.java.syntax.Location;
  * package private to enforce that.
  */
 public class RuleContext extends TargetContext
-    implements ActionConstructionContext, ActionRegistry, RuleErrorConsumer, AutoCloseable {
+    implements ActionConstructionContext,
+        ActionRegistry,
+        RuleErrorConsumer,
+        AutoCloseable,
+        Label.RepoMappingRecorder {
 
   /**
    * The consumer of a prerequisite validated by a {@link PrerequisiteValidator}, as well as the
@@ -991,6 +995,25 @@ public class RuleContext extends TargetContext
 
   public StarlarkThread getStarlarkThread() {
     return starlarkThread;
+  }
+
+  @Override
+  public void record(
+      RepositoryName fromRepo, String apparentRepoName, RepositoryName canonicalRepoName) {
+    var recorder = starlarkThread.getThreadLocal(Label.RepoMappingRecorder.class);
+    if (recorder == null) {
+      recorder = new Label.SimpleRepoMappingRecorder();
+      recorder.storeInThread(starlarkThread);
+    }
+    recorder.record(fromRepo, apparentRepoName, canonicalRepoName);
+  }
+
+  @Nullable
+  AnalysisRepoMappingDigest getAnalysisRepoMappingDigest() {
+    var recorder =
+        (Label.SimpleRepoMappingRecorder)
+            starlarkThread.getThreadLocal(Label.RepoMappingRecorder.class);
+    return recorder == null ? null : AnalysisRepoMappingDigest.create(recorder);
   }
 
   /**
