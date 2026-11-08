@@ -15,6 +15,7 @@
 package net.starlark.java.eval;
 
 import com.google.common.base.Preconditions;
+import java.util.Arrays;
 
 /** An immutable implementation of a {@code StarlarkList}. */
 final class RegularImmutableStarlarkList<E> extends ImmutableStarlarkList<E> {
@@ -33,6 +34,13 @@ final class RegularImmutableStarlarkList<E> extends ImmutableStarlarkList<E> {
   RegularImmutableStarlarkList(Object[] elems) {
     Preconditions.checkArgument(elems.getClass() == Object[].class);
     this.elems = elems;
+  }
+
+  @Override
+  public boolean equals(Object that) {
+    return that instanceof RegularImmutableStarlarkList<?> other
+        ? Arrays.equals(elems, other.elems)
+        : super.equals(that);
   }
 
   @Override

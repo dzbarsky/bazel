@@ -17,6 +17,7 @@ package net.starlark.java.eval;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import java.util.Arrays;
+import java.util.Objects;
 
 /** An immutable singleton implementation of a {@code StarlarkList}. */
 final class ImmutableSingletonStarlarkList<E> extends ImmutableStarlarkList<E> {
@@ -24,6 +25,13 @@ final class ImmutableSingletonStarlarkList<E> extends ImmutableStarlarkList<E> {
 
   ImmutableSingletonStarlarkList(Object elem) {
     this.elem = elem;
+  }
+
+  @Override
+  public boolean equals(Object that) {
+    return that instanceof ImmutableSingletonStarlarkList<?> other
+        ? Objects.equals(elem, other.elem)
+        : super.equals(that);
   }
 
   @Override

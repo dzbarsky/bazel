@@ -243,6 +243,19 @@ public final class StarlarkListTest {
   }
 
   @Test
+  public void immutableListEqualityComparesElementValues() {
+    var x = new CountingStarlarkValue(1, 7);
+    var equalToX = new CountingStarlarkValue(1, 7);
+    var y = new CountingStarlarkValue(2, 7);
+
+    new EqualsTester()
+        .addEqualityGroup(StarlarkList.immutableOf(x), StarlarkList.immutableOf(equalToX))
+        .addEqualityGroup(StarlarkList.immutableOf(x, y), StarlarkList.immutableOf(equalToX, y))
+        .addEqualityGroup(StarlarkList.immutableOf(y, x))
+        .testEquals();
+  }
+
+  @Test
   public void lazyImmutable() {
     AtomicBoolean called = new AtomicBoolean(false);
     StarlarkList.SerializableListSupplier<Object> supplier =
