@@ -199,7 +199,8 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
               out,
               skyframeExecutor,
               accessor,
-              target -> getCompleteFwdDeps(target, cqueryOptions.useParallelHashing()),
+              (target, aspectObserver) ->
+                  getCompleteFwdDeps(target, cqueryOptions.useParallelHashing(), aspectObserver),
               cqueryOptions.useTopLevelHashOutput() ? topLevelConfigurations : null,
               getLabelPrinter(),
               keepGoing));
