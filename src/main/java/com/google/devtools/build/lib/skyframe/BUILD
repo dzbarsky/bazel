@@ -3811,6 +3811,7 @@ java_library(
     deps = [
         ":containing_package_lookup_value",
         ":environment_backed_recursive_package_provider",
+        ":ignored_subdirectories_value",
         ":package_value",
         ":pattern_expanding_error",
         ":repository_mapping_value",
