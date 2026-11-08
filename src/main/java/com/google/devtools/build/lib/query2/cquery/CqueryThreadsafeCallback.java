@@ -13,6 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.lib.query2.cquery;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
@@ -76,7 +78,7 @@ public abstract class CqueryThreadsafeCallback
         key -> skyframeExecutor.getConfiguration(eventHandler, key),
         accessor,
         uniquifyResults,
-        Charset.defaultCharset());
+        options.getHashStreamReceipt() ? UTF_8 : Charset.defaultCharset());
   }
 
   CqueryThreadsafeCallback(
