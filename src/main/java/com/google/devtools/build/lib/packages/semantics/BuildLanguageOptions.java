@@ -307,7 +307,7 @@ public abstract class BuildLanguageOptions extends OptionsBase {
 
   @Option(
       name = "incompatible_disable_build_prelude",
-      defaultValue = "false",
+      defaultValue = "true",
       documentationCategory = OptionDocumentationCategory.STARLARK_SEMANTICS,
       effectTags = {OptionEffectTag.BUILD_FILE_SEMANTICS},
       metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
@@ -1180,7 +1180,7 @@ public abstract class BuildLanguageOptions extends OptionsBase {
       "-incompatible_check_external_repo_source_dir_package_boundary";
 
   public static final String INCOMPATIBLE_DISABLE_BUILD_PRELUDE =
-      "-incompatible_disable_build_prelude";
+      "+incompatible_disable_build_prelude";
 
   // Note that INCOMPATIBLE_DISALLOW_EMPTY_GLOB differs in Google and in OSS Bazel.
   public static final String INCOMPATIBLE_DISALLOW_EMPTY_GLOB = "+incompatible_disallow_empty_glob";

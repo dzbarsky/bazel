@@ -2140,6 +2140,14 @@ public class PackageFunctionTest extends BuildViewTestCase {
     private final CustomInMemoryFs fs = new CustomInMemoryFs(new ManualClock());
 
     @Override
+    protected List<String> getDefaultBuildLanguageOptions() {
+      return ImmutableList.<String>builder()
+          .addAll(super.getDefaultBuildLanguageOptions())
+          .add("--noincompatible_disable_build_prelude")
+          .build();
+    }
+
+    @Override
     protected FileSystem createFileSystem() {
       return fs;
     }
