@@ -24,6 +24,7 @@ import com.google.devtools.build.lib.bazel.bzlmod.NonRegistryOverride;
 import com.google.devtools.build.lib.bazel.bzlmod.RepoRuleId;
 import com.google.devtools.build.lib.bazel.bzlmod.RepoSpec;
 import com.google.devtools.build.lib.bazel.repository.RepoDefinitionInputs.ResolvedRepo;
+import com.google.devtools.build.lib.bazel.repository.RepoDefinitionInputs.RootRepo;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
@@ -76,8 +77,7 @@ public final class RepoDefinitionFunction implements SkyFunction {
       throws SkyFunctionException, InterruptedException {
     RepositoryName repositoryName = ((RepoDefinitionValue.Key) skyKey).argument();
     var root =
-        (RepoDefinitionInputs.RootRepo)
-            env.getValue(RepoDefinitionInputs.RootRepoKey.create(repositoryName));
+        (RootRepo) env.getValue(RepoDefinitionInputs.RootRepoKey.create(repositoryName));
     if (root == null) {
       return null;
     }
@@ -97,8 +97,7 @@ public final class RepoDefinitionFunction implements SkyFunction {
 
     // Step 1: Look for repositories defined by non-registry overrides.
     Optional<RepoDefinitionValue> nonRegistryOverride =
-        checkRepoFromNonRegistryOverrides(
-            root, repositoryName, overrides, basicMainRepoMapping, env);
+        checkRepoFromNonRegistryOverrides(root, repositoryName, overrides, env);
     if (env.valuesMissing()) {
       return null;
     }
@@ -159,27 +158,26 @@ public final class RepoDefinitionFunction implements SkyFunction {
 
   // Callers must check env.valuesMissing() and ignore the result if true.
   private Optional<RepoDefinitionValue> checkRepoFromNonRegistryOverrides(
-      RepoDefinitionInputs.RootRepo root,
+      RootRepo root,
       RepositoryName repositoryName,
       Map<String, PathFragment> overrides,
-      RepositoryMapping basicMainRepoMapping,
       Environment env)
       throws RepoDefinitionFunctionException, InterruptedException {
-    var override = root.override();
-    if (override == null) {
+    var spec = root.spec();
+    if (spec == null) {
       return Optional.empty();
     }
     // If this module is a direct dep of the root module, its apparent name may be named by the
     // --override_repository flag, which takes precedence over the non-registry override.
-    if (override.apparentName() != null) {
-      PathFragment commandLineOverride = overrides.get(override.apparentName());
+    if (root.apparentName() != null) {
+      PathFragment commandLineOverride = overrides.get(root.apparentName());
       if (commandLineOverride != null) {
         return Optional.of(new RepoDefinitionValue.RepoOverride(commandLineOverride));
       }
     }
     return Optional.ofNullable(
         createRepoDefinitionFromSpec(
-            override.spec(), repositoryName, /* originalName= */ null, basicMainRepoMapping, env));
+            spec, repositoryName, /* originalName= */ null, root.basicMainRepoMapping(), env));
   }
 
   @Nullable

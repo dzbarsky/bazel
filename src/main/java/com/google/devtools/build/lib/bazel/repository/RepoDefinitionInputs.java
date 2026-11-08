@@ -40,14 +40,12 @@ final class RepoDefinitionInputs {
   @SerializationConstant
   static final SkyKey RESOLVED_KEY = () -> SkyFunctions.RESOLVED_REPO_DEFINITION_INPUTS;
 
-  record NonRegistryRepo(@Nullable String apparentName, RepoSpec spec) {}
-
   record Root(
-      RepositoryMapping basicMainRepoMapping,
-      ImmutableMap<RepositoryName, NonRegistryRepo> nonRegistryOverrides)
+      RootRepo defaultRepo, ImmutableMap<RepositoryName, RootRepo> nonRegistryOverrides)
       implements SkyValue {}
 
-  record RootRepo(RepositoryMapping basicMainRepoMapping, @Nullable NonRegistryRepo override)
+  record RootRepo(
+      RepositoryMapping basicMainRepoMapping, @Nullable String apparentName, @Nullable RepoSpec spec)
       implements SkyValue {}
 
   record Resolved(
@@ -125,7 +123,7 @@ final class RepoDefinitionInputs {
                 .put(root.module().getRepoName(), RepositoryName.MAIN)
                 .buildKeepingLast(),
             RepositoryName.MAIN);
-    var overrides = ImmutableMap.<RepositoryName, NonRegistryRepo>builder();
+    var overrides = ImmutableMap.<RepositoryName, RootRepo>builder();
     root.nonRegistryOverrideCanonicalRepoToModuleName()
         .forEach(
             (canonicalName, moduleName) -> {
@@ -136,11 +134,12 @@ final class RepoDefinitionInputs {
               var override = (NonRegistryOverride) root.overrides().get(moduleName);
               overrides.put(
                   canonicalName,
-                  new NonRegistryRepo(
+                  new RootRepo(
+                      basicMainRepoMapping,
                       root.nonRegistryOverrideModuleToRepoName().get(moduleName),
                       override.repoSpec()));
             });
-    return new Root(basicMainRepoMapping, overrides.buildOrThrow());
+    return new Root(new RootRepo(basicMainRepoMapping, null, null), overrides.buildOrThrow());
   }
 
   // A root override only affects the repository whose canonical name it matches.
@@ -150,8 +149,7 @@ final class RepoDefinitionInputs {
     var root = (Root) env.getValue(ROOT_KEY);
     return root == null
         ? null
-        : new RootRepo(
-            root.basicMainRepoMapping(), root.nonRegistryOverrides().get(((RootRepoKey) key).name()));
+        : root.nonRegistryOverrides().getOrDefault(((RootRepoKey) key).name(), root.defaultRepo());
   }
 
   @Nullable
