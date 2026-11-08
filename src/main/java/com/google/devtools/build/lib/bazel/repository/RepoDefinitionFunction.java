@@ -43,7 +43,6 @@ import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.util.Map;
-import java.util.Optional;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkThread;
@@ -96,13 +95,16 @@ public final class RepoDefinitionFunction implements SkyFunction {
     }
 
     // Step 1: Look for repositories defined by non-registry overrides.
-    Optional<RepoDefinitionValue> nonRegistryOverride =
-        checkRepoFromNonRegistryOverrides(root, repositoryName, overrides, env);
-    if (env.valuesMissing()) {
-      return null;
-    }
-    if (nonRegistryOverride.isPresent()) {
-      return nonRegistryOverride.get();
+    var rootSpec = root.spec();
+    if (rootSpec != null) {
+      // A command-line override of the apparent name takes precedence.
+      PathFragment commandLineOverride =
+          root.apparentName() == null ? null : overrides.get(root.apparentName());
+      if (commandLineOverride != null) {
+        return new RepoDefinitionValue.RepoOverride(commandLineOverride);
+      }
+      return createRepoDefinitionFromSpec(
+          rootSpec, repositoryName, /* originalName= */ null, basicMainRepoMapping, env);
     }
 
     // The resolved graph can depend on repos found in Step 1.
@@ -154,30 +156,6 @@ public final class RepoDefinitionFunction implements SkyFunction {
           createRepoDefinitionFromSpec(
               spec, repositoryName, internalName, basicMainRepoMapping, env);
     };
-  }
-
-  // Callers must check env.valuesMissing() and ignore the result if true.
-  private Optional<RepoDefinitionValue> checkRepoFromNonRegistryOverrides(
-      RootRepo root,
-      RepositoryName repositoryName,
-      Map<String, PathFragment> overrides,
-      Environment env)
-      throws RepoDefinitionFunctionException, InterruptedException {
-    var spec = root.spec();
-    if (spec == null) {
-      return Optional.empty();
-    }
-    // If this module is a direct dep of the root module, its apparent name may be named by the
-    // --override_repository flag, which takes precedence over the non-registry override.
-    if (root.apparentName() != null) {
-      PathFragment commandLineOverride = overrides.get(root.apparentName());
-      if (commandLineOverride != null) {
-        return Optional.of(new RepoDefinitionValue.RepoOverride(commandLineOverride));
-      }
-    }
-    return Optional.ofNullable(
-        createRepoDefinitionFromSpec(
-            spec, repositoryName, /* originalName= */ null, root.basicMainRepoMapping(), env));
   }
 
   @Nullable
