@@ -22,6 +22,8 @@ import com.google.common.collect.Lists;
 import com.google.common.io.BaseEncoding;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata.AnalysisTimeFileContents;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
+import com.google.devtools.build.lib.analysis.AnalysisRepoMappingDigest;
+import com.google.devtools.build.lib.analysis.AspectValue;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.MoreFutures;
@@ -59,11 +61,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.BiConsumer;
 import javax.annotation.Nullable;
 
 /**
@@ -81,13 +85,18 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
   @FunctionalInterface
   interface DepsRetriever {
     @Nullable
-    Iterable<CqueryNode> getDirectDeps(CqueryNode target) throws InterruptedException;
+    Iterable<CqueryNode> getDirectDeps(
+        CqueryNode target, BiConsumer<AspectKey, AspectValue> aspectObserver)
+        throws InterruptedException;
   }
 
   static final String NAME = "generate_hashes";
 
   private final SkyframeExecutor skyframeExecutor;
   private final DepsRetriever depsRetriever;
+  // Reuse the walk's availability read. Only retain digests from actual lookups.
+  private final Map<AspectKey, AnalysisRepoMappingDigest> aspectMappings = new ConcurrentHashMap<>();
+  private final BiConsumer<AspectKey, AspectValue> aspectObserver = this::observeAspect;
   @Nullable private final TopLevelConfigurations topLevelConfigurations;
   private final LabelPrinter labelPrinter;
   private final boolean keepGoing;
@@ -382,7 +391,7 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
           ImmutableList.Builder<HashTarget> ordered = ImmutableList.builder();
           Iterable<CqueryNode> directDeps =
               prefetched == null
-                  ? depsRetriever.getDirectDeps(target.node)
+                  ? depsRetriever.getDirectDeps(target.node, aspectObserver)
                   : prefetched[i - 1 - first];
           if (directDeps == null) {
             failed.add(target);
@@ -466,7 +475,7 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
           pool.submit(
               () -> {
                 for (int i = left; i < right; i++) {
-                  deps[i] = depsRetriever.getDirectDeps(targets[i].node);
+                  deps[i] = depsRetriever.getDirectDeps(targets[i].node, aspectObserver);
                 }
                 return null;
               }));
@@ -673,11 +682,18 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       throws InterruptedException {
     var node = target.node;
     fp.addBytes(direct);
-    if (node instanceof RuleConfiguredTarget rule
-        && rule.getRuleClassId().key().equals("genquery")
-        && !addGenQueryResult(node, fp)) {
-      fp.digestAndReset();
-      return null;
+    AnalysisRepoMappingDigest repoMappingDigest = null;
+    if (node instanceof RuleConfiguredTarget rule) {
+      if (rule.getRuleClassId().key().equals("genquery") && !addGenQueryResult(node, fp)) {
+        fp.digestAndReset();
+        return null;
+      }
+      repoMappingDigest = rule.getProvider(AnalysisRepoMappingDigest.class);
+    } else if (node instanceof AspectKey key) {
+      repoMappingDigest = aspectMappings.get(key);
+    }
+    if (repoMappingDigest != null) {
+      fp.addString("observed-analysis-repo-mapping-v1").addString(repoMappingDigest.digest());
     }
     String checksum = node.getConfigurationChecksum();
     fp.addString(checksum == null ? "<no configuration>" : checksum);
@@ -689,6 +705,13 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       fp.addString(target.name);
     }
     return fp.digestAndReset();
+  }
+
+  private void observeAspect(AspectKey key, AspectValue aspect) {
+    var digest = aspect.getProvider(AnalysisRepoMappingDigest.class);
+    if (digest != null) {
+      aspectMappings.put(key, digest);
+    }
   }
 
   // Native genquery reads the unconfigured graph. A ConfiguredTarget's dependency edges
