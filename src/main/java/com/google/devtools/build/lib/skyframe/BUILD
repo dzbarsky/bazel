@@ -391,6 +391,10 @@ java_library(
 java_library(
     name = "artifact_function",
     srcs = ["ArtifactFunction.java"],
+    visibility = [
+        "//src/main/java/com/google/devtools/build/lib:build_lib",
+        "//src/main/java/com/google/devtools/build/lib/query2/query/hash:__pkg__",
+    ],
     deps = [
         ":action_execution_value",
         ":action_template_expansion_value",
@@ -1992,6 +1996,10 @@ java_library(
         "RecursiveFilesystemTraversalValue.java",
         "TraversalRequest.java",
     ],
+    visibility = [
+        "//src/main/java/com/google/devtools/build/lib:build_lib",
+        "//src/main/java/com/google/devtools/build/lib/query2/query/hash:__pkg__",
+    ],
     deps = [
         ":action_execution_value",
         ":detailed_exceptions",
@@ -2722,6 +2730,10 @@ java_library(
 java_library(
     name = "track_source_directories_flag",
     srcs = ["TrackSourceDirectoriesFlag.java"],
+    visibility = [
+        "//src/main/java/com/google/devtools/build/lib:build_lib",
+        "//src/main/java/com/google/devtools/build/lib/query2/query/hash:__pkg__",
+    ],
 )
 
 java_library(
