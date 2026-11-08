@@ -188,6 +188,7 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
           SkyframeExecutor skyframeExecutor,
           RuleClassProvider ruleClassProvider,
           PackageManager packageManager,
+          ImmutableMap<String, String> clientEnvironment,
           StarlarkSemantics starlarkSemantics)
           throws QueryException, InterruptedException {
     if (cqueryOptions.getGenerateHashes()) {
@@ -202,7 +203,8 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
               target -> getCompleteFwdDeps(target, cqueryOptions.useParallelHashing()),
               cqueryOptions.useTopLevelHashOutput() ? topLevelConfigurations : null,
               getLabelPrinter(),
-              keepGoing));
+              keepGoing,
+              clientEnvironment));
     }
     AspectResolver aspectResolver =
         cqueryOptions.getAspectDeps().createResolver(packageManager, eventHandler);
