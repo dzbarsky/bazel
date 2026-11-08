@@ -228,10 +228,12 @@ public final class BuildConfigurationKeyProducer<C>
     if (flagDetailsError) {
       return DONE;
     }
+    // The first lookup already covered this immutable map before platform processing.
     if (flagDetails == null
-        || !flagDetails.covers(
-            StarlarkBuildSettingsDetailsValue.scopedBuildSettings(
-                postPlatformProcessedOptions.getStarlarkOptions()))) {
+        || (options.getStarlarkOptions() != postPlatformProcessedOptions.getStarlarkOptions()
+            && !flagDetails.covers(
+                StarlarkBuildSettingsDetailsValue.scopedBuildSettings(
+                    postPlatformProcessedOptions.getStarlarkOptions())))) {
       requestFlagDetails(tasks, postPlatformProcessedOptions);
     }
     return this::possiblyApplyScopes;

@@ -295,6 +295,41 @@ public class BuildConfigurationKeyProducerTest extends ProducerTestCase {
   }
 
   @Test
+  public void createKey_platformFlags_addedProjectFlagIsScoped() throws Exception {
+    createStarlarkFlagRule();
+    scratch.file(
+        "flag/BUILD",
+        """
+        load(":def.bzl", "basic_flag")
+        basic_flag(name = "existing", build_setting_default = "default")
+        basic_flag(name = "added", build_setting_default = "default", scope = "project")
+        """);
+    scratch.file(
+        "flag/PROJECT.scl",
+        """
+        load("//test:project_proto.scl", "project_pb2")
+        project = project_pb2.Project.create(project_directories = ["//in_project"])
+        """);
+    scratch.overwriteFile(
+        "platforms/BUILD",
+        """
+        platform(name = "sample", flags = ["--//flag:added=from_platform"])
+        """);
+    invalidatePackages(false);
+
+    BuildOptions options =
+        createBuildOptions("--platforms=//platforms:sample", "--//flag:existing=v");
+    var inScope = fetch(options, Label.parseCanonicalUnchecked("//in_project:target"));
+    var outOfScope = fetch(options, Label.parseCanonicalUnchecked("//outside:target"));
+
+    Label existing = Label.parseCanonicalUnchecked("//flag:existing");
+    Label added = Label.parseCanonicalUnchecked("//flag:added");
+    assertThat(inScope.getOptions().getStarlarkOptions())
+        .containsExactly(existing, "v", added, "from_platform");
+    assertThat(outOfScope.getOptions().getStarlarkOptions()).containsExactly(existing, "v");
+  }
+
+  @Test
   public void createKey_platformFlags_override_native() throws Exception {
     scratch.overwriteFile(
         "platforms/BUILD",
