@@ -247,6 +247,9 @@ def _digest(file, expander):
         return "digest=<DIGEST>"
     return _DIGEST_PREFIX + digest
 
+def _sha256(file, expander):
+    return expander.sha256(file) or "none"
+
 def _bare_digest(file, expander):
     return expander.digest(file)
 
@@ -263,6 +266,7 @@ def _manifest_impl(ctx):
     output = ctx.actions.declare_file(ctx.label.name + ".out")
     srcs = ctx.files.srcs
     mode = ctx.attr.mode
+    map_digest = _sha256 if mode == "sha256" else _digest
     args = ctx.actions.args()
     manifest_args = [args]
     if mode == "conflict":
@@ -278,13 +282,13 @@ def _manifest_impl(ctx):
             conflicting_args.add_all(pairs, map_each = _second_digest)
         manifest_args.append(conflicting_args)
     elif ctx.attr.join_srcs:
-        args.add_joined(ctx.attr.join_srcs[DefaultInfo].files, join_with = ",", map_each = _digest)
+        args.add_joined(ctx.attr.join_srcs[DefaultInfo].files, join_with = ",", map_each = map_digest)
         args.use_param_file("%s", use_always = True)
         args.set_param_file_format("multiline")
     elif mode == "prune_expand":
         args.add_all(srcs, map_each = _expand, expand_directories = False)
     else:
-        args.add_all(srcs, map_each = _digest)
+        args.add_all(srcs, map_each = map_digest)
 
     unused_inputs = None
     outputs = [output]
@@ -318,7 +322,7 @@ manifest = rule(
     attrs = {
         "srcs": attr.label_list(allow_files = True),
         "join_srcs": attr.label(),
-        "mode": attr.string(default = "digest", values = ["digest", "conflict", "prune", "prune_expand"]),
+        "mode": attr.string(default = "digest", values = ["digest", "sha256", "conflict", "prune", "prune_expand"]),
     },
 )
 
@@ -352,6 +356,14 @@ tree(name = "directory", srcs = SRCS)
 
 manifest(name = "source", srcs = SRCS)
 manifest(name = "tree", srcs = [":directory"])
+manifest(name = "sha256_source", srcs = SRCS, mode = "sha256")
+manifest(name = "sha256_tree", srcs = [":directory"], mode = "sha256")
+manifest(
+    name = "sha256_undeclared",
+    srcs = [":sha256_source"],
+    join_srcs = ":sources",
+    mode = "sha256",
+)
 manifest(name = "joined", srcs = [":sources"], join_srcs = ":sources")
 # Build :joined first. Both actions use the :sources depset in their Args,
 # and only :joined declares those files as action inputs.
@@ -414,6 +426,32 @@ function test_map_each_file_digests() {
     &> "$TEST_log" || fail "build failed after changing map_each"
   assert_digest_outputs "updated=${changed_digest#digest=}" \
     "updated=${digest_b#digest=}" "updated=${digest_c#digest=}"
+}
+
+function test_map_each_file_sha256() {
+  setup_map_each_file_digests
+
+  bazel --digest_function=sha256 aquery --output=textproto --include_commandline \
+    //digests:sha256_source &> "$TEST_log" || fail "aquery failed"
+  expect_log_n 'arguments: "none"$' 3
+
+  bazel --digest_function=sha256 build \
+    //digests:sha256_source //digests:sha256_tree //digests:sha256_undeclared \
+    &> "$TEST_log" || fail "SHA-256 build failed"
+
+  local output_dir="${PRODUCT_NAME}-bin/digests"
+  local expected
+  expected=$(printf '%s\n' \
+    a6328afc76e9db71da297ebff4b0d3e7a7eb3b01d917c05a6573fef121b6ecb6 \
+    a6328afc76e9db71da297ebff4b0d3e7a7eb3b01d917c05a6573fef121b6ecb6 \
+    1170c8939638387ed45a0d39fa66b9cf4302208f2192e7d2ffefb1b9e2a620af)
+  assert_equals "$expected" "$(cat "$output_dir/sha256_source.out")"
+  assert_equals "$expected" "$(cat "$output_dir/sha256_tree.out")"
+  assert_equals "none,none,none" "$(cat "$output_dir/sha256_undeclared.out")"
+
+  bazel --digest_function=sha1 build //digests:sha256_source \
+    &> "$TEST_log" || fail "SHA-1 build failed"
+  assert_equals $'none\nnone\nnone' "$(cat "$output_dir/sha256_source.out")"
 }
 
 function test_map_each_file_digests_rejects_undeclared_source() {
