@@ -129,4 +129,49 @@ EOF
     >&"$TEST_log" 2>&1 || fail "Bazel evaluated a disabled prelude"
 }
 
+function test_repository_marker_survives_prelude_toggle() {
+  mkdir -p tools/build_rules
+  touch tools/build_rules/BUILD
+  echo 'PRELUDE_NAME = "prelude_target"' > tools/build_rules/prelude_bazel
+  echo 'filegroup(name = PRELUDE_NAME)' > BUILD
+  echo 'fixture payload' > payload.txt
+  cat > MODULE.bazel <<'EOF'
+fixture = use_extension("//:defs.bzl", "fixture")
+use_repo(fixture, "fixture_dep")
+EOF
+  cat > defs.bzl <<'EOF'
+_INPUT = Label("//:payload.txt")
+
+def _repo_impl(ctx):
+    print("prelude test repository executed")
+    text = ctx.read(_INPUT)
+    if text != ctx.attr.expected:
+        fail("different inputs in the repository and extension")
+    ctx.file("BUILD", "exports_files(['data.txt'])")
+    ctx.file("data.txt", text)
+    return ctx.repo_metadata(reproducible = True)
+
+_repo = repository_rule(implementation = _repo_impl, attrs = {"expected": attr.string()})
+
+def _extension(ctx):
+    _repo(name = "fixture_dep", expected = ctx.read(_INPUT))
+    return ctx.extension_metadata(reproducible = True)
+
+fixture = module_extension(implementation = _extension)
+EOF
+
+  bazel query --repo_contents_cache= --noincompatible_disable_build_prelude \
+    'set(:prelude_target @fixture_dep//:data.txt)' >&"$TEST_log" 2>&1 \
+    || fail "prelude or repository query failed"
+  expect_log "prelude test repository executed"
+
+  bazel query --repo_contents_cache= @fixture_dep//:data.txt >&"$TEST_log" 2>&1 \
+    || fail "repository query failed with the prelude disabled"
+  expect_not_log "prelude test repository executed"
+
+  bazel query :prelude_target >&"$TEST_log" 2>&1 \
+    && fail "BUILD evaluated with the prelude disabled"
+  expect_log "name 'PRELUDE_NAME' is not defined"
+}
+
 run_suite "prelude"
