@@ -1484,6 +1484,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
         "//src/main/java/com/google/devtools/build/lib/actions:commandline_item",
+        "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
         "//src/main/java/com/google/devtools/build/lib/actions:fileset_output_symlink",
         "//src/main/java/com/google/devtools/build/lib/actions:fileset_output_tree",
         "//src/main/java/com/google/devtools/build/lib/actions:param_file_action_input",
@@ -1504,6 +1505,7 @@ java_library(
         "//third_party/java/error_prone:annotations",
         "//third_party/java/guava:base",
         "//third_party/java/guava:collect",
+        "//third_party/java/guava:hash",
         "//third_party/java/jsr305_annotations",
     ],
 )
