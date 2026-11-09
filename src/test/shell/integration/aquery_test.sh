@@ -1249,12 +1249,14 @@ EOF
 
   QUERY="deps(//$pkg:my_aspect)"
 
-  bazel aquery --output=text --include_aspects ${QUERY} > output 2> "$TEST_log" \
-    || fail "Expected success"
-  cat output >> "$TEST_log"
+  for explicit_aspects in --noexperimental_explicit_aspects --experimental_explicit_aspects; do
+    bazel aquery --output=text --include_aspects "$explicit_aspects" "${QUERY}" \
+      > output 2> "$TEST_log" || fail "Expected success with $explicit_aspects"
+    cat output >> "$TEST_log"
 
-  assert_contains "Mnemonic: MyJplAspect" output
-  assert_contains "AspectDescriptors: \[.*:rule.bzl%my_jpl_aspect(aspect_param='y')" output
+    assert_contains "Mnemonic: MyJplAspect" output
+    assert_contains "AspectDescriptors: \[.*:rule.bzl%my_jpl_aspect(aspect_param='y')" output
+  done
 
   bazel aquery --output=textproto --include_aspects --noinclude_commandline ${QUERY} > output \
     2> "$TEST_log" || fail "Expected success"
