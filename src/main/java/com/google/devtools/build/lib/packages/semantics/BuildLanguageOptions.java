@@ -1095,6 +1095,28 @@ public abstract class BuildLanguageOptions extends OptionsBase {
     return FINGERPRINT_CACHE.getUnchecked(semantics);
   }
 
+  /**
+   * Fingerprints the Starlark semantics that repository rules can observe.
+   *
+   * <p>BUILD preludes affect package evaluation. Repository label inputs resolve package paths and
+   * read files without evaluating their BUILD files.
+   */
+  public static ByteString stableRepositoryFingerprint(StarlarkSemantics semantics) {
+    return REPOSITORY_FINGERPRINT_CACHE.getUnchecked(semantics);
+  }
+
+  private static final LoadingCache<StarlarkSemantics, ByteString> REPOSITORY_FINGERPRINT_CACHE =
+      CacheBuilder.newBuilder()
+          .weakKeys()
+          .build(
+              CacheLoader.from(
+                  semantics ->
+                      computeFingerprint(
+                          semantics
+                              .toBuilder()
+                              .setBool(BuildLanguageOptions.INCOMPATIBLE_DISABLE_BUILD_PRELUDE, false)
+                              .build())));
+
   // See the comment on INTERNER above, this cache should be very small.
   private static final LoadingCache<StarlarkSemantics, ByteString> FINGERPRINT_CACHE =
       CacheBuilder.newBuilder()

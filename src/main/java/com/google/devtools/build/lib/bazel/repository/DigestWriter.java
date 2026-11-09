@@ -191,7 +191,7 @@ public class DigestWriter {
     var fp =
         new Fingerprint()
             .addInt(MARKER_FILE_VERSION)
-            .addBytes(BuildLanguageOptions.stableFingerprint(starlarkSemantics))
+            .addBytes(BuildLanguageOptions.stableRepositoryFingerprint(starlarkSemantics))
             .addString(repoDefinition.repoRule().id().bzlFileLabel().toString())
             .addString(repoDefinition.repoRule().id().ruleName())
             .addBytes(repoDefinition.repoRule().transitiveBzlDigest())
