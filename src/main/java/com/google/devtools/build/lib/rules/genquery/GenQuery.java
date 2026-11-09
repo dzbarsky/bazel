@@ -240,6 +240,12 @@ public class GenQuery implements RuleConfiguredTargetFactory {
       if (packageProvider == null) {
         return null;
       }
+      packageProvider =
+          packageProvider.withScopeLeaves(
+              env, ruleContext.attributes().get("scope_leaves", BuildType.GENQUERY_SCOPE_TYPE_LIST));
+      if (packageProvider == null) {
+        return null;
+      }
     } catch (GenQueryPackageProviderFactory.BrokenQueryScopeException e) {
       ruleContext.ruleError(e.getMessage());
       return null;
