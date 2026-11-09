@@ -186,8 +186,8 @@ public abstract class CommonQueryOptions extends OptionsBase {
       documentationCategory = OptionDocumentationCategory.QUERY,
       effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
       help =
-          "aquery, cquery: whether to include aspect-generated actions in the output. "
-              + "query: no-op (aspects are always followed).")
+          "Expose aspects as distinct nodes in cquery. Aquery uses --include_aspects to select"
+              + " aspect actions.")
   public abstract boolean getExplicitAspects();
 
   /** Return the current options as a set of QueryEnvironment settings. */
