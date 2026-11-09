@@ -38,12 +38,16 @@ public final class GenQueryRule implements RuleDefinition {
   public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
     return builder
         /* <!-- #BLAZE_RULE(genquery).ATTRIBUTE(scope) -->
-        The scope of the query. The query is not allowed to touch targets outside the transitive
-        closure of these targets.
+        The roots whose transitive closure is in the scope of the query.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(attr("scope", GENQUERY_SCOPE_TYPE_LIST).mandatory().legacyAllowAnyFileType())
+        /* <!-- #BLAZE_RULE(genquery).ATTRIBUTE(scope_leaves) -->
+        Adds each listed target to the query scope individually. Each target must exist. Use
+        <code>scope</code> to include a target's transitive closure.
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(attr("scope_leaves", GENQUERY_SCOPE_TYPE_LIST).legacyAllowAnyFileType())
         /* <!-- #BLAZE_RULE(genquery).ATTRIBUTE(strict) -->
-        If true, targets whose queries escape the transitive closure of their scopes will fail to
+        If true, targets whose queries escape their scopes will fail to
         build. If false, Bazel will print a warning and skip whatever query path led it outside of
         the scope, while completing the rest of the query.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
@@ -95,8 +99,9 @@ public final class GenQueryRule implements RuleDefinition {
   </p>
   <p>
     In order to keep the build consistent, the query is allowed only to visit
-    the transitive closure of the targets specified in the <code>scope</code>
-    attribute. Queries violating this rule will fail during execution if
+    the transitive closure of the targets specified in <code>scope</code> and the
+    individual targets specified in <code>scope_leaves</code>. Queries violating this rule
+    will fail during execution if
     <code>strict</code> is unspecified or true (if <code>strict</code> is false,
     the out of scope targets will simply be skipped with a warning). The
     easiest way to make sure this does not happen is to mention the same labels

@@ -794,6 +794,51 @@ EOF
   expect_log "$expected_error_msg"
 }
 
+function test_genquery_scope_leaves() {
+  mkdir -p roots leaf
+  cat > roots/BUILD <<'EOF'
+filegroup(name = "source")
+filegroup(name = "reaches_leaf", srcs = ["//leaf:sink"])
+genquery(
+    name = "unreached",
+    expression = "somepath(//roots:source, //leaf:sink)",
+    scope = [":source"],
+    scope_leaves = ["//leaf:sink"],
+)
+genquery(
+    name = "reached",
+    expression = "deps(//leaf:sink)",
+    scope = [":source", ":reaches_leaf"],
+    scope_leaves = ["//leaf:sink"],
+)
+genquery(
+    name = "validate_leaf",
+    expression = "//roots:source",
+    scope = [":source"],
+    scope_leaves = ["//leaf:sink"],
+)
+EOF
+  cat > leaf/BUILD <<'EOF'
+filegroup(name = "sink", srcs = ["//payload:transitive"])
+EOF
+
+  bazel build //roots:unreached //roots:validate_leaf >& "$TEST_log" || fail "Expected success"
+  assert_equals "" "$(cat bazel-bin/roots/unreached)"
+  bazel build //roots:reached >& "$TEST_log" && fail "Expected missing transitive dependency"
+  expect_log "no such package 'payload'"
+
+  mkdir -p payload
+  echo 'filegroup(name = "transitive")' > payload/BUILD
+  bazel build //roots:reached >& "$TEST_log" || fail "Expected success"
+  cat bazel-bin/roots/reached > "$TEST_log"
+  expect_log "^//leaf:sink$"
+  expect_log "^//payload:transitive$"
+
+  echo 'filegroup(name = "renamed")' > leaf/BUILD
+  bazel build //roots:validate_leaf >& "$TEST_log" && fail "Expected missing leaf"
+  expect_log "no such target '//leaf:sink'"
+}
+
 function test_graphless_genquery_somepath_output_in_dependency_order() {
   mkdir -p foo
   cat > foo/BUILD <<EOF
