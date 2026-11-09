@@ -1984,7 +1984,7 @@ def _value(ctx):
     return [RuleToken(value = str(Label("@sibling//:input")))]
 
 def _aspect(target, ctx):
-    return [AspectToken(value = str(ctx.package_relative_label("@sibling//:input")))]
+    return [AspectToken(value = str(Label("@sibling//:input")))]
 
 def _write(ctx):
     dep = ctx.attr.dep
@@ -2030,6 +2030,11 @@ EOF
       2> "$TEST_log" || fail "parallel hashing failed at $stage"
     LC_ALL=C sort "serial.$stage" > "hashes.$stage"
     diff "hashes.$stage" <(LC_ALL=C sort "parallel.$stage") || fail "hash workers differ at $stage"
+    bazel cquery --experimental_generate_hashes --noexperimental_explicit_aspects "$query" \
+      > "default.$stage" 2> "$TEST_log" \
+      || fail "default hashing failed at $stage"
+    diff "hashes.$stage" <(LC_ALL=C sort "default.$stage") \
+      || fail "aspect presentation changed mapping hashes at $stage"
     diff <(printf '%s\n' "${roots[@]}") <(cut -d' ' -f1 "hashes.$stage") \
       || fail "missing configured roots at $stage"
   done
