@@ -19,8 +19,10 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.AnalysisResult;
 import com.google.devtools.build.lib.analysis.ConfiguredAspect;
+import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.buildtool.BuildTool.ExitException;
@@ -39,6 +41,8 @@ import com.google.devtools.build.lib.query2.engine.QueryExpression;
 import com.google.devtools.build.lib.query2.engine.QueryUtil;
 import com.google.devtools.build.lib.query2.engine.QueryUtil.AggregateAllOutputFormatterCallback;
 import com.google.devtools.build.lib.query2.engine.TargetLiteral;
+import com.google.devtools.build.lib.query2.query.hash.DirectTargetHashFunction;
+import com.google.devtools.build.lib.query2.query.hash.SourceFileDigestFunction;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
 import com.google.devtools.build.lib.runtime.ClientOptions;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
@@ -51,14 +55,18 @@ import com.google.devtools.build.lib.skyframe.AspectKeyCreator;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.Fingerprint;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.WalkableGraph;
 import com.google.devtools.common.options.OptionPriority.PriorityCategory;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.io.IOException;
+import java.security.DigestOutputStream;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HexFormat;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
@@ -71,6 +79,63 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
 
   private static final Set<String> LAUNCHER_OPTIONS =
       Set.of("config", "deleted_packages", "package_path", "override_repository", "override_module");
+
+  // The canonical options already include the effective defaults after RC expansion.
+  // The client RC file index and override records can change between commands.
+  private static final Set<String> RECEIPT_METADATA_OPTIONS =
+      Set.of(
+          "build_event_binary_file",
+          "build_event_json_file",
+          "build_request_id",
+          "command_wait_time",
+          "default_override",
+          "experimental_cquery_hash_reuse_from",
+          "experimental_cquery_rule_catalog",
+          "extract_data_time",
+          "invocation_id",
+          "profile",
+          "rc_source",
+          "restart_reason",
+          "startup_time");
+
+  private record HashReceipt(
+      String bodyDigest,
+      String nativeOptions,
+      Map<String, Object> starlarkOptions,
+      ConfiguredTarget[] roots) {
+    boolean matches(
+        String requestedDigest,
+        String currentNativeOptions,
+        Map<String, Object> currentStarlarkOptions,
+        Collection<ConfiguredTarget> currentRoots) {
+      if (!bodyDigest.equals(requestedDigest)
+          || !nativeOptions.equals(currentNativeOptions)
+          || !starlarkOptions.equals(currentStarlarkOptions)
+          || roots.length != currentRoots.size()) {
+        return false;
+      }
+      int index = 0;
+      for (ConfiguredTarget root : currentRoots) {
+        if (roots[index++] != root) {
+          return false;
+        }
+      }
+      return true;
+    }
+  }
+
+  private static String hashReuseOptions(CommandEnvironment env) {
+    return new Fingerprint()
+        .addStrings(
+            env.getOptions().asListOfCanonicalOptions().stream()
+                .filter(
+                    option ->
+                        !RECEIPT_METADATA_OPTIONS.contains(
+                            option.getOptionDefinition().getOptionName()))
+                .map(option -> option.getCanonicalForm())
+                .toList())
+        .hexDigestAndReset();
+  }
 
   private final QueryExpression queryExpression;
   protected final TargetPattern.Parser mainRepoTargetParser;
@@ -109,6 +174,7 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
     boolean hashing = cqueryOptions != null && cqueryOptions.getGenerateHashes();
     boolean topLevelHashOutput = cqueryOptions != null && cqueryOptions.useTopLevelHashOutput();
     boolean hashStreamReceipt = cqueryOptions != null && cqueryOptions.getHashStreamReceipt();
+    String hashReuseFrom = cqueryOptions == null ? "" : cqueryOptions.getHashReuseFrom();
     // With the label file or literal //... as the entire query, analysis already found every
     // top-level target the formatter could emit. Other expressions may select a subset.
     boolean useAnalyzedRoots =
@@ -141,6 +207,14 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
             "A hash stream receipt requires top-level hashes for //... or a canonical label file"
                 + " with LF line endings");
       }
+      if (!hashReuseFrom.isEmpty()
+          && (!hashStreamReceipt
+              || request.targetsAreLabels()
+              || !(hashReuseFrom.equals("seed") || hashReuseFrom.matches("[0-9a-f]{64}")))) {
+        throw new OptionsParsingException(
+            "Hash reuse requires a whole-workspace hash stream receipt and 'seed' or a body"
+                + " SHA-256");
+      }
       doPostAnalysisQuery(
           request,
           env,
@@ -153,7 +227,8 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
           queryRuntimeHelper,
           queryExpression,
           hashing,
-          hashStreamReceipt);
+          hashStreamReceipt,
+          hashReuseFrom);
     } catch (QueryException e) {
       String errorMessage = "Error doing post analysis query";
       if (!request.getKeepGoing() || hashing) {
@@ -251,7 +326,8 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
       QueryRuntimeHelper queryRuntimeHelper,
       QueryExpression queryExpression,
       boolean hashing,
-      boolean hashStreamReceipt)
+      boolean hashStreamReceipt,
+      String hashReuseFrom)
       throws InterruptedException,
           QueryException,
           IOException,
@@ -271,11 +347,16 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
             walkableGraph);
 
     var queryOutput = queryRuntimeHelper.getOutputStreamForQueryOutput();
+    boolean useV2 = !hashReuseFrom.isEmpty();
+    var bodyOutput =
+        useV2
+            ? new DigestOutputStream(queryOutput, DigestHashFunction.SHA256.newMessageDigest())
+            : null;
     Iterable<NamedThreadSafeOutputFormatterCallback<T>> callbacks =
         postAnalysisQueryEnvironment.getDefaultOutputFormatters(
             postAnalysisQueryEnvironment.getAccessor(),
             env.getReporter(),
-            queryOutput,
+            useV2 ? bodyOutput : queryOutput,
             env.getSkyframeExecutor(),
             runtime.getRuleClassProvider(),
             env.getPackageManager(),
@@ -315,10 +396,14 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
     if (result.isEmpty()) {
       env.getReporter().handle(Event.info("Empty query results"));
     }
+    var executor = env.getSkyframeExecutor();
+    var analyzedRoots = topLevelConfigurations.getAnalyzedRoots();
+    String nativeOptions = useV2 ? hashReuseOptions(env) : "";
+    var starlarkOptions = env.getOptions().getStarlarkOptions();
     try {
       if (hashStreamReceipt) {
         String header =
-            "# bazel-configured-root-hashes-v1\t"
+            (useV2 ? "# bazel-configured-root-hashes-v2\t" : "# bazel-configured-root-hashes-v1\t")
                 + env.getCommandId()
                 + "\t"
                 + workerOptionsFingerprint(env)
@@ -339,6 +424,16 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
           }
         }
       }
+      if (useV2
+          && result.getSuccess()
+          && executor.getCqueryHashReceipt() instanceof HashReceipt previous
+          && previous.matches(hashReuseFrom, nativeOptions, starlarkOptions, analyzedRoots)) {
+        queryOutput.write(
+            ("# reused\t" + previous.bodyDigest() + "\n# complete\n").getBytes(UTF_8));
+        queryOutput.flush();
+        queryRuntimeHelper.afterQueryOutputIsWritten();
+        return;
+      }
       callback.start();
       callback.process(aggregateResultsCallback.getResult());
       // Under --keep_going, query evaluation completed and partial results were replayed above.
@@ -349,7 +444,24 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
       throw (IOException) e.getCause();
     }
 
+    String bodyDigest = null;
+    if (useV2 && result.getSuccess()) {
+      // The formatter has flushed the rows and its completion record. Reusable body digests
+      // include both, and exclude the invocation envelope.
+      bodyDigest = HexFormat.of().formatHex(bodyOutput.getMessageDigest().digest());
+      queryOutput.write(("# receipt\t" + bodyDigest + "\n").getBytes(UTF_8));
+      queryOutput.flush();
+    }
     queryRuntimeHelper.afterQueryOutputIsWritten();
+    if (bodyDigest != null) {
+      executor.setCqueryHashReceipt(
+          ImmutableSet.of(DirectTargetHashFunction.NAME, SourceFileDigestFunction.NAME),
+          new HashReceipt(
+              bodyDigest,
+              nativeOptions,
+              starlarkOptions,
+              analyzedRoots.toArray(ConfiguredTarget[]::new)));
+    }
     if (hashing && !result.getSuccess()) {
       throw new QueryException(
           queryExpression,
