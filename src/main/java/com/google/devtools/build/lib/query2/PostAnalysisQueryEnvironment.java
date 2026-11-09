@@ -449,6 +449,8 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       }
       direct = graph.getDirectDeps(key);
     }
+    // Hash explicit aspect instances even when ordinary cquery projects them away. Selecting
+    // the first instance of a class while flattening can expose different dependency edges.
     ImmutableList<T> rawDeps = null;
     ImmutableList<ClassifiedDependency<T>> classified = ImmutableList.of();
     if (rawEdges
@@ -463,11 +465,15 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
           /* knownCtDeps= */ null,
           new HashSet<>(),
           unavailable,
+          /* retainAspectKeys= */ true,
           (node, implicit) -> node,
           raw);
       rawDeps = raw.build();
     } else {
-      classified = targetifyValues(target, direct, new HashSet<>(), new HashSet<>(), unavailable);
+      classified =
+          targetifyValues(
+              target, direct, new HashSet<>(), new HashSet<>(), unavailable,
+              /* retainAspectKeys= */ true);
     }
     if (!unavailable.isEmpty()) {
       eventHandler.handle(
@@ -744,13 +750,15 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
    *     avoid that redundancy.
    * @param unavailable when non-null, accumulate missing edges through aspect and toolchain
    *     expansion
+   * @param retainAspectKeys whether hashing needs explicit aspect nodes
    */
   private ImmutableList<ClassifiedDependency<T>> targetifyValues(
       @Nullable T parent,
       Iterable<? extends SkyKey> dependencies,
       Set<SkyKey> knownCtDeps,
       Set<AspectClass> resolvedAspectClasses,
-      @Nullable List<SkyKey> unavailable)
+      @Nullable List<SkyKey> unavailable,
+      boolean retainAspectKeys)
       throws InterruptedException {
     ImmutableList.Builder<ClassifiedDependency<T>> results = ImmutableList.builder();
     targetifyInto(
@@ -759,6 +767,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
         knownCtDeps,
         resolvedAspectClasses,
         unavailable,
+        retainAspectKeys,
         ClassifiedDependency::new,
         results);
     return results.build();
@@ -776,6 +785,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       @Nullable Set<SkyKey> knownCtDeps,
       Set<AspectClass> resolvedAspectClasses,
       @Nullable List<SkyKey> unavailable,
+      boolean retainAspectKeys,
       DependencyProjection<T, R> projection,
       ImmutableList.Builder<R> values)
       throws InterruptedException {
@@ -788,7 +798,8 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
     }
 
     boolean includeAspects = settings.contains(Setting.INCLUDE_ASPECTS);
-    boolean explicitAspects = includeAspects && settings.contains(Setting.EXPLICIT_ASPECTS);
+    boolean explicitAspects =
+        includeAspects && (retainAspectKeys || settings.contains(Setting.EXPLICIT_ASPECTS));
 
     // TODO(bazel-team): The end-goal approach is to treat aspects and toolchains as
     // first-class query nodes just like targets. In other words, let query expressions reference
@@ -886,6 +897,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
             knownCtDeps,
             resolvedAspectClasses,
             unavailable,
+            retainAspectKeys,
             projection,
             values);
       } else if (key.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION)) {
@@ -895,6 +907,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
             knownCtDeps,
             resolvedAspectClasses,
             unavailable,
+            retainAspectKeys,
             projection,
             values);
       } else if (key instanceof GenAnalysisQueryKey scope) {
@@ -904,6 +917,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
             knownCtDeps,
             resolvedAspectClasses,
             unavailable,
+            retainAspectKeys,
             projection,
             values);
       }
@@ -923,7 +937,8 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
               entry.getValue(),
               /* knownCtDeps= */ new HashSet<>(),
               /* resolvedAspectClasses= */ new HashSet<>(),
-              /* unavailable= */ null));
+              /* unavailable= */ null,
+              /* retainAspectKeys= */ false));
     }
     return result;
   }

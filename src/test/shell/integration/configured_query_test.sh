@@ -1902,6 +1902,51 @@ EOF
     || fail "Expected the hash of //$pkg:a to change"
 }
 
+function test_generate_hashes_retains_aspect_instances_without_explicit_aspects() {
+  local -r pkg=$FUNCNAME
+  mkdir -p "$pkg"
+  cat > "$pkg/defs.bzl" <<'BZL'
+def _aspect_impl(target, ctx):
+    return []
+
+observed_aspect = aspect(
+    implementation = _aspect_impl,
+    attrs = {"_input": attr.label(default = ":aspect.txt", allow_single_file = True)},
+)
+
+def _root_impl(ctx):
+    return []
+
+root = rule(
+    implementation = _root_impl,
+    attrs = {"deps": attr.label_list(aspects = [observed_aspect])},
+)
+BZL
+  cat > "$pkg/BUILD" <<'BUILD'
+load(":defs.bzl", "root")
+
+exports_files(["aspect.txt"])
+filegroup(name = "direct")
+filegroup(name = "referent")
+alias(name = "forward", actual = ":referent")
+root(name = "top", deps = [":direct", ":forward"])
+BUILD
+  echo original > "$pkg/aspect.txt"
+  local -ar hash=(--experimental_generate_hashes --experimental_cquery_hash_top_level)
+  bazel cquery "${hash[@]}" --experimental_explicit_aspects "//$pkg:top" > explicit \
+    2> "$TEST_log" || fail "Expected explicit-aspect hash"
+  bazel cquery "${hash[@]}" --noexperimental_explicit_aspects "//$pkg:top" > default \
+    2> "$TEST_log" || fail "Expected default hash"
+  grep -Eq $'^[^\t]+\t[0-9a-f]{64}\t[0-9a-f]{64}\t$' default \
+    || fail "Missing configured target hash"
+  diff explicit default || fail "Aspect presentation changed the hash"
+
+  echo changed > "$pkg/aspect.txt"
+  bazel cquery "${hash[@]}" --noexperimental_explicit_aspects "//$pkg:top" > edited \
+    2> "$TEST_log" || fail "Expected hash after aspect input edit"
+  ! cmp -s default edited || fail "Aspect input change did not reach the root"
+}
+
 function test_generate_hashes_include_observed_analysis_repo_mappings() {
   local workspace
   workspace="$(mktemp -d "$TEST_TMPDIR/analysis_repo_mapping.XXXXXX")"
@@ -1939,7 +1984,7 @@ def _value(ctx):
     return [RuleToken(value = str(Label("@sibling//:input")))]
 
 def _aspect(target, ctx):
-    return [AspectToken(value = str(ctx.package_relative_label("@sibling//:input")))]
+    return [AspectToken(value = str(Label("@sibling//:input")))]
 
 def _write(ctx):
     dep = ctx.attr.dep
@@ -1985,6 +2030,11 @@ EOF
       2> "$TEST_log" || fail "parallel hashing failed at $stage"
     LC_ALL=C sort "serial.$stage" > "hashes.$stage"
     diff "hashes.$stage" <(LC_ALL=C sort "parallel.$stage") || fail "hash workers differ at $stage"
+    bazel cquery --experimental_generate_hashes --noexperimental_explicit_aspects "$query" \
+      > "default.$stage" 2> "$TEST_log" \
+      || fail "default hashing failed at $stage"
+    diff "hashes.$stage" <(LC_ALL=C sort "default.$stage") \
+      || fail "aspect presentation changed mapping hashes at $stage"
     diff <(printf '%s\n' "${roots[@]}") <(cut -d' ' -f1 "hashes.$stage") \
       || fail "missing configured roots at $stage"
   done
