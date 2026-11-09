@@ -28,6 +28,7 @@ import com.google.common.collect.Sets;
 import com.google.common.collect.UnmodifiableIterator;
 import com.google.common.hash.HashFunction;
 import com.google.common.hash.Hashing;
+import com.google.common.io.BaseEncoding;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ArgChunk;
 import com.google.devtools.build.lib.actions.Artifact;
@@ -59,6 +60,7 @@ import com.google.devtools.build.lib.starlarkbuildapi.FileApi;
 import com.google.devtools.build.lib.starlarkbuildapi.FileRootApi;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.util.HashCodes;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.IOException;
@@ -1322,24 +1324,47 @@ public class StarlarkCustomCommandLine extends CommandLine {
         return "<DIGEST>";
       }
       if (file instanceof Artifact artifact && !artifact.isConstantMetadata()) {
-        FileArtifactValue metadata;
-        try {
-          metadata = inputMetadataProvider.getDeclaredInputMetadata(artifact);
-        } catch (IOException e) {
-          throw new EvalException(
-              "Could not read digest for " + artifact.getExecPathString() + ": " + e.getMessage(),
-              e);
-        }
-        if (metadata != null && metadata.getType().isFile()) {
-          byte[] digest = metadata.getDigest();
-          if (digest != null) {
-            return FILE_DIGEST_HASH.hashBytes(digest).toString();
-          }
+        byte[] digest = readDeclaredRegularFileDigest(inputMetadataProvider, artifact);
+        if (digest != null) {
+          return FILE_DIGEST_HASH.hashBytes(digest).toString();
         }
       }
       throw Starlark.errorf(
           "Only declared regular file inputs have a digest: %s",
           Starlark.repr(file, StarlarkSemantics.DEFAULT));
+    }
+
+    @Nullable
+    @Override
+    public String sha256(FileApi file) throws EvalException {
+      if (!(file instanceof Artifact artifact)
+          || artifact.isConstantMetadata()
+          || artifact.getRoot().getRoot().getFileSystem().getDigestFunction()
+              != DigestHashFunction.SHA256) {
+        return null;
+      }
+      if (mode != MapEachMode.DEFAULT) {
+        throw new EvalException(new InputMetadataRequiredException());
+      }
+      if (inputMetadataProvider == null) {
+        return null;
+      }
+      byte[] digest = readDeclaredRegularFileDigest(inputMetadataProvider, artifact);
+      return digest != null && digest.length == 32
+          ? BaseEncoding.base16().lowerCase().encode(digest)
+          : null;
+    }
+
+    @Nullable
+    private static byte[] readDeclaredRegularFileDigest(
+        InputMetadataProvider inputMetadataProvider, Artifact artifact) throws EvalException {
+      try {
+        FileArtifactValue metadata = inputMetadataProvider.getDeclaredInputMetadata(artifact);
+        return metadata != null && metadata.getType().isFile() ? metadata.getDigest() : null;
+      } catch (IOException e) {
+        throw new EvalException(
+            "Could not read digest for " + artifact.getExecPathString() + ": " + e.getMessage(), e);
+      }
     }
 
     @Override

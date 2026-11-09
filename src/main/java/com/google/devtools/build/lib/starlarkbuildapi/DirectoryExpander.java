@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.starlarkbuildapi;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.docgen.annot.DocCategory;
+import javax.annotation.Nullable;
 import net.starlark.java.annot.Param;
 import net.starlark.java.annot.StarlarkBuiltin;
 import net.starlark.java.annot.StarlarkMethod;
@@ -60,4 +61,18 @@ public interface DirectoryExpander extends StarlarkValue {
         @Param(name = "file", positional = true, named = false, doc = "The input file.")
       })
   String digest(FileApi file) throws EvalException;
+
+  @StarlarkMethod(
+      name = "sha256",
+      doc =
+          "Returns the lowercase hexadecimal SHA-256 of a declared regular file input, including"
+              + " a file in an expanded directory, when Bazel uses SHA-256. Returns None for"
+              + " other digest algorithms, non-regular inputs, or unavailable metadata (such as"
+              + " during aquery). Actions that discover inputs cannot access the metadata.",
+      parameters = {
+        @Param(name = "file", positional = true, named = false, doc = "The input file.")
+      },
+      allowReturnNones = true)
+  @Nullable
+  String sha256(FileApi file) throws EvalException;
 }
