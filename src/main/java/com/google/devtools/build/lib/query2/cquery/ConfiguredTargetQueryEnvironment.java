@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.util.concurrent.AsyncFunction;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.MoreExecutors;
@@ -94,7 +95,19 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
   /** Cquery specific functions. */
   public static final ImmutableList<QueryFunction> CQUERY_FUNCTIONS = getCqueryFunctions();
 
+  /** Loading data used to derive top-level suite hash rows. */
+  public record TestSuiteHashInputs(
+      ImmutableMap<Label, Suite> suites, ImmutableSet<Label> expansionOnlyMembers) {
+    public static final TestSuiteHashInputs EMPTY =
+        new TestSuiteHashInputs(ImmutableMap.of(), ImmutableSet.of());
+
+    public record Suite(
+        ImmutableSet<Label> members, ImmutableSortedSet<String> tags, boolean hasError) {}
+  }
+
   private CqueryOptions cqueryOptions;
+  private TestSuiteHashInputs testSuites = TestSuiteHashInputs.EMPTY;
+
   @Nullable private SkyframeExecutor indexSource;
   @Nullable private Map<Label, List<ConfiguredTargetKey>> configuredKeysByLabel;
 
@@ -151,7 +164,8 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
       Supplier<WalkableGraph> walkableGraphSupplier,
       CqueryOptions cqueryOptions,
       TopLevelArtifactContext topLevelArtifactContext,
-      LabelPrinter labelPrinter) {
+      LabelPrinter labelPrinter,
+      TestSuiteHashInputs testSuites) {
     this(
         keepGoing,
         eventHandler,
@@ -166,6 +180,7 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
         topLevelArtifactContext,
         labelPrinter);
     this.cqueryOptions = cqueryOptions;
+    this.testSuites = testSuites;
   }
 
   private static ImmutableList<QueryFunction> populateFunctions() {
@@ -209,7 +224,8 @@ public class ConfiguredTargetQueryEnvironment extends PostAnalysisQueryEnvironme
               cqueryOptions.useTopLevelHashOutput() ? topLevelConfigurations : null,
               getLabelPrinter(),
               keepGoing,
-              clientEnvironment));
+              clientEnvironment,
+              testSuites));
     }
     AspectResolver aspectResolver =
         cqueryOptions.getAspectDeps().createResolver(packageManager, eventHandler);

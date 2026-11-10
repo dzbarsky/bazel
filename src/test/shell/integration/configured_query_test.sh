@@ -2228,6 +2228,134 @@ function test_parallel_rule_catalog_preserves_rows_and_order() {
   diff hashes-1 hashes-4 || fail "parallel hashing changed rows"
 }
 
+function test_literal_hashes_expand_private_test_suites() {
+  local workspace name suite
+  workspace=$(mktemp -d "$TEST_TMPDIR/suite-hashes.XXXXXX")
+  workspaces+=("$workspace")
+  cd "$workspace"
+  setup_module_dot_bazel >/dev/null
+  cat >> MODULE.bazel <<'EOF'
+bazel_dep(name = "suite_members", version = "1.0")
+local_path_override(module_name = "suite_members", path = "members")
+EOF
+  echo members > .bazelignore
+  mkdir members
+  echo 'module(name = "suite_members", version = "1.0")' > members/MODULE.bazel
+  cat > members/probe.bzl <<'EOF'
+def _probe_test_impl(ctx):
+    executable = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.symlink(output = executable, target_file = ctx.file.src, is_executable = True)
+    return [DefaultInfo(executable = executable)]
+
+probe_test = rule(
+    implementation = _probe_test_impl,
+    attrs = {"src": attr.label(allow_single_file = True)},
+    test = True,
+)
+EOF
+  cat > members/BUILD.bazel <<'EOF'
+load(":probe.bzl", "probe_test")
+
+package(default_visibility = ["//visibility:private"])
+probe_test(name = "included_test", src = "included.sh", tags = ["armcitest", "selected"])
+probe_test(name = "filtered_test", src = "filtered.sh")
+EOF
+  for name in included filtered; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "members/$name.sh"
+    chmod +x "members/$name.sh"
+  done
+  cat > BUILD.bazel <<'EOF'
+test_suite(
+    name = "inner_suite",
+    tests = ["@suite_members//:included_test", "@suite_members//:filtered_test"],
+    tags = ["selected"],
+)
+test_suite(name = "outer_suite", tests = [":inner_suite"])
+filegroup(name = "unrelated")
+EOF
+  if bazel cquery --expand_test_suites //... > ordinary.out 2> "$TEST_log"; then
+    fail "Expected ordinary cquery to preserve private member visibility"
+  fi
+  expect_log 'Visibility error:'
+  # The receipt includes the worker RC sources.
+  echo 'common --color=no' >> .bazelrc
+  local -ar args=(
+    --experimental_generate_hashes --experimental_cquery_hash_top_level
+    --experimental_cquery_hash_stream_receipt
+    --invocation_id=22222222-2222-2222-2222-222222222222
+    --keep_going //...
+  )
+  bazel cquery "${args[@]}" > before.tsv 2> "$TEST_log" || fail "Expected suite hashes"
+  assert_contains "$(printf '^//:inner_suite\tnone\t[0-9a-f][0-9a-f]*\t$')" before.tsv
+  assert_contains "$(printf '^//:outer_suite\tnone\t[0-9a-f][0-9a-f]*\t$')" before.tsv
+  assert_not_contains '^@@suite_members' before.tsv
+  assert_contains '^# complete$' before.tsv
+
+  echo '# filtered source edit' >> members/filtered.sh
+  bazel cquery "${args[@]}" > filtered.tsv 2> "$TEST_log" || fail "Expected filtered suite hashes"
+  diff -u before.tsv filtered.tsv || fail "A filtered test changed the suite hashes"
+
+  cp BUILD.bazel before.BUILD
+  sed 's/tags = \["selected"\]/tags = ["selected", "armcitest"]/' before.BUILD > BUILD.bazel
+  bazel cquery "${args[@]}" > tagged.tsv 2> "$TEST_log" || fail "Expected tagged suite hashes"
+  if cmp -s <(grep '^//:inner_suite' before.tsv) <(grep '^//:inner_suite' tagged.tsv); then
+    fail "Expected a suite routing tag to affect its hash"
+  fi
+  diff -u <(grep -v '^//:inner_suite' before.tsv) <(grep -v '^//:inner_suite' tagged.tsv) \
+    || fail "A suite tag with unchanged membership changed other hashes"
+  sed 's/tags = \["selected"\]/tags = ["armcitest", "selected", "selected"]/' before.BUILD > BUILD.bazel
+  bazel cquery "${args[@]}" > normalized.tsv 2> "$TEST_log" || fail "Expected normalized suite tags"
+  diff -u tagged.tsv normalized.tsv || fail "Reordering and repeating suite tags changed hashes"
+  mv before.BUILD BUILD.bazel
+
+  echo '# included source edit' >> members/included.sh
+  bazel cquery "${args[@]}" > changed.tsv 2> "$TEST_log" || fail "Expected updated suite hashes"
+  for suite in inner_suite outer_suite; do
+    if cmp -s <(grep "^//:$suite" before.tsv) <(grep "^//:$suite" changed.tsv); then
+      fail "Expected the private test edit to affect $suite"
+    fi
+  done
+  assert_equals "$(grep '^//:unrelated' before.tsv)" "$(grep '^//:unrelated' changed.tsv)"
+
+  echo 'test_suite(name = "broken_inner", tests = [":missing_test"])' >> members/BUILD.bazel
+  cat >> BUILD.bazel <<'EOF'
+test_suite(name = "broken_outer", tests = ["@suite_members//:broken_inner", ":inner_suite"])
+EOF
+  if bazel cquery "${args[@]}" --experimental_cquery_rule_catalog=failed.catalog \
+      > failed.tsv 2> "$TEST_log"; then
+    fail "Expected the nested missing test to fail loading"
+  fi
+  expect_log "expecting a test or a test_suite rule but .*:missing_test"
+  assert_contains "$(printf '^//:broken_outer\tnone\t\t$')" failed.tsv
+  assert_contains '^# complete$' failed.tsv
+  diff -u changed.tsv <(grep -v '^//:broken_outer' failed.tsv) \
+    || fail "A broken suite changed other hash rows"
+  if bazel cquery "${args[@]}" --nokeep_going > fast-failed.tsv 2> "$TEST_log"; then
+    fail "Expected the nested missing test to fail fast"
+  fi
+  assert_not_contains '^# complete$' fast-failed.tsv
+  bazel query --output=streamed_jsonproto //... > expected.catalog 2> "$TEST_log" \
+    || fail "Expected the original targets to load"
+  cmp expected.catalog failed.catalog || fail "Expected a complete catalog after suite expansion failed"
+
+  mkdir invalid
+  echo '(' > invalid/BUILD.bazel
+  if bazel cquery "${args[@]}" --experimental_cquery_rule_catalog=invalid.catalog \
+      > invalid.tsv 2> "$TEST_log"; then
+    fail "Expected the invalid package to fail loading"
+  fi
+  expect_log "Skipping rule catalog because target loading failed"
+  [[ ! -e invalid.catalog ]] || fail "Unexpected catalog after target loading failed"
+  rm -r invalid
+
+  cat > BUILD.bazel <<'EOF'
+test_suite(name = "empty_suite", tests = ["@suite_members//:filtered_test"], tags = ["selected"])
+EOF
+  bazel cquery "${args[@]}" > empty.tsv 2> "$TEST_log" || fail "Expected an empty suite hash"
+  assert_contains "$(printf '^//:empty_suite\tnone\t[0-9a-f][0-9a-f]*\t$')" empty.tsv
+  assert_contains '^# complete$' empty.tsv
+}
+
 function test_exact_hash_roots_after_target_removal() {
   local -r pkg=$FUNCNAME
   mkdir -p "$pkg"

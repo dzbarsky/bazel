@@ -268,6 +268,7 @@ final class TargetPatternPhaseFunction implements SkyFunction {
 
     ImmutableMap.Builder<Label, ImmutableSet<Label>> testSuiteExpansions =
         ImmutableMap.builderWithExpectedSize(testExpansionKeys.size());
+    ImmutableSet.Builder<Label> failedTestSuiteExpansions = null;
     ImmutableSet<Label> selectedLabels = nonExpandedLabels;
     ResolvedTargets<Target> expandedTargets = targets;
     if (exactSelection == null) {
@@ -283,6 +284,12 @@ final class TargetPatternPhaseFunction implements SkyFunction {
           ResolvedTargets<Label> testExpansion = value.getLabels();
           expandedLabelsBuilder.merge(testExpansion);
           testSuiteExpansions.put(label, testExpansion.getTargets());
+          if (testExpansion.hasError()) {
+            if (failedTestSuiteExpansions == null) {
+              failedTestSuiteExpansions = ImmutableSet.builder();
+            }
+            failedTestSuiteExpansions.add(label);
+          }
         } else {
           expandedLabelsBuilder.add(label);
         }
@@ -314,11 +321,19 @@ final class TargetPatternPhaseFunction implements SkyFunction {
     }
     ImmutableSet<Label> removedTargetLabels =
         testSuiteTargets.stream().map(Target::getLabel).collect(ImmutableSet.toImmutableSet());
+    var suiteExpansions = testSuiteExpansions.buildOrThrow();
+    if (options.isCacheProbe()) {
+      suiteExpansions = filterSuiteExpansions(suiteExpansions, selectedLabels);
+    }
     TargetPatternPhaseValue result =
         new TargetPatternPhaseValue(
             selectedLabels,
             testsToRunLabels,
             Objects.equals(nonExpandedLabels, selectedLabels) ? selectedLabels : nonExpandedLabels,
+            suiteExpansions,
+            failedTestSuiteExpansions == null
+                ? ImmutableSet.of()
+                : failedTestSuiteExpansions.build(),
             targets.hasError(),
             expandedTargets.hasError());
 
@@ -335,9 +350,7 @@ final class TargetPatternPhaseFunction implements SkyFunction {
                     ? mapOriginalPatternsToLabels(expandedPatterns, targets.getTargets())
                     : exactSelection.mapPatternsToLabels(
                         options.getTargetPatterns(), nonExpandedLabels),
-                options.isCacheProbe()
-                    ? filterSuiteExpansions(testSuiteExpansions.buildOrThrow(), selectedLabels)
-                    : testSuiteExpansions.buildOrThrow()));
+                suiteExpansions));
     env.getListener()
         .post(
             new LoadingPhaseCompleteEvent(

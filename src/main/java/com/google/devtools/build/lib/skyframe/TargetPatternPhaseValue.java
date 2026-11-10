@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.skyframe;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
@@ -47,6 +48,8 @@ public final class TargetPatternPhaseValue implements SkyValue {
   private final ImmutableSet<Label> targetLabels;
   @Nullable private final ImmutableSet<Label> testsToRunLabels;
   private final ImmutableSet<Label> nonExpandedLabels;
+  private final ImmutableMap<Label, ImmutableSet<Label>> testSuiteExpansions;
+  private final ImmutableSet<Label> failedTestSuiteExpansions;
   private final boolean hasError;
   private final boolean hasPostExpansionError;
 
@@ -54,11 +57,15 @@ public final class TargetPatternPhaseValue implements SkyValue {
       ImmutableSet<Label> targetLabels,
       ImmutableSet<Label> testsToRunLabels,
       ImmutableSet<Label> nonExpandedLabels,
+      ImmutableMap<Label, ImmutableSet<Label>> testSuiteExpansions,
+      ImmutableSet<Label> failedTestSuiteExpansions,
       boolean hasError,
       boolean hasPostExpansionError) {
     this.targetLabels = targetLabels;
     this.testsToRunLabels = testsToRunLabels;
     this.nonExpandedLabels = nonExpandedLabels;
+    this.testSuiteExpansions = testSuiteExpansions;
+    this.failedTestSuiteExpansions = failedTestSuiteExpansions;
     this.hasError = hasError;
     this.hasPostExpansionError = hasPostExpansionError;
   }
@@ -90,6 +97,14 @@ public final class TargetPatternPhaseValue implements SkyValue {
 
   public ImmutableSet<Label> getNonExpandedLabels() {
     return nonExpandedLabels;
+  }
+
+  public ImmutableMap<Label, ImmutableSet<Label>> getTestSuiteExpansions() {
+    return testSuiteExpansions;
+  }
+
+  public ImmutableSet<Label> getFailedTestSuiteExpansions() {
+    return failedTestSuiteExpansions;
   }
 
   public ImmutableSet<Target> getTestsToRun(
@@ -126,6 +141,8 @@ public final class TargetPatternPhaseValue implements SkyValue {
     return Objects.equals(this.targetLabels, that.targetLabels)
         && Objects.equals(this.testsToRunLabels, that.testsToRunLabels)
         && this.nonExpandedLabels.equals(that.nonExpandedLabels)
+        && this.testSuiteExpansions.equals(that.testSuiteExpansions)
+        && this.failedTestSuiteExpansions.equals(that.failedTestSuiteExpansions)
         && this.hasError == that.hasError
         && this.hasPostExpansionError == that.hasPostExpansionError;
   }
@@ -136,6 +153,8 @@ public final class TargetPatternPhaseValue implements SkyValue {
         this.targetLabels,
         this.testsToRunLabels,
         this.nonExpandedLabels,
+        this.testSuiteExpansions,
+        this.failedTestSuiteExpansions,
         this.hasError,
         this.hasPostExpansionError);
   }
