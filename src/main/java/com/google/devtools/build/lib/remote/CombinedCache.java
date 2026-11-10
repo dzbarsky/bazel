@@ -272,11 +272,33 @@ public class CombinedCache extends AbstractReferenceCounted {
         downloadActionResultAsync(context, actionKey, inlineOutErr, inlineOutputFiles));
   }
 
+  CachedActionResult downloadRepoActionResult(
+      RemoteActionExecutionContext context, ActionKey actionKey, Set<String> inlineOutputFiles)
+      throws IOException, InterruptedException {
+    return getFromFuture(
+        downloadActionResultAsync(
+            context,
+            actionKey,
+            /* inlineOutErr= */ true,
+            inlineOutputFiles,
+            /* repoLookup= */ true));
+  }
+
   public ListenableFuture<CachedActionResult> downloadActionResultAsync(
       RemoteActionExecutionContext context,
       ActionKey actionKey,
       boolean inlineOutErr,
       Set<String> inlineOutputFiles) {
+    return downloadActionResultAsync(
+        context, actionKey, inlineOutErr, inlineOutputFiles, /* repoLookup= */ false);
+  }
+
+  private ListenableFuture<CachedActionResult> downloadActionResultAsync(
+      RemoteActionExecutionContext context,
+      ActionKey actionKey,
+      boolean inlineOutErr,
+      Set<String> inlineOutputFiles,
+      boolean repoLookup) {
     var spawnExecutionContext = context.getSpawnExecutionContext();
 
     ListenableFuture<CachedActionResult> future = immediateFuture(null);
@@ -287,7 +309,9 @@ public class CombinedCache extends AbstractReferenceCounted {
       }
       future =
           Futures.transform(
-              diskCacheClient.downloadActionResult(actionKey),
+              repoLookup
+                  ? diskCacheClient.downloadRepoActionResult(actionKey)
+                  : diskCacheClient.downloadActionResult(actionKey),
               CachedActionResult::disk,
               directExecutor());
     }
