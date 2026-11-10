@@ -88,6 +88,12 @@ public final class TargetPatternPhaseValue implements SkyValue {
     return getTargetsFromLabels(targetLabels, eventHandler, packageManager);
   }
 
+  /** Returns a view with different analysis roots and the same original loading result. */
+  public TargetPatternPhaseValue withTargetLabels(ImmutableSet<Label> labels) {
+    return new TargetPatternPhaseValue(
+        labels, testsToRunLabels, nonExpandedLabels, hasError, hasPostExpansionError);
+  }
+
   public ImmutableSet<Label> getNonExpandedLabels() {
     return nonExpandedLabels;
   }

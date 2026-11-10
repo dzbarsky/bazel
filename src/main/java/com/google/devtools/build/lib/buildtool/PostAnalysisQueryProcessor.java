@@ -202,11 +202,11 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
       }
     }
     var defaults = ImmutableList.<String>builder();
-    for (var override : client.getOptionsOverrides()) {
-      if (external.contains(override.getRcIndex())) {
-        defaults.add(override.getCommand(), override.getOption());
-      }
-    }
+    // The client sends command groups in arbitrary order. Preserve precedence within each group.
+    client.getOptionsOverrides().stream()
+        .filter(override -> external.contains(override.getRcIndex()))
+        .sorted(Comparator.comparing(ClientOptions.OptionOverride::getCommand))
+        .forEach(override -> defaults.add(override.getCommand(), override.getOption()));
     // Workspace defaults are versioned. Compare worker RC defaults and launcher choices
     // without exposing client environment or storing the option values in the receipt.
     var explicit =
