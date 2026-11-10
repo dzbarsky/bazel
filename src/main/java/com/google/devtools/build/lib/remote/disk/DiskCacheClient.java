@@ -241,15 +241,17 @@ public class DiskCacheClient {
   }
 
   /**
-   * Marks all of the blobs referenced by the {@link ActionResult} that exist as recently used.
+   * Refreshes the mtime of existing blobs selected from the {@link ActionResult}.
    *
-   * @param stopAtFirstMissing whether to return as soon as a referenced blob is found to be
-   *     missing, leaving the mtime of the remaining blobs untouched.
-   * @return whether all of the referenced blobs exist.
+   * <p>Repository lookups can defer directory leaves until they are read when the disk cache
+   * permits incomplete results. Strict integrity checking always examines the leaves.
+   *
+   * @return whether all blobs selected for refresh exist
    * @throws IOException if an I/O error other than a missing file occurs.
    */
-  private boolean refreshActionResult(ActionResult actionResult, boolean stopAtFirstMissing)
+  private boolean refreshActionResult(ActionResult actionResult, boolean repoLookup)
       throws IOException {
+    boolean stopAtFirstMissing = checkActionResultIntegrity;
     boolean allPresent = true;
 
     for (var outputFile : actionResult.getOutputFilesList()) {
@@ -267,6 +269,11 @@ public class DiskCacheClient {
           return false;
         }
         allPresent = false;
+        continue;
+      }
+
+      if (repoLookup && !stopAtFirstMissing) {
+        // Repository restores read the Tree and materialize file contents on demand.
         continue;
       }
 
@@ -309,19 +316,24 @@ public class DiskCacheClient {
   }
 
   public ListenableFuture<ActionResult> downloadActionResult(ActionKey actionKey) {
+    return downloadActionResult(actionKey, /* repoLookup= */ false);
+  }
+
+  public ListenableFuture<ActionResult> downloadRepoActionResult(ActionKey actionKey) {
+    return downloadActionResult(actionKey, /* repoLookup= */ true);
+  }
+
+  private ListenableFuture<ActionResult> downloadActionResult(
+      ActionKey actionKey, boolean repoLookup) {
     return Futures.transformAsync(
-        // Update the mtime on the action result itself before any of the blobs it references.
-        // This ensures that the blobs are always newer than the action result, so that trimming the
-        // cache in LRU order cannot create dangling references.
+        // Refresh the action result first so refreshed blobs are newer in LRU order.
         Utils.downloadAsActionResult(actionKey, (digest, out) -> download(digest, out, Store.AC)),
         actionResult -> {
           if (actionResult == null) {
             return immediateFuture(null);
           }
 
-          boolean allBlobsPresent =
-              refreshActionResult(
-                  actionResult, /* stopAtFirstMissing= */ checkActionResultIntegrity);
+          boolean allBlobsPresent = refreshActionResult(actionResult, repoLookup);
 
           if (checkActionResultIntegrity && !allBlobsPresent) {
             // If at least one of the referenced blobs is missing, consider the action result to be

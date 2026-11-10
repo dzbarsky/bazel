@@ -547,8 +547,7 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     // is an intermediate node, the full result will be contained in the stdout, which should thus
     // also be inlined.
     var cachedActionResult =
-        cache.downloadActionResult(
-            context, actionKey, /* inlineOutErr= */ true, ImmutableSet.of(MARKER_FILE_PATH));
+        cache.downloadRepoActionResult(context, actionKey, ImmutableSet.of(MARKER_FILE_PATH));
     if (cachedActionResult == null) {
       return new CacheEntry.Intermediate(ImmutableList.of());
     }
