@@ -110,6 +110,25 @@ public abstract class CqueryOptions extends CommonQueryOptions {
   public abstract String getRuleCatalogOutput();
 
   @Option(
+      name = "experimental_cquery_root_filter_file",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.AFFECTS_OUTPUTS},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "Skip a listed analysis root when the regular expression matches any part of an entry"
+              + " in its tags attribute. Requires a literal //... configured hash query with"
+              + " --experimental_cquery_rule_catalog and --experimental_cquery_hash_stream_receipt."
+              + " Read a UTF-8 file whose first line"
+              + " is '# bazel-cquery-root-filter-v1', a Java tag regex and an optional companion"
+              + " target-name suffix separated by tabs (keep the second tab for an empty suffix)."
+              + " Subsequent lines contain one canonical main-repository label each. When a"
+              + " companion rule exists, retain both it and the same-package rule named by"
+              + " removing its suffix. The catalog still lists every loaded rule. The catalog"
+              + " path plus '.omitted' contains the invocation, filter digest and omitted labels.")
+  public abstract String getRootFilterFile();
+
+  @Option(
       name = "experimental_cquery_hash_workers",
       converter = NonNegativeIntegerConverter.class,
       defaultValue = "1",

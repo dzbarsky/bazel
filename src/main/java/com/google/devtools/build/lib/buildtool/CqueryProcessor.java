@@ -13,12 +13,18 @@
 // limitations under the License.
 package com.google.devtools.build.lib.buildtool;
 
+import static com.google.devtools.build.lib.util.StringEncoding.internalToUnicode;
+
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
+import com.google.common.hash.Hashing;
+import com.google.common.hash.HashingInputStream;
 import com.google.devtools.build.lib.analysis.ConfiguredAspect;
 import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.concurrent.MoreFutures;
@@ -45,15 +51,26 @@ import com.google.devtools.build.lib.skyframe.TargetPatternPhaseValue;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.skyframe.WalkableGraph;
 import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+import javax.annotation.Nullable;
 import net.starlark.java.eval.StarlarkSemantics;
 
 /** Performs {@code cquery} processing. */
@@ -72,7 +89,7 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
   }
 
   @Override
-  public void afterTargetPatternLoading(
+  public TargetPatternPhaseValue afterTargetPatternLoading(
       BuildRequest request, CommandEnvironment env, TargetPatternPhaseValue loadingResult)
       throws InterruptedException, ViewCreationFailedException {
     CqueryOptions options = request.getOptions(CqueryOptions.class);
@@ -95,15 +112,27 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
       }
     }
     if (options.getRuleCatalogOutput().isEmpty()) {
-      return;
+      return loadingResult;
     }
+    boolean filterRoots = !options.getRootFilterFile().isEmpty();
     if (loadingResult.hasError() || loadingResult.hasPostExpansionError()) {
+      if (filterRoots) {
+        String message = "A cquery root filter requires successfully loaded targets";
+        throw new ViewCreationFailedException(
+            message,
+            FailureDetail.newBuilder()
+                .setMessage(message)
+                .setQuery(Query.newBuilder().setCode(Query.Code.BUILD_FILE_ERROR))
+                .build());
+      }
       env.getReporter().handle(Event.warn("Skipping rule catalog because target loading failed."));
-      return;
+      return loadingResult;
     }
     Path output = env.getWorkingDirectory().getRelative(options.getRuleCatalogOutput());
     try (var unused = Profiler.instance().profile("cquery.writeRuleCatalog")) {
-      writeRuleCatalog(env, options, loadingResult, output);
+      Path filterFile =
+          filterRoots ? env.getWorkingDirectory().getRelative(options.getRootFilterFile()) : null;
+      return writeRuleCatalog(env, options, loadingResult, output, filterFile);
     } catch (IOException | NoSuchTargetException e) {
       String message = "Error writing cquery rule catalog: " + e.getMessage();
       throw new ViewCreationFailedException(
@@ -115,15 +144,110 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
     }
   }
 
-  private void writeRuleCatalog(
+  private static Path omissionsPath(Path catalog) {
+    return catalog.getParentDirectory().getChild(catalog.getBaseName() + ".omitted");
+  }
+
+  /** Invocation-local filter constructed from the caller's candidate list and tag policy. */
+  private record RootFilter(
+      Set<String> candidates,
+      Pattern excludedTags,
+      String companionSuffix,
+      String inputDigest,
+      Set<String> protectedPeers,
+      Set<Label> omitted) {
+    private static RootFilter read(Path input) throws IOException {
+      try (var stream = new HashingInputStream(Hashing.sha256(), input.getInputStream());
+          var reader =
+              new BufferedReader(
+                  new InputStreamReader(stream, StandardCharsets.UTF_8.newDecoder()))) {
+        String header = reader.readLine();
+        String[] fields = header == null ? new String[0] : header.split("\t", -1);
+        if (fields.length != 3
+            || !fields[0].equals("# bazel-cquery-root-filter-v1")
+            || fields[1].isEmpty()) {
+          throw new IOException("Invalid cquery root filter header: " + input);
+        }
+        Pattern tags;
+        try {
+          tags = Pattern.compile(fields[1]);
+        } catch (PatternSyntaxException e) {
+          throw new IOException("Invalid cquery root filter tag regex", e);
+        }
+        var candidates = new HashSet<String>();
+        String line;
+        while ((line = reader.readLine()) != null) {
+          if (!line.startsWith("//") || !line.contains(":") || line.indexOf('\t') >= 0) {
+            throw new IOException("Expected a canonical main-repository label in " + input);
+          }
+          candidates.add(line);
+        }
+        return new RootFilter(
+            candidates,
+            tags,
+            fields[2],
+            stream.hash().toString(),
+            new HashSet<>(),
+            new LinkedHashSet<>());
+      }
+    }
+
+    private void consider(Label label, Rule rule) {
+      String canonical = internalToUnicode(label.getCanonicalForm());
+      String name = internalToUnicode(label.getName());
+      if (!companionSuffix.isEmpty() && name.endsWith(companionSuffix)) {
+        protectedPeers.add(canonical.substring(0, canonical.length() - companionSuffix.length()));
+      } else if (candidates.contains(canonical)) {
+        for (String tag : rule.getOnlyTagsAttribute()) {
+          if (excludedTags.matcher(internalToUnicode(tag)).find()) {
+            omitted.add(label);
+            break;
+          }
+        }
+      }
+    }
+
+    private TargetPatternPhaseValue finish(
+        TargetPatternPhaseValue loaded, Path proof, String invocation) throws IOException {
+      omitted.retainAll(loaded.getTargetLabels());
+      if (!protectedPeers.isEmpty()) {
+        omitted.removeIf(
+            label -> protectedPeers.contains(internalToUnicode(label.getCanonicalForm())));
+      }
+      try (var writer =
+          new BufferedWriter(
+              new OutputStreamWriter(proof.getOutputStream(), StandardCharsets.UTF_8))) {
+        writer.write("# bazel-cquery-root-omissions-v1\t" + invocation + "\t" + inputDigest + "\n");
+        for (Label label : omitted) {
+          writer.write(internalToUnicode(label.getCanonicalForm()));
+          writer.write('\n');
+        }
+        writer.write("# complete\n");
+      }
+      return omitted.isEmpty()
+          ? loaded
+          : loaded.withTargetLabels(
+              ImmutableSet.copyOf(Sets.difference(loaded.getTargetLabels(), omitted)));
+    }
+  }
+
+  private TargetPatternPhaseValue writeRuleCatalog(
       CommandEnvironment env,
       CqueryOptions options,
       TargetPatternPhaseValue loadingResult,
-      Path output)
+      Path output,
+      @Nullable Path filterFile)
       throws IOException, NoSuchTargetException, InterruptedException {
     Path parent = output.getParentDirectory();
     if (parent == null) {
       throw new IOException("Catalog output must be a file: " + output);
+    }
+    RootFilter filter = null;
+    if (filterFile != null) {
+      if (filterFile.equals(output) || filterFile.equals(omissionsPath(output))) {
+        throw new IOException("Root filter input must be different from the catalog outputs");
+      }
+      filter = RootFilter.read(filterFile);
     }
     var executor = env.getSkyframeExecutor();
     var starlarkSemantics =
@@ -173,6 +297,9 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
             if (!(pkg.getTarget(label.getName()) instanceof Rule rule)) {
               continue;
             }
+            if (filter != null) {
+              filter.consider(label, rule);
+            }
             if (pool == null) {
               formatter.writeTarget(rule, labelPrinter, out);
               continue;
@@ -210,7 +337,14 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
           }
         }
       }
+      if (filter != null) {
+        Path omissions = staging.getChild("omitted");
+        loadingResult = filter.finish(loadingResult, omissions, env.getCommandId().toString());
+        // Consumers can observe the catalog only after its omission proof is available.
+        omissions.renameTo(omissionsPath(output));
+      }
       temporary.renameTo(output);
+      return loadingResult;
     } finally {
       staging.deleteTree();
     }

@@ -226,6 +226,15 @@ public final class CqueryCommand implements BlazeCommand {
         }
       }
     }
+    if (!cqueryOptions.getRootFilterFile().isEmpty()
+        && (cqueryOptions.getRuleCatalogOutput().isEmpty()
+            || !cqueryOptions.getHashStreamReceipt())) {
+      String message =
+          "--experimental_cquery_root_filter_file requires --experimental_cquery_rule_catalog"
+              + " and --experimental_cquery_hash_stream_receipt";
+      env.getReporter().handle(Event.error(message));
+      return createFailureResult(message, Code.FILTERS_NOT_SUPPORTED);
+    }
     if (!cqueryOptions.getRuleCatalogOutput().isEmpty()) {
       LoadingOptions loading = options.getOptions(LoadingOptions.class);
       if (!cqueryOptions.useTopLevelHashOutput()

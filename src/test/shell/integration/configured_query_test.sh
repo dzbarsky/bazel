@@ -2312,4 +2312,77 @@ EOF
   assert_not_contains "^# complete$" missing.tsv
 }
 
+function test_configured_hash_root_filter_rotates_on_warm_server() {
+  local workspace
+  workspace=$(mktemp -d "$TEST_TMPDIR/root_filter.XXXXXXXX")
+  workspaces+=("$workspace")
+  cd "$workspace"
+  setup_module_dot_bazel >/dev/null
+
+  cat > defs.bzl <<'EOF'
+def _impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(out, "#!/bin/sh\n", is_executable = True)
+    return [DefaultInfo(executable = out)]
+
+simple_test = rule(implementation = _impl, test = True)
+EOF
+  cat > BUILD.bazel <<'EOF'
+load(":defs.bzl", "simple_test")
+
+simple_test(name = "ordinary_test", size = "small")
+filegroup(name = "keep", srcs = [":dependency"])
+filegroup(name = "dependency", srcs = ["tracked.txt"], tags = ["manual"])
+filegroup(name = "new", tags = ["manual"])
+filegroup(name = "image", tags = ["manual"])
+filegroup(name = "image.publish", tags = ["manual"])
+EOF
+  echo initial > tracked.txt
+  local -r filter="$PWD/filter"
+  printf '# bazel-cquery-root-filter-v1\t^(manual|small)$\t.publish\n' > "$filter"
+  printf '%s\n' //:dependency //:image //:image.publish //:ordinary_test >> "$filter"
+  local -r invocation=11111111-1111-1111-1111-111111111111
+  local -ar common=(
+    --experimental_generate_hashes --experimental_cquery_hash_top_level
+    --experimental_cquery_hash_stream_receipt --build_manual_tests
+    --noallow_analysis_cache_discard --noline_terminator_null
+    --proto:output_rule_attrs=tags --invocation_id="$invocation"
+  )
+  bazel cquery "${common[@]}" --experimental_cquery_rule_catalog="$PWD/full.jsonl" //... \
+    > full.tsv 2> "$TEST_log" || fail "Unfiltered cquery failed"
+  local server_pid
+  server_pid=$(bazel info server_pid 2> "$TEST_log") || fail "Missing server PID"
+  local -ar scope=(
+    --experimental_cquery_rule_catalog="$PWD/scoped.jsonl"
+    --experimental_cquery_root_filter_file="$filter"
+  )
+  bazel cquery "${common[@]}" "${scope[@]}" //... > first.tsv 2> "$TEST_log" \
+    || fail "Filtered cquery failed"
+  diff -u full.jsonl scoped.jsonl || fail "Filtering changed the catalog"
+  grep -v $'^//:dependency\t' full.tsv > expected
+  diff -u expected first.tsv || fail "Filtering changed retained rows"
+  local -r proof=scoped.jsonl.omitted
+  local -r header=$(printf '^# bazel-cquery-root-omissions-v1\t%s\t[0-9a-f]\{64\}$' "$invocation")
+  assert_contains "$header" "$proof"
+  assert_contains $'^//:ordinary_test\t' first.tsv
+  printf '%s\n' //:dependency '# complete' > expected
+  tail -n +2 "$proof" | diff -u expected - || fail "Incorrect omissions"
+
+  echo //:new >> "$filter"
+  bazel cquery "${common[@]}" "${scope[@]}" //... > rotated.tsv 2> "$TEST_log" \
+    || fail "Rotated cquery failed"
+  grep -v $'^//:new\t' first.tsv > expected
+  diff -u expected rotated.tsv || fail "Rotated filter changed retained rows"
+  assert_contains '^//:new$' "$proof"
+  assert_equals "$server_pid" "$(bazel info server_pid 2> "$TEST_log")"
+
+  echo edited > tracked.txt
+  bazel cquery "${common[@]}" "${scope[@]}" //... > edited.tsv 2> "$TEST_log" \
+    || fail "Edited cquery failed"
+  assert_not_contains $'^//:dependency\t' edited.tsv
+  assert_contains $'^//:keep\t' edited.tsv
+  [[ "$(grep $'^//:keep\t' rotated.tsv)" != "$(grep $'^//:keep\t' edited.tsv)" ]] \
+    || fail "Transitive edit did not change the retained hash"
+}
+
 run_suite "${PRODUCT_NAME} configured query tests"
