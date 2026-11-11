@@ -335,6 +335,53 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
   protected MemoizingEvaluator memoizingEvaluator;
+  @Nullable private volatile CqueryHashReceipt cqueryHashReceipt;
+
+  private record CqueryHashReceipt(
+      MemoizingEvaluator evaluator, ImmutableSet<SkyFunctionName> digestFunctions, Object proof) {}
+
+  @Nullable
+  public Object getCqueryHashReceipt() {
+    var receipt = cqueryHashReceipt;
+    return receipt != null
+            && receipt.evaluator() == memoizingEvaluator
+            && supportsCqueryHashReceipt()
+        ? receipt.proof()
+        : null;
+  }
+
+  public void setCqueryHashReceipt(ImmutableSet<SkyFunctionName> digestFunctions, Object proof) {
+    if (supportsCqueryHashReceipt()) {
+      cqueryHashReceipt = new CqueryHashReceipt(memoizingEvaluator, digestFunctions, proof);
+    }
+  }
+
+  private boolean supportsCqueryHashReceipt() {
+    return tracksStateForIncrementality()
+        && !heuristicallyDropNodes
+        && !remoteAnalysisCacheReaderDepsProvider.mode().isRetrievalEnabled()
+        && !remoteAnalysisCachingDependenciesProvider.mode().serializesValues();
+  }
+
+  private void invalidateCqueryHashReceipt(SkyKey key, @Nullable DirtyType dirtyType) {
+    var receipt = cqueryHashReceipt;
+    if (receipt != null
+        && (isAnalysisPhaseKey(key)
+            || key.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION)
+            || key.functionName().equals(GenQueryPackageProviderFactory.GENQUERY_SCOPE)
+            || receipt.digestFunctions().contains(key.functionName()))) {
+      if (dirtyType == DirtyType.DIRTY && key instanceof ConfiguredTargetKey) {
+        // A transitively dirtied failed target had no value to contribute to the receipt.
+        // The evaluated callback invalidates the receipt if that target recovers.
+        var entry = receipt.evaluator().getInMemoryGraph().getIfPresent(key);
+        if (entry != null && entry.toValue() == null) {
+          return;
+        }
+      }
+      cqueryHashReceipt = null;
+    }
+  }
+
   private final EmittedEventState emittedEventState = new EmittedEventState();
   protected final PackageFactory pkgFactory;
   private final WorkspaceStatusAction.Factory workspaceStatusActionFactory;
@@ -576,6 +623,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       RemoteAnalysisCacheReaderDepsProvider remoteAnalysisCacheReaderDepsProvider) {
     this.remoteAnalysisCachingDependenciesProvider = remoteAnalysisCachingDependenciesProvider;
     this.remoteAnalysisCacheReaderDepsProvider = remoteAnalysisCacheReaderDepsProvider;
+    if (!supportsCqueryHashReceipt()) {
+      cqueryHashReceipt = null;
+    }
   }
 
   public RemoteAnalysisCachingServerState getRemoteAnalysisCachingState() {
@@ -1262,6 +1312,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
 
   /** Reinitializes the Skyframe evaluator, dropping all previously computed values. */
   public void resetEvaluator() {
+    cqueryHashReceipt = null;
     analysisCount.set(0);
     emittedEventState.clear();
     skyframeBuildView.reset();
@@ -1302,6 +1353,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
 
   /** Clear any configured target data stored outside Skyframe. */
   public void handleAnalysisInvalidatingChange() {
+    cqueryHashReceipt = null;
     logger.atInfo().log("Dropping configured target data");
     analysisCacheInvalidated = true;
     skyframeBuildView.clearInvalidatedActionLookupKeys();
@@ -1420,6 +1472,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       ImmutableSet<ConfiguredTarget> topLevelTargets,
       ImmutableSet<AspectKey> topLevelAspects,
       DiscardType discardType) {
+    cqueryHashReceipt = null;
     // This is to prevent throwing away Packages we may need during execution.
     ImmutableSet.Builder<PackageIdentifier> packageSetBuilder = ImmutableSet.builder();
     if (discardType.discardsLoading()) {
@@ -1590,6 +1643,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
   // VisibleForTesting but open-source annotation doesn't have productionVisibility option.
   public final void clearAnalysisCache(
       ImmutableSet<ConfiguredTarget> topLevelTargets, ImmutableSet<AspectKey> topLevelAspects) {
+    cqueryHashReceipt = null;
     this.analysisCacheCleared = true;
     clearAnalysisCacheImpl(topLevelTargets, topLevelAspects);
   }
@@ -3683,6 +3737,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
 
     @Override
     public void dirtied(SkyKey skyKey, DirtyType dirtyType) {
+      invalidateCqueryHashReceipt(skyKey, dirtyType);
       if (ignoreInvalidations) {
         return;
       }
@@ -3694,6 +3749,7 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
 
     @Override
     public void deleted(SkyKey skyKey) {
+      invalidateCqueryHashReceipt(skyKey, null);
       if (ignoreInvalidations) {
         return;
       }
@@ -3732,6 +3788,9 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         @Nullable SkyValue newValue,
         @Nullable ErrorInfo newError,
         @Nullable GroupedDeps directDeps) {
+      if (cqueryHashReceipt != null && newValue != null && skyKey instanceof ConfiguredTargetKey) {
+        cqueryHashReceipt = null;
+      }
       if (heuristicallyDropNodes) {
         Object argument = skyKey.argument();
         if (skyKey.functionName().equals(SkyFunctions.FILE)) {

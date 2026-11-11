@@ -97,6 +97,18 @@ public abstract class CqueryOptions extends CommonQueryOptions {
   public abstract boolean getHashStreamReceipt();
 
   @Option(
+      name = "experimental_cquery_hash_reuse_from",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "With a whole-workspace hash stream receipt, use the v2 stream. Pass 'seed' for a full"
+              + " stream, or the SHA-256 of a previously verified complete v2 body. A reuse"
+              + " response refers to that body. Its catalog and analysis status are current.")
+  public abstract String getHashReuseFrom();
+
+  @Option(
       name = "experimental_cquery_rule_catalog",
       defaultValue = "",
       documentationCategory = OptionDocumentationCategory.QUERY,

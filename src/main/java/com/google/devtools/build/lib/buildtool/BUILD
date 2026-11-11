@@ -258,6 +258,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/query2/common:options",
         "//src/main/java/com/google/devtools/build/lib/query2/engine",
         "//src/main/java/com/google/devtools/build/lib/query2/query/aspectresolvers",
+        "//src/main/java/com/google/devtools/build/lib/query2/query/hash",
         "//src/main/java/com/google/devtools/build/lib/query2/query/output",
         "//src/main/java/com/google/devtools/build/lib/runtime:blaze_command_cluster",
         "//src/main/java/com/google/devtools/build/lib/runtime:blaze_command_result",

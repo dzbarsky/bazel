@@ -2312,4 +2312,66 @@ EOF
   assert_not_contains "^# complete$" missing.tsv
 }
 
+function test_whole_workspace_hash_receipt_retries_failed_target() {
+  local -r pkg=$FUNCNAME
+  mkdir -p "$pkg"
+  cat >> MODULE.bazel <<EOF
+hash_receipt_local = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
+hash_receipt_local(
+    name = "hash_receipt_retry_source",
+    path = "$pkg/repo_source",
+    build_file_content = 'exports_files(["schema.txt"])',
+)
+EOF
+  cat > "$pkg/BUILD" <<'EOF'
+filegroup(name = "stable")
+filegroup(name = "retry", srcs = ["@hash_receipt_retry_source//:schema.txt"])
+EOF
+  echo "common --color=no" >> .bazelrc
+  local -a args=(
+    --keep_going
+    --experimental_generate_hashes
+    --experimental_cquery_hash_top_level
+    --experimental_cquery_hash_stream_receipt
+    --noline_terminator_null
+  )
+
+  if bazel cquery "${args[@]}" //... > v1.tsv 2> "$TEST_log"; then
+    fail "Expected the missing repository to fail analysis"
+  fi
+  assert_contains "^# bazel-configured-root-hashes-v1" v1.tsv
+  assert_equals "# complete" "$(tail -n 1 v1.tsv)"
+
+  if bazel cquery "${args[@]}" --experimental_cquery_hash_reuse_from=seed //... \
+      > seed.tsv 2> "$TEST_log"; then
+    fail "Expected the missing repository to fail analysis"
+  fi
+  assert_contains "^# bazel-configured-root-hashes-v2" seed.tsv
+  assert_contains "^# receipt" seed.tsv
+  local token
+  token=$(tail -n 1 seed.tsv | cut -f2)
+  [[ "$token" =~ ^[0-9a-f]{64}$ ]] || fail "Expected a SHA-256 receipt"
+  sed '1d;$d' seed.tsv > v2.body
+  tail -n +2 v1.tsv > v1.body
+  diff -u v1.body v2.body || fail "Expected the same rows and completion marker"
+
+  local stage
+  for stage in first_repeat settled; do
+    if bazel cquery "${args[@]}" "--experimental_cquery_hash_reuse_from=$token" //... \
+        > "$stage.tsv" 2> "$TEST_log"; then
+      fail "Expected analysis to report the missing repository again"
+    fi
+  done
+  assert_contains "$(printf '^# reused\t%s$' "$token")" settled.tsv
+  assert_equals "# complete" "$(tail -n 1 settled.tsv)"
+
+  mkdir "$pkg/repo_source"
+  echo schema > "$pkg/repo_source/schema.txt"
+  bazel cquery "${args[@]}" "--experimental_cquery_hash_reuse_from=$token" //... \
+      > recovered.tsv 2> "$TEST_log" || fail "Expected the repository to recover"
+  assert_contains "$(printf '^//%s:retry\t' "$pkg")" recovered.tsv
+  assert_contains "^# receipt" recovered.tsv
+  assert_not_contains "^# reused" recovered.tsv
+}
+
 run_suite "${PRODUCT_NAME} configured query tests"
