@@ -55,7 +55,8 @@ public class ConfiguredTargetQueryHelper extends PostAnalysisQueryHelper<CqueryN
         () -> walkableGraph,
         this.settings,
         null,
-        LabelPrinter.legacy());
+        LabelPrinter.legacy(),
+        ConfiguredTargetQueryEnvironment.TestSuiteHashInputs.EMPTY);
   }
 
   @Override

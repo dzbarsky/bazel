@@ -100,11 +100,26 @@ public final class CqueryCommand implements BlazeCommand {
           PriorityCategory.COMPUTED_DEFAULT,
           "cquery should include 'tags = [\"manual\"]' targets by default",
           ImmutableList.of("--build_manual_tests"));
+      var buildOptions = optionsParser.getOptions(BuildRequestOptions.class);
+      var loadingOptions = optionsParser.getOptions(LoadingOptions.class);
+      // The literal native hash scope can hash suites through the actual tests Bazel builds.
+      // General cquery still queries configured suite rules (see issue #11078).
+      boolean hashExpandedSuites =
+          cqueryOptions.useTopLevelHashOutput()
+              && optionsParser.getResidue().equals(ImmutableList.of("//..."))
+              && cqueryOptions.getQueryFile().isEmpty()
+              && cqueryOptions.getUniverseScope().isEmpty()
+              && buildOptions.getPerformAnalysisPhase()
+              && buildOptions.getTargetPatternFile().isEmpty()
+              && buildOptions.getTargetQuery().isEmpty()
+              && buildOptions.getTargetQueryFile().isEmpty()
+              && optionsParser.getOptions(ExecutionOptions.class).getCacheProbeOutput() == null
+              && loadingOptions.getBuildTagFilterList().isEmpty()
+              && !loadingOptions.getCompileOneDependency();
       optionsParser.parse(
           PriorityCategory.SOFTWARE_REQUIREMENT,
-          // https://github.com/bazelbuild/bazel/issues/11078
-          "cquery should not exclude test_suite rules",
-          ImmutableList.of("--noexpand_test_suites"));
+          "Loading mode for the cquery scope",
+          ImmutableList.of(hashExpandedSuites ? "--expand_test_suites" : "--noexpand_test_suites"));
       if (cqueryOptions.getShowRequiredConfigFragments() != IncludeConfigFragmentsEnum.OFF) {
         optionsParser.parse(
             PriorityCategory.COMPUTED_DEFAULT,

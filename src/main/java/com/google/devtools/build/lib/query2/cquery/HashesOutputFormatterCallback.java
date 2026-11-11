@@ -40,6 +40,8 @@ import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.query2.PostAnalysisQueryEnvironment.TopLevelConfigurations;
 import com.google.devtools.build.lib.query2.SkyQueryEnvironment;
 import com.google.devtools.build.lib.query2.common.CqueryNode;
+import com.google.devtools.build.lib.query2.cquery.ConfiguredTargetQueryEnvironment.TestSuiteHashInputs;
+import com.google.devtools.build.lib.query2.cquery.ConfiguredTargetQueryEnvironment.TestSuiteHashInputs.Suite;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.TargetAccessor;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.query.hash.DirectTargetHashFunction;
@@ -110,6 +112,7 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
   private final LabelPrinter labelPrinter;
   private final boolean keepGoing;
   private final ImmutableMap<String, String> clientEnvironment;
+  private final TestSuiteHashInputs testSuites;
   // Scoped to this command. Configured target and action keys remain unchanged.
   private final Map<BuildOptions, EnvironmentChecksums> environmentChecksums =
       new ConcurrentHashMap<>();
@@ -124,7 +127,8 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       @Nullable TopLevelConfigurations topLevelConfigurations,
       LabelPrinter labelPrinter,
       boolean keepGoing,
-      ImmutableMap<String, String> clientEnvironment) {
+      ImmutableMap<String, String> clientEnvironment,
+      TestSuiteHashInputs testSuites) {
     super(eventHandler, options, out, skyframeExecutor, accessor, /* uniquifyResults= */ false);
     this.skyframeExecutor = skyframeExecutor;
     this.depsRetriever = depsRetriever;
@@ -132,6 +136,7 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
     this.labelPrinter = labelPrinter;
     this.keepGoing = keepGoing;
     this.clientEnvironment = clientEnvironment;
+    this.testSuites = testSuites;
   }
 
   @Override
@@ -237,11 +242,34 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
       throw collision.getCause();
     }
     try (var ignored = Profiler.instance().profile("CQHASH emit")) {
+      Map<Label, HashTarget> suiteMembers = new HashMap<>();
+      Set<Label> ambiguousSuiteMembers = new HashSet<>();
+      for (var suite : testSuites.suites().values()) {
+        for (Label member : suite.members()) {
+          suiteMembers.put(member, null);
+        }
+      }
       for (HashTarget target : roots) {
         CqueryNode root = target.node;
         byte[] hash = target.hash;
         if (topLevelConfigurations != null) {
-          writeTopLevelRow(root, hash);
+          Label label = root.getOriginalLabel();
+          if (!testSuites.suites().isEmpty()) {
+            if (suiteMembers.containsKey(label)
+                && suiteMembers.putIfAbsent(label, target) != null) {
+              // A suite has no unique top-level configuration for this member.
+              ambiguousSuiteMembers.add(label);
+            }
+            if (testSuites.expansionOnlyMembers().contains(label)) {
+              continue;
+            }
+          }
+          CqueryNode actual = root.getActual();
+          writeTopLevelRow(
+              label,
+              root.getConfigurationChecksum(),
+              hash,
+              actual == root ? null : actual.getLabel());
           continue;
         }
         if (hash == null) {
@@ -258,6 +286,14 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
             .append(BaseEncoding.base16().lowerCase().encode(hash))
             .append(options.getLineTerminator());
       }
+      for (var entry : testSuites.suites().entrySet()) {
+        Label suite = entry.getKey();
+        writeTopLevelRow(
+            suite,
+            null,
+            hashSuite(suite, entry.getValue(), suiteMembers, ambiguousSuiteMembers),
+            null);
+      }
       // Keep-going reports individual failed digests as blank rows and still completes the
       // stream. Fail-fast returns before emitting any rows or the completion marker.
       if (options.getHashStreamReceipt()) {
@@ -267,17 +303,43 @@ class HashesOutputFormatterCallback extends CqueryThreadsafeCallback {
     }
   }
 
-  private void writeTopLevelRow(CqueryNode root, @Nullable byte[] hash) throws IOException {
-    String checksum = root.getConfigurationChecksum();
-    CqueryNode actual = root.getActual();
+  @Nullable
+  private static byte[] hashSuite(
+      Label suite,
+      Suite expansion,
+      Map<Label, HashTarget> memberRoots,
+      Set<Label> ambiguousMembers) {
+    if (expansion.hasError()) {
+      return null;
+    }
+    var fingerprint =
+        new Fingerprint().addString("test suite v1").addString(suite.getCanonicalForm());
+    fingerprint.addInt(expansion.tags().size());
+    for (String tag : expansion.tags()) {
+      fingerprint.addString(tag);
+    }
+    fingerprint.addInt(expansion.members().size());
+    for (Label member : expansion.members().stream().sorted().toList()) {
+      HashTarget target = memberRoots.get(member);
+      if (target == null || target.hash == null || ambiguousMembers.contains(member)) {
+        return null;
+      }
+      fingerprint.addString(member.getCanonicalForm()).addBytes(target.hash);
+    }
+    return fingerprint.digestAndReset();
+  }
+
+  private void writeTopLevelRow(
+      Label label, @Nullable String checksum, @Nullable byte[] hash, @Nullable Label actual)
+      throws IOException {
     printStream
-        .append(internalToUnicode(root.getOriginalLabel().getCanonicalForm()))
+        .append(internalToUnicode(label.getCanonicalForm()))
         .append('\t')
         .append(checksum == null ? "none" : checksum)
         .append('\t')
         .append(hash == null ? "" : BaseEncoding.base16().lowerCase().encode(hash))
         .append('\t')
-        .append(actual == root ? "" : internalToUnicode(actual.getLabel().getCanonicalForm()))
+        .append(actual == null ? "" : internalToUnicode(actual.getCanonicalForm()))
         .append(options.getLineTerminator());
   }
 

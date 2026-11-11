@@ -16,9 +16,12 @@ package com.google.devtools.build.lib.buildtool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedMap;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.devtools.build.lib.analysis.ConfiguredAspect;
 import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.concurrent.MoreFutures;
@@ -32,6 +35,8 @@ import com.google.devtools.build.lib.query2.PostAnalysisQueryEnvironment.TopLeve
 import com.google.devtools.build.lib.query2.common.CommonQueryOptions;
 import com.google.devtools.build.lib.query2.common.CqueryNode;
 import com.google.devtools.build.lib.query2.cquery.ConfiguredTargetQueryEnvironment;
+import com.google.devtools.build.lib.query2.cquery.ConfiguredTargetQueryEnvironment.TestSuiteHashInputs;
+import com.google.devtools.build.lib.query2.cquery.ConfiguredTargetQueryEnvironment.TestSuiteHashInputs.Suite;
 import com.google.devtools.build.lib.query2.cquery.CqueryOptions;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
@@ -60,6 +65,8 @@ import net.starlark.java.eval.StarlarkSemantics;
 public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode> {
   private static final int CATALOG_CHUNK_SIZE = 128;
   private static final int CATALOG_CHUNK_MEMORY_LIMIT = 1 << 20;
+
+  private TestSuiteHashInputs testSuites = TestSuiteHashInputs.EMPTY;
 
   public CqueryProcessor(
       QueryExpression queryExpression, TargetPattern.Parser mainRepoTargetParser) {
@@ -94,10 +101,45 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
                 .build());
       }
     }
+    if (!loadingResult.getTestSuiteExpansions().isEmpty()) {
+      var originalRoots = loadingResult.getNonExpandedLabels();
+      var failedSuites = loadingResult.getFailedTestSuiteExpansions();
+      if (!request.getKeepGoing() && !failedSuites.isEmpty()) {
+        String message = "Failed to expand test suites for cquery hashing";
+        throw new ViewCreationFailedException(
+            message,
+            FailureDetail.newBuilder()
+                .setMessage(message)
+                .setQuery(Query.newBuilder().setCode(Query.Code.BUILD_FILE_ERROR))
+                .build());
+      }
+      var memberships = ImmutableSortedMap.<Label, Suite>naturalOrder();
+      var expansionOnlyMembers = ImmutableSet.<Label>builder();
+      var executor = env.getSkyframeExecutor();
+      for (var entry : loadingResult.getTestSuiteExpansions().entrySet()) {
+        Label label = entry.getKey();
+        var pkg = executor.getExistingPackage(label.getPackageIdentifier());
+        var rule = pkg == null ? null : pkg.getRule(label.getName());
+        var tags =
+            rule == null
+                ? ImmutableSortedSet.<String>of()
+                : ImmutableSortedSet.copyOf(rule.getRuleTags());
+        memberships.put(
+            label, new Suite(entry.getValue(), tags, rule == null || failedSuites.contains(label)));
+        for (Label member : entry.getValue()) {
+          if (!originalRoots.contains(member)) {
+            expansionOnlyMembers.add(member);
+          }
+        }
+      }
+      testSuites =
+          new TestSuiteHashInputs(memberships.buildOrThrow(), expansionOnlyMembers.build());
+    }
     if (options.getRuleCatalogOutput().isEmpty()) {
       return;
     }
-    if (loadingResult.hasError() || loadingResult.hasPostExpansionError()) {
+    // The catalog uses the original targets, before expanding test suites.
+    if (loadingResult.hasError()) {
       env.getReporter().handle(Event.warn("Skipping rule catalog because target loading failed."));
       return;
     }
@@ -300,6 +342,7 @@ public final class CqueryProcessor extends PostAnalysisQueryProcessor<CqueryNode
         request.getTopLevelArtifactContext(),
         request
             .getOptions(CqueryOptions.class)
-            .getLabelPrinter(starlarkSemantics, mainRepoTargetParser.getRepoMapping()));
+            .getLabelPrinter(starlarkSemantics, mainRepoTargetParser.getRepoMapping()),
+        testSuites);
   }
 }

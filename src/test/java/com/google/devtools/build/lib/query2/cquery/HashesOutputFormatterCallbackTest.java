@@ -184,7 +184,8 @@ public class HashesOutputFormatterCallbackTest extends ConfiguredTargetQueryTest
             /* topLevelConfigurations= */ null,
             LabelPrinter.legacy(),
             /* keepGoing= */ false,
-            /* clientEnvironment= */ ImmutableMap.of());
+            /* clientEnvironment= */ ImmutableMap.of(),
+            ConfiguredTargetQueryEnvironment.TestSuiteHashInputs.EMPTY);
     env.evaluateQuery(expression, callback);
     Map<String, String> hashes = new LinkedHashMap<>();
     for (String line : output.toString().split("\n")) {
