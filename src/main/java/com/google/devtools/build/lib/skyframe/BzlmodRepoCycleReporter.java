@@ -119,6 +119,7 @@ public class BzlmodRepoCycleReporter implements CyclesReporter.SingleCycleReport
                 IS_REPO_DEFINITION,
                 SkyFunctions.isSkyFunction(SkyFunctions.EXTENSION_REPO_SPEC),
                 SkyFunctions.isSkyFunction(SkyFunctions.ROOT_REPO_DEFINITION_INPUTS),
+                SkyFunctions.isSkyFunction(SkyFunctions.ROOT_REPO_DEFINITION),
                 SkyFunctions.isSkyFunction(SkyFunctions.RESOLVED_REPO_DEFINITION_INPUTS),
                 SkyFunctions.isSkyFunction(SkyFunctions.RESOLVED_REPO_DEFINITION),
                 IS_EXTENSION_IMPL,

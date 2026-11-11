@@ -168,6 +168,8 @@ public final class SkyFunctions {
       SkyFunctionName.createHermetic("BAZEL_DEP_GRAPH");
   public static final SkyFunctionName ROOT_REPO_DEFINITION_INPUTS =
       SkyFunctionName.createHermetic("ROOT_REPO_DEFINITION_INPUTS");
+  public static final SkyFunctionName ROOT_REPO_DEFINITION =
+      SkyFunctionName.createHermetic("ROOT_REPO_DEFINITION");
   public static final SkyFunctionName RESOLVED_REPO_DEFINITION_INPUTS =
       SkyFunctionName.createHermetic("RESOLVED_REPO_DEFINITION_INPUTS");
   public static final SkyFunctionName RESOLVED_REPO_DEFINITION =

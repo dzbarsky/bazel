@@ -40,11 +40,12 @@ final class RepoDefinitionInputs {
   @SerializationConstant
   static final SkyKey RESOLVED_KEY = () -> SkyFunctions.RESOLVED_REPO_DEFINITION_INPUTS;
 
-  record NonRegistryRepo(@Nullable String apparentName, RepoSpec spec) {}
-
   record Root(
-      RepositoryMapping basicMainRepoMapping,
-      ImmutableMap<RepositoryName, NonRegistryRepo> nonRegistryOverrides)
+      RootRepo defaultRepo, ImmutableMap<RepositoryName, RootRepo> nonRegistryOverrides)
+      implements SkyValue {}
+
+  record RootRepo(
+      RepositoryMapping basicMainRepoMapping, @Nullable String apparentName, @Nullable RepoSpec spec)
       implements SkyValue {}
 
   record Resolved(
@@ -85,6 +86,26 @@ final class RepoDefinitionInputs {
     }
   }
 
+  @AutoCodec
+  record RootRepoKey(RepositoryName name) implements SkyKey {
+    private static final SkyKeyInterner<RootRepoKey> interner = SkyKey.newInterner();
+
+    @AutoCodec.Instantiator
+    static RootRepoKey create(RepositoryName name) {
+      return interner.intern(new RootRepoKey(name));
+    }
+
+    @Override
+    public SkyFunctionName functionName() {
+      return SkyFunctions.ROOT_REPO_DEFINITION;
+    }
+
+    @Override
+    public SkyKeyInterner<RootRepoKey> getSkyKeyInterner() {
+      return interner;
+    }
+  }
+
   // Non-registry override repos can be needed during module resolution, so the root inputs must
   // be available without the resolved module graph.
   @Nullable
@@ -102,7 +123,7 @@ final class RepoDefinitionInputs {
                 .put(root.module().getRepoName(), RepositoryName.MAIN)
                 .buildKeepingLast(),
             RepositoryName.MAIN);
-    var overrides = ImmutableMap.<RepositoryName, NonRegistryRepo>builder();
+    var overrides = ImmutableMap.<RepositoryName, RootRepo>builder();
     root.nonRegistryOverrideCanonicalRepoToModuleName()
         .forEach(
             (canonicalName, moduleName) -> {
@@ -113,11 +134,22 @@ final class RepoDefinitionInputs {
               var override = (NonRegistryOverride) root.overrides().get(moduleName);
               overrides.put(
                   canonicalName,
-                  new NonRegistryRepo(
+                  new RootRepo(
+                      basicMainRepoMapping,
                       root.nonRegistryOverrideModuleToRepoName().get(moduleName),
                       override.repoSpec()));
             });
-    return new Root(basicMainRepoMapping, overrides.buildOrThrow());
+    return new Root(new RootRepo(basicMainRepoMapping, null, null), overrides.buildOrThrow());
+  }
+
+  // A root override only affects the repository whose canonical name it matches.
+  @Nullable
+  static RootRepo computeRootRepo(SkyKey key, SkyFunction.Environment env)
+      throws InterruptedException {
+    var root = (Root) env.getValue(ROOT_KEY);
+    return root == null
+        ? null
+        : root.nonRegistryOverrides().getOrDefault(((RootRepoKey) key).name(), root.defaultRepo());
   }
 
   @Nullable

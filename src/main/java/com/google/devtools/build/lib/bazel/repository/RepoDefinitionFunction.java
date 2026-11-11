@@ -24,6 +24,7 @@ import com.google.devtools.build.lib.bazel.bzlmod.NonRegistryOverride;
 import com.google.devtools.build.lib.bazel.bzlmod.RepoRuleId;
 import com.google.devtools.build.lib.bazel.bzlmod.RepoSpec;
 import com.google.devtools.build.lib.bazel.repository.RepoDefinitionInputs.ResolvedRepo;
+import com.google.devtools.build.lib.bazel.repository.RepoDefinitionInputs.RootRepo;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
@@ -42,7 +43,6 @@ import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.util.Map;
-import java.util.Optional;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkThread;
@@ -64,6 +64,7 @@ public final class RepoDefinitionFunction implements SkyFunction {
     return ImmutableMap.of(
         RepoDefinitionValue.REPO_DEFINITION, new RepoDefinitionFunction(directories),
         SkyFunctions.ROOT_REPO_DEFINITION_INPUTS, RepoDefinitionInputs::computeRoot,
+        SkyFunctions.ROOT_REPO_DEFINITION, RepoDefinitionInputs::computeRootRepo,
         SkyFunctions.RESOLVED_REPO_DEFINITION_INPUTS, RepoDefinitionInputs::computeResolved,
         SkyFunctions.RESOLVED_REPO_DEFINITION, RepoDefinitionInputs::computeResolvedRepo,
         SkyFunctions.EXTENSION_REPO_SPEC, new ExtensionRepoSpecFunction());
@@ -73,13 +74,13 @@ public final class RepoDefinitionFunction implements SkyFunction {
   @Override
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws SkyFunctionException, InterruptedException {
-    var root = (RepoDefinitionInputs.Root) env.getValue(RepoDefinitionInputs.ROOT_KEY);
+    RepositoryName repositoryName = ((RepoDefinitionValue.Key) skyKey).argument();
+    var root =
+        (RootRepo) env.getValue(RepoDefinitionInputs.RootRepoKey.create(repositoryName));
     if (root == null) {
       return null;
     }
     RepositoryMapping basicMainRepoMapping = root.basicMainRepoMapping();
-
-    RepositoryName repositoryName = ((RepoDefinitionValue.Key) skyKey).argument();
 
     // Step 0: Look for repository overrides via canonical names. Requesting the main repo mapping
     // at this point would result in a cycle, so any lookup by apparent name requires special
@@ -94,14 +95,16 @@ public final class RepoDefinitionFunction implements SkyFunction {
     }
 
     // Step 1: Look for repositories defined by non-registry overrides.
-    Optional<RepoDefinitionValue> nonRegistryOverride =
-        checkRepoFromNonRegistryOverrides(
-            root, repositoryName, overrides, basicMainRepoMapping, env);
-    if (env.valuesMissing()) {
-      return null;
-    }
-    if (nonRegistryOverride.isPresent()) {
-      return nonRegistryOverride.get();
+    var rootSpec = root.spec();
+    if (rootSpec != null) {
+      // A command-line override of the apparent name takes precedence.
+      PathFragment commandLineOverride =
+          root.apparentName() == null ? null : overrides.get(root.apparentName());
+      if (commandLineOverride != null) {
+        return new RepoDefinitionValue.RepoOverride(commandLineOverride);
+      }
+      return createRepoDefinitionFromSpec(
+          rootSpec, repositoryName, /* originalName= */ null, basicMainRepoMapping, env);
     }
 
     // The resolved graph can depend on repos found in Step 1.
@@ -153,31 +156,6 @@ public final class RepoDefinitionFunction implements SkyFunction {
           createRepoDefinitionFromSpec(
               spec, repositoryName, internalName, basicMainRepoMapping, env);
     };
-  }
-
-  // Callers must check env.valuesMissing() and ignore the result if true.
-  private Optional<RepoDefinitionValue> checkRepoFromNonRegistryOverrides(
-      RepoDefinitionInputs.Root root,
-      RepositoryName repositoryName,
-      Map<String, PathFragment> overrides,
-      RepositoryMapping basicMainRepoMapping,
-      Environment env)
-      throws RepoDefinitionFunctionException, InterruptedException {
-    var override = root.nonRegistryOverrides().get(repositoryName);
-    if (override == null) {
-      return Optional.empty();
-    }
-    // If this module is a direct dep of the root module, its apparent name may be named by the
-    // --override_repository flag, which takes precedence over the non-registry override.
-    if (override.apparentName() != null) {
-      PathFragment commandLineOverride = overrides.get(override.apparentName());
-      if (commandLineOverride != null) {
-        return Optional.of(new RepoDefinitionValue.RepoOverride(commandLineOverride));
-      }
-    }
-    return Optional.ofNullable(
-        createRepoDefinitionFromSpec(
-            override.spec(), repositoryName, /* originalName= */ null, basicMainRepoMapping, env));
   }
 
   @Nullable
