@@ -891,8 +891,10 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
                   == FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED
               && canReopenQueryOutput(env, options);
       var executionOptions = options.getOptions(ExecutionOptions.class);
+      // A hash-stream caller owns each attempt's output files and invocation ID.
       boolean retryBuild =
           result.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED)
+              && !env.usesCqueryHashStreamReceipt()
               && executionOptions != null
               && attemptedCommandIds.size() < executionOptions.getRemoteRetryOnTransientCacheError();
       boolean retryMod =
