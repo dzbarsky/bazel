@@ -103,6 +103,7 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
@@ -431,10 +432,18 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
     return labelPrinter;
   }
 
-  /** Returns the configured edges for hashing, or null if analysis left any edge unavailable. */
+  /**
+   * Returns the configured edges for hashing, or null if analysis left an edge unavailable.
+   *
+   * <p>When using raw edges, the callback may consume already-interned dependencies directly.
+   * If the result is null, the caller must discard dependencies consumed by the callback.
+   */
   @Nullable
   protected final ImmutableList<T> getCompleteFwdDeps(
-      T target, boolean rawEdges, BiConsumer<AspectKey, AspectValue> aspectObserver)
+      T target,
+      boolean rawEdges,
+      BiConsumer<AspectKey, AspectValue> aspectObserver,
+      @Nullable Predicate<SkyKey> tryEmitInternedDependency)
       throws InterruptedException {
     SkyKey key = getConfiguredTargetKey(target);
     List<SkyKey> unavailable = new ArrayList<>();
@@ -463,6 +472,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
           /* knownCtDeps= */ null,
           new HashSet<>(),
           unavailable,
+          tryEmitInternedDependency,
           (node, implicit) -> node,
           raw);
       rawDeps = raw.build();
@@ -759,6 +769,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
         knownCtDeps,
         resolvedAspectClasses,
         unavailable,
+        /* tryEmitInternedDependency= */ null,
         ClassifiedDependency::new,
         results);
     return results.build();
@@ -776,6 +787,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       @Nullable Set<SkyKey> knownCtDeps,
       Set<AspectClass> resolvedAspectClasses,
       @Nullable List<SkyKey> unavailable,
+      @Nullable Predicate<SkyKey> tryEmitInternedDependency,
       DependencyProjection<T, R> projection,
       ImmutableList.Builder<R> values)
       throws InterruptedException {
@@ -804,6 +816,9 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
       }
       if (key.functionName().equals(SkyFunctions.CONFIGURED_TARGET)
           || (explicitAspects && key.functionName().equals(SkyFunctions.ASPECT))) {
+        if (tryEmitInternedDependency != null && tryEmitInternedDependency.test(key)) {
+          continue;
+        }
         T dependency = getValueFromKey(key);
         if (dependency == null && keepGoing) {
           if (unavailable != null) {
@@ -886,6 +901,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
             knownCtDeps,
             resolvedAspectClasses,
             unavailable,
+            tryEmitInternedDependency,
             projection,
             values);
       } else if (key.functionName().equals(SkyFunctions.TOOLCHAIN_RESOLUTION)) {
@@ -895,6 +911,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
             knownCtDeps,
             resolvedAspectClasses,
             unavailable,
+            tryEmitInternedDependency,
             projection,
             values);
       } else if (key instanceof GenAnalysisQueryKey scope) {
@@ -904,6 +921,7 @@ public abstract class PostAnalysisQueryEnvironment<T> extends AbstractBlazeQuery
             knownCtDeps,
             resolvedAspectClasses,
             unavailable,
+            tryEmitInternedDependency,
             projection,
             values);
       }
