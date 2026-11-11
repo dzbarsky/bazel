@@ -216,6 +216,14 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem implements
     }
   }
 
+  /** Returns the marker for a repository that is still served from the in-memory overlay. */
+  @Nullable
+  String getOverlayMarker(RepositoryName repo) {
+    return fsForPath(externalDirectory.getChild(repo.getName())) == externalFs
+        ? markerFileContents.get(repo.getName())
+        : null;
+  }
+
   /** Returns whether cached repo Trees should be validated during a cache-eviction retry. */
   public boolean shouldValidateRepoContents() {
     return validateCachedRepoContents;
@@ -266,6 +274,8 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem implements
   public boolean injectRemoteRepo(RepositoryName repo, Tree remoteContents, String markerFile)
       throws IOException, InterruptedException {
     var repoDir = externalDirectory.getChild(repo.getName());
+    // Retire the old marker before replacing the tree, including when prefetch fails.
+    markerFileContents.remove(repo.getName());
     deleteTree(repoDir);
     materializedRepos.remove(repo.getName());
     var unused = delete(externalDirectory.getChild(repo.getMarkerFileName()));
