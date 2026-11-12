@@ -14,6 +14,9 @@
 
 package com.google.devtools.build.lib.rules.genquery;
 
+import static com.google.devtools.build.lib.util.StringEncoding.internalToUnicode;
+import static com.google.devtools.build.lib.util.StringEncoding.unicodeToInternal;
+
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -178,11 +181,11 @@ public final class GenAquery
             AqueryActionFilter.builder()
                 .put(
                     function.getFunction().getName(),
-                    Pattern.compile(function.getArgs().get(0).getWord()))
+                    Pattern.compile(internalToUnicode(function.getArgs().get(0).getWord())))
                 .build());
       } catch (PatternSyntaxException e) {
         throw new GenAnalysisQueryFunction.QueryException(
-            "invalid action filter: " + e.getMessage());
+            "invalid action filter: " + unicodeToInternal(e.getMessage()));
       }
       targets = function.getArgs().get(1).getExpression();
     }
