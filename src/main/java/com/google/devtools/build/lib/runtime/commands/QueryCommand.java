@@ -208,6 +208,7 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
                     .getAspectDeps()
                     .createResolver(env.getPackageManager(), env.getReporter()),
                 hashFunction);
+            json.setEventHandler(env.getReporter());
             catalog = json;
           }
           BlazeCommandResult failure =
@@ -255,8 +256,8 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
   }
 
   /**
-   * Computes the transitive hash of every target and writes one {@code <label> <hash>} line per
-   * target. Returns a failure result if a hash could not be computed or may be wrong, or null.
+   * Writes transitive hashes, including metadata for every target when a catalog is requested.
+   * Returns a failure result if a hash could not be computed or may be wrong, or null.
    */
   @Nullable
   private static BlazeCommandResult outputHashes(
