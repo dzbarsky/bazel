@@ -142,6 +142,12 @@ public final class GenAqueryIntegrationTest extends BuildIntegrationTestCase {
         load(":rules.bzl", "producer")
         producer(name = "café", srcs = ["café.h"], template = "template")
         genaquery(name = "report", expression = "//pkg:café", scope = [":café"], output = "jsonproto")
+        genaquery(
+            name = "filtered",
+            expression = "inputs('.*café[.]h', //pkg:café)",
+            scope = [":café"],
+            output = "jsonproto",
+        )
         """);
     var graph = parse("jsonproto", result("//pkg:report"));
     assertThat(graph.getTargets(0).getLabel()).isEqualTo("//pkg:café");
@@ -151,6 +157,9 @@ public final class GenAqueryIntegrationTest extends BuildIntegrationTestCase {
         .contains("echo café");
     assertThat(graph.getActionsList().stream().map(a -> a.getTemplateContent()))
         .contains("héllo\n");
+    var filtered = parse("jsonproto", result("//pkg:filtered"));
+    assertThat(filtered.getActionsCount()).isEqualTo(1);
+    assertThat(filtered.getActions(0).getArgumentsList()).contains("echo café");
   }
 
   @Test
