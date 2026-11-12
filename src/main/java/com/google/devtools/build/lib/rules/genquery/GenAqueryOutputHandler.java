@@ -14,7 +14,6 @@
 
 package com.google.devtools.build.lib.rules.genquery;
 
-import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.devtools.build.lib.analysis.AnalysisProtosV2.Action;
@@ -56,7 +55,7 @@ final class GenAqueryOutputHandler implements AqueryOutputHandler {
 
   private static final class JsonField {
     final GenQueryOutputStream bytes = new GenQueryOutputStream(false);
-    final Writer writer = new OutputStreamWriter(bytes, ISO_8859_1);
+    final Writer writer = new OutputStreamWriter(bytes, UTF_8);
     boolean first = true;
 
     JsonField() throws IOException {}
@@ -66,9 +65,7 @@ final class GenAqueryOutputHandler implements AqueryOutputHandler {
     this.type = type;
     this.out = out;
     binary = CodedOutputStream.newInstance(out);
-    // ActionGraphDump's strings carry raw bytes in Bazel's internal Latin-1 representation.
-    // As in aquery's JSON PrintStream, preserve those bytes instead of encoding them a second time.
-    text = new OutputStreamWriter(out, type == OutputType.JSON ? ISO_8859_1 : UTF_8);
+    text = new OutputStreamWriter(out, UTF_8);
     if (type == OutputType.JSON) {
       // Stream the dominant field directly. Only interleaved metadata arrays need spooling.
       text.write("{\"actions\":[");
