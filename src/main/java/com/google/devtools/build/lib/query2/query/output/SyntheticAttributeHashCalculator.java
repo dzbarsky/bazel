@@ -79,7 +79,7 @@ public final class SyntheticAttributeHashCalculator {
       boolean canonicalizeLabelSelects) {
     HashingOutputStream hashingOutputStream =
         new HashingOutputStream(hashFunction, ByteStreams.nullOutputStream());
-    CodedOutputStream codedOut = CodedOutputStream.newInstance(hashingOutputStream);
+    CodedOutputStream codedOut = CodedOutputStream.newInstance(hashingOutputStream, 256);
 
     RuleClass ruleClass = rule.getRuleClassObject();
     if (ruleClass.isStarlark() && includeStarlarkRuleEnv) {
