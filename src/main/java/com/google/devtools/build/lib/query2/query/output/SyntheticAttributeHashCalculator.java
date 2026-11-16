@@ -100,7 +100,8 @@ public final class SyntheticAttributeHashCalculator {
         hashFunction,
         includeAttributeSourceAspects,
         includeStarlarkRuleEnv,
-        canonicalizeLabelSelects);
+        canonicalizeLabelSelects,
+        /* defaults= */ null);
   }
 
   static String computeWithIndexedAttributes(
@@ -109,7 +110,8 @@ public final class SyntheticAttributeHashCalculator {
       Object extraDataForAttrHash,
       HashFunction hashFunction,
       boolean includeAttributeSourceAspects,
-      boolean includeStarlarkRuleEnv) {
+      boolean includeStarlarkRuleEnv,
+      DefaultAttributeProtos defaults) {
     return compute(
         rule,
         (attribute, attrIndex) ->
@@ -118,7 +120,8 @@ public final class SyntheticAttributeHashCalculator {
         hashFunction,
         includeAttributeSourceAspects,
         includeStarlarkRuleEnv,
-        /* canonicalizeLabelSelects= */ false);
+        /* canonicalizeLabelSelects= */ false,
+        defaults);
   }
 
   private static String compute(
@@ -128,7 +131,8 @@ public final class SyntheticAttributeHashCalculator {
       HashFunction hashFunction,
       boolean includeAttributeSourceAspects,
       boolean includeStarlarkRuleEnv,
-      boolean canonicalizeLabelSelects) {
+      boolean canonicalizeLabelSelects,
+      @Nullable DefaultAttributeProtos defaults) {
     HashOutput cachedOutput = hashOutputByThread.get();
     // A nested hash on the same thread needs its own encoder.
     HashOutput output = cachedOutput.inUse ? new HashOutput() : cachedOutput;
@@ -142,6 +146,7 @@ public final class SyntheticAttributeHashCalculator {
           includeAttributeSourceAspects,
           includeStarlarkRuleEnv,
           canonicalizeLabelSelects,
+          defaults,
           output.codedOut);
       String hash = output.finish();
       completed = true;
@@ -162,6 +167,7 @@ public final class SyntheticAttributeHashCalculator {
       boolean includeAttributeSourceAspects,
       boolean includeStarlarkRuleEnv,
       boolean canonicalizeLabelSelects,
+      @Nullable DefaultAttributeProtos defaults,
       CodedOutputStream codedOut) {
     RuleClass ruleClass = rule.getRuleClassObject();
     if (ruleClass.isStarlark() && includeStarlarkRuleEnv) {
@@ -215,6 +221,18 @@ public final class SyntheticAttributeHashCalculator {
       Build.Attribute attrPb =
           valueToHash instanceof SelectorList<?> ? null : serializedAttributes.get(attr, attrIndex);
       if (attrPb == null) {
+        if (defaults != null
+            && !(valueToHash instanceof SelectorList<?>)
+            && valueToHash == attr.getDefaultValueUnchecked()
+            && !(canonicalizeLabelSelects
+                && attrName.equals(RuleClass.CONFIG_SETTING_DEPS_ATTRIBUTE))) {
+          try {
+            codedOut.writeRawBytes(defaults.getHashBytes(attrIndex, attr, valueToHash));
+          } catch (IOException e) {
+            throw new IllegalStateException("Unexpected IO failure writing to digest stream", e);
+          }
+          continue;
+        }
         // We didn't already serialize the attribute or it's a SelectorList. Latter may
         // have been flattened while we want the full representation, so we start from scratch.
         attrPb =
