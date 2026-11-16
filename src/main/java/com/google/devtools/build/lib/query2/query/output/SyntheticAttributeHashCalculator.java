@@ -54,8 +54,7 @@ public final class SyntheticAttributeHashCalculator {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
-  private static final ThreadLocal<HashOutput> hashOutputByThread =
-      ThreadLocal.withInitial(HashOutput::new);
+  private static final ThreadLocal<HashOutput> idleHashOutput = new ThreadLocal<>();
 
   private SyntheticAttributeHashCalculator() {}
 
@@ -179,32 +178,29 @@ public final class SyntheticAttributeHashCalculator {
       boolean canonicalizeLabelSelects,
       @Nullable DefaultAttributeProtos defaults,
       @Nullable UnaryOperator<Object> normalizeRawValue) {
-    HashOutput cachedOutput = hashOutputByThread.get();
-    // A nested hash on the same thread needs its own encoder.
-    HashOutput output = cachedOutput.inUse ? new HashOutput() : cachedOutput;
-    boolean completed = false;
-    try {
-      output.begin(hashFunction);
-      writeRule(
-          rule,
-          serializedAttributes,
-          extraDataForAttrHash,
-          includeAttributeSourceAspects,
-          includeStarlarkRuleEnv,
-          canonicalizeLabelSelects,
-          defaults,
-          normalizeRawValue,
-          output.codedOut);
-      String hash = output.finish();
-      completed = true;
-      return hash;
-    } finally {
-      if (!completed && output == cachedOutput) {
-        // The encoder may still contain bytes from the failed hash.
-        hashOutputByThread.remove();
-      }
-      output.clear();
+    DigestHashFunction digestFunction = DigestHashFunction.getReusableDigestFunction(hashFunction);
+    HashOutput output = idleHashOutput.get();
+    // Nested and failed hashes must never reuse an encoder with pending bytes.
+    idleHashOutput.set(null);
+    if (output == null || output.digestFunction != digestFunction) {
+      output = new HashOutput(digestFunction);
     }
+    if (digestFunction == null) {
+      output.hasher = hashFunction.newHasher();
+    }
+    writeRule(
+        rule,
+        serializedAttributes,
+        extraDataForAttrHash,
+        includeAttributeSourceAspects,
+        includeStarlarkRuleEnv,
+        canonicalizeLabelSelects,
+        defaults,
+        normalizeRawValue,
+        output.codedOut);
+    String hash = output.finish();
+    idleHashOutput.set(output);
+    return hash;
   }
 
   private static void writeRule(
@@ -346,18 +342,19 @@ public final class SyntheticAttributeHashCalculator {
 
   private static final class HashOutput extends OutputStream {
     private final CodedOutputStream codedOut = CodedOutputStream.newInstance(this);
-    private Hasher hasher;
-    private MessageDigest sha256;
-    private byte[] sha256Result;
-    private boolean inUse;
+    @Nullable private final DigestHashFunction digestFunction;
+    @Nullable private final MessageDigest digest;
+    @Nullable private final byte[] digestBytes;
+    @Nullable private Hasher hasher;
 
-    void begin(HashFunction hashFunction) {
-      inUse = true;
-      if (hashFunction != DigestHashFunction.SHA256.getHashFunction()) {
-        hasher = hashFunction.newHasher();
-      } else if (sha256 == null) {
-        sha256 = DigestHashFunction.SHA256.newMessageDigest();
-        sha256Result = new byte[hashFunction.bits() / Byte.SIZE];
+    HashOutput(@Nullable DigestHashFunction digestFunction) {
+      this.digestFunction = digestFunction;
+      if (digestFunction == null) {
+        digest = null;
+        digestBytes = null;
+      } else {
+        digest = digestFunction.newMessageDigest();
+        digestBytes = new byte[digestFunction.getHashFunction().bits() / Byte.SIZE];
       }
     }
 
@@ -368,21 +365,16 @@ public final class SyntheticAttributeHashCalculator {
         throw new IllegalStateException("Unexpected flush failure", e);
       }
       if (hasher != null) {
-        return BaseEncoding.base64().encode(hasher.hash().asBytes());
+        byte[] bytes = hasher.hash().asBytes();
+        hasher = null;
+        return BaseEncoding.base64().encode(bytes);
       }
       try {
-        Preconditions.checkState(
-            sha256.digest(sha256Result, 0, sha256Result.length) == sha256Result.length,
-            "Unexpected SHA-256 digest length");
+        int length = digest.digest(digestBytes, 0, digestBytes.length);
+        return BaseEncoding.base64().encode(digestBytes, 0, length);
       } catch (DigestException e) {
-        throw new IllegalStateException("Could not write the SHA-256 digest", e);
+        throw new IllegalStateException("Could not write the digest", e);
       }
-      return BaseEncoding.base64().encode(sha256Result);
-    }
-
-    void clear() {
-      hasher = null;
-      inUse = false;
     }
 
     @Override
@@ -390,7 +382,7 @@ public final class SyntheticAttributeHashCalculator {
       if (hasher != null) {
         hasher.putByte((byte) value);
       } else {
-        sha256.update((byte) value);
+        digest.update((byte) value);
       }
     }
 
@@ -399,7 +391,7 @@ public final class SyntheticAttributeHashCalculator {
       if (hasher != null) {
         hasher.putBytes(bytes, offset, length);
       } else {
-        sha256.update(bytes, offset, length);
+        digest.update(bytes, offset, length);
       }
     }
   }
