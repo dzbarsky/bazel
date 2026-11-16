@@ -47,6 +47,7 @@ import com.google.devtools.build.lib.query2.PostAnalysisQueryEnvironment.TopLeve
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
+import com.google.devtools.build.lib.query2.engine.QueryExpressionResolver;
 import com.google.devtools.build.lib.query2.engine.QueryParser;
 import com.google.devtools.build.lib.query2.engine.QuerySyntaxException;
 import com.google.devtools.build.lib.server.FailureDetails.Query;
@@ -110,7 +111,8 @@ final class GenAnalysisQuery {
     var targetPatternPackages = ImmutableSet.<PackageIdentifier>builder();
     try {
       var patterns = new LinkedHashSet<String>();
-      QueryParser.parse(expression, queryFunctions).collectTargetPatterns(patterns);
+      QueryExpressionResolver.resolve(QueryParser.parse(expression), queryFunctions)
+          .collectTargetPatterns(patterns);
       var targetParser =
           new TargetPattern.Parser(
               PathFragment.EMPTY_FRAGMENT,

@@ -60,6 +60,7 @@ import com.google.devtools.build.lib.query2.engine.QueryEnvironment.ArgumentType
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
+import com.google.devtools.build.lib.query2.engine.QueryExpressionResolver;
 import com.google.devtools.build.lib.query2.engine.QueryParser;
 import com.google.devtools.build.lib.query2.engine.QuerySyntaxException;
 import com.google.devtools.build.lib.query2.engine.QueryUtil;
@@ -167,7 +168,8 @@ public final class GenAquery
 
   private static ActionQuery parse(String expression)
       throws QuerySyntaxException, GenAnalysisQueryFunction.QueryException {
-    QueryExpression targets = QueryParser.parse(expression, QUERY_FUNCTIONS);
+    QueryExpression targets =
+        QueryExpressionResolver.resolve(QueryParser.parse(expression), QUERY_FUNCTIONS);
     var filters = ImmutableList.<AqueryActionFilter>builder();
     while (targets instanceof FunctionExpression function
         && function.getFunction() instanceof ActionFilterFunction) {
