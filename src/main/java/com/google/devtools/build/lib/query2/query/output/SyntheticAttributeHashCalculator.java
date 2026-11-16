@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.query2.query.output;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.MapMaker;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.hash.HashFunction;
 import com.google.common.hash.HashingOutputStream;
@@ -35,6 +36,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Contains the logic for condensing the various properties of rules that contribute to their
@@ -44,6 +46,11 @@ import java.util.Map;
 public final class SyntheticAttributeHashCalculator {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
+  // Attribute objects are immutable and shared by rules. Weak keys avoid retaining old rule classes.
+  private static final ConcurrentMap<Attribute, byte[]> defaultAttributeBytes =
+      new MapMaker().weakKeys().makeMap();
+  private static final ConcurrentMap<Attribute, byte[]> defaultAttributeBytesWithAspects =
+      new MapMaker().weakKeys().makeMap();
 
   private SyntheticAttributeHashCalculator() {}
 
@@ -92,6 +99,8 @@ public final class SyntheticAttributeHashCalculator {
     }
 
     RawAttributeMapper rawAttributeMapper = RawAttributeMapper.of(rule);
+    ConcurrentMap<Attribute, byte[]> defaultBytes =
+        includeAttributeSourceAspects ? defaultAttributeBytesWithAspects : defaultAttributeBytes;
     for (Attribute attr : rule.getAttributes()) {
       String attrName = attr.getName();
 
@@ -129,9 +138,26 @@ public final class SyntheticAttributeHashCalculator {
       }
 
       Build.Attribute attrPb;
+      boolean cacheable = false;
       if (valueToHash instanceof SelectorList<?> || !serializedAttributes.containsKey(attr)) {
         // We didn't already serialize the attribute or it's a SelectorList. Latter may
         // have been flattened while we want the full representation, so we start from scratch.
+        cacheable =
+            !(valueToHash instanceof SelectorList<?>)
+                && valueToHash == attr.getDefaultValueUnchecked()
+                && !(canonicalizeLabelSelects
+                    && attrName.equals(RuleClass.CONFIG_SETTING_DEPS_ATTRIBUTE));
+        if (cacheable) {
+          byte[] cached = defaultBytes.get(attr);
+          if (cached != null) {
+            try {
+              codedOut.writeRawBytes(cached);
+            } catch (IOException e) {
+              throw new IllegalStateException("Unexpected IO failure writing to digest stream", e);
+            }
+            continue;
+          }
+        }
         attrPb =
             AttributeFormatter.getAttributeProto(
                 attr,
@@ -164,7 +190,13 @@ public final class SyntheticAttributeHashCalculator {
         attrPb = builder.build();
       }
       try {
-        attrPb.writeTo(codedOut);
+        if (cacheable) {
+          byte[] bytes = attrPb.toByteArray();
+          defaultBytes.putIfAbsent(attr, bytes);
+          codedOut.writeRawBytes(bytes);
+        } else {
+          attrPb.writeTo(codedOut);
+        }
       } catch (IOException e) {
         throw new IllegalStateException("Unexpected IO failure writing to digest stream", e);
       }
