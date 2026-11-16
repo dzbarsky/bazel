@@ -18,9 +18,8 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.MapMaker;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.hash.HashFunction;
-import com.google.common.hash.HashingOutputStream;
+import com.google.common.hash.Hasher;
 import com.google.common.io.BaseEncoding;
-import com.google.common.io.ByteStreams;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.Attribute.ComputedDefault;
@@ -35,6 +34,7 @@ import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.query2.proto.proto2api.Build;
 import com.google.protobuf.CodedOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Map;
@@ -50,6 +50,9 @@ import javax.annotation.Nullable;
 public final class SyntheticAttributeHashCalculator {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
+
+  private static final ThreadLocal<HashOutput> hashOutputByThread =
+      ThreadLocal.withInitial(HashOutput::new);
 
   private SyntheticAttributeHashCalculator() {}
 
@@ -173,10 +176,44 @@ public final class SyntheticAttributeHashCalculator {
       boolean canonicalizeLabelSelects,
       @Nullable DefaultAttributeProtos defaults,
       @Nullable UnaryOperator<Object> normalizeRawValue) {
-    HashingOutputStream hashingOutputStream =
-        new HashingOutputStream(hashFunction, ByteStreams.nullOutputStream());
-    CodedOutputStream codedOut = CodedOutputStream.newInstance(hashingOutputStream);
+    HashOutput cachedOutput = hashOutputByThread.get();
+    // A nested hash on the same thread needs its own encoder.
+    HashOutput output = cachedOutput.inUse ? new HashOutput() : cachedOutput;
+    boolean completed = false;
+    try {
+      output.begin(hashFunction);
+      writeRule(
+          rule,
+          serializedAttributes,
+          extraDataForAttrHash,
+          includeAttributeSourceAspects,
+          includeStarlarkRuleEnv,
+          canonicalizeLabelSelects,
+          defaults,
+          normalizeRawValue,
+          output.codedOut);
+      String hash = output.finish();
+      completed = true;
+      return hash;
+    } finally {
+      if (!completed && output == cachedOutput) {
+        // The encoder may still contain bytes from the failed hash.
+        hashOutputByThread.remove();
+      }
+      output.clear();
+    }
+  }
 
+  private static void writeRule(
+      Rule rule,
+      SerializedAttributeLookup serializedAttributes,
+      Object extraDataForAttrHash,
+      boolean includeAttributeSourceAspects,
+      boolean includeStarlarkRuleEnv,
+      boolean canonicalizeLabelSelects,
+      @Nullable DefaultAttributeProtos defaults,
+      @Nullable UnaryOperator<Object> normalizeRawValue,
+      CodedOutputStream codedOut) {
     RuleClass ruleClass = rule.getRuleClassObject();
     if (ruleClass.isStarlark() && includeStarlarkRuleEnv) {
       try {
@@ -293,12 +330,8 @@ public final class SyntheticAttributeHashCalculator {
       // Include a summary of any package-wide data that applies to this target (e.g. custom make
       // variables aka `vardef`).
       codedOut.writeStringNoTag((String) extraDataForAttrHash);
-    } catch (IOException e) {
-      throw new IllegalStateException("Unexpected IO failure writing to digest stream", e);
-    }
 
-    Label transitiveVisibility = rule.getTransitiveVisibility();
-    try {
+      Label transitiveVisibility = rule.getTransitiveVisibility();
       codedOut.writeBoolNoTag(transitiveVisibility != null);
       if (transitiveVisibility != null) {
         codedOut.writeStringNoTag(transitiveVisibility.getCanonicalForm());
@@ -306,14 +339,40 @@ public final class SyntheticAttributeHashCalculator {
     } catch (IOException e) {
       throw new IllegalStateException("Unexpected IO failure writing to digest stream", e);
     }
+  }
 
-    try {
-      // Flush coded out to make sure all bytes make it to the underlying digest stream.
-      codedOut.flush();
-    } catch (IOException e) {
-      throw new IllegalStateException("Unexpected flush failure", e);
+  private static final class HashOutput extends OutputStream {
+    private final CodedOutputStream codedOut = CodedOutputStream.newInstance(this);
+    private Hasher hasher;
+    private boolean inUse;
+
+    void begin(HashFunction hashFunction) {
+      inUse = true;
+      hasher = hashFunction.newHasher();
     }
 
-    return BaseEncoding.base64().encode(hashingOutputStream.hash().asBytes());
+    String finish() {
+      try {
+        codedOut.flush();
+      } catch (IOException e) {
+        throw new IllegalStateException("Unexpected flush failure", e);
+      }
+      return BaseEncoding.base64().encode(hasher.hash().asBytes());
+    }
+
+    void clear() {
+      hasher = null;
+      inUse = false;
+    }
+
+    @Override
+    public void write(int value) {
+      hasher.putByte((byte) value);
+    }
+
+    @Override
+    public void write(byte[] bytes, int offset, int length) {
+      hasher.putBytes(bytes, offset, length);
+    }
   }
 }
