@@ -420,11 +420,9 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
               labelPrinter);
       serializedAttributes.put(attr, serializedAttribute);
     }
-    rulePb.addAllAttribute(
-        serializedAttributes.values().stream()
-            .distinct()
-            .sorted(ATTRIBUTE_NAME)
-            .collect(Collectors.toList()));
+    List<Build.Attribute> sortedAttributes = new ArrayList<>(serializedAttributes.values());
+    sortedAttributes.sort(ATTRIBUTE_NAME);
+    rulePb.addAllAttribute(sortedAttributes);
 
     if (includeSyntheticAttributeHash) {
       rulePb.addAttribute(
