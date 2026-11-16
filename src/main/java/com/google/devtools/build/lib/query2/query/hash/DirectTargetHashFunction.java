@@ -17,7 +17,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.hash.Hashing;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
@@ -37,21 +36,17 @@ import com.google.devtools.build.lib.packages.AggregatingAttributeMapper;
 import com.google.devtools.build.lib.packages.Aspect;
 import com.google.devtools.build.lib.packages.AspectDefinition;
 import com.google.devtools.build.lib.packages.Attribute;
-import com.google.devtools.build.lib.packages.AttributeFormatter;
 import com.google.devtools.build.lib.packages.BuildFileNotFoundException;
 import com.google.devtools.build.lib.packages.DeclaredExecGroup;
 import com.google.devtools.build.lib.packages.DependencyFilter;
 import com.google.devtools.build.lib.packages.InputFile;
-import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.packages.LabelVisitationUtils;
 import com.google.devtools.build.lib.packages.NoSuchThingException;
 import com.google.devtools.build.lib.packages.PackageGroup;
-import com.google.devtools.build.lib.packages.RawAttributeMapper;
 import com.google.devtools.build.lib.packages.RepositoryFetchException;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.Target;
-import com.google.devtools.build.lib.query2.proto.proto2api.Build;
-import com.google.devtools.build.lib.query2.query.output.SyntheticAttributeHashCalculator;
+import com.google.devtools.build.lib.query2.query.output.SyntheticAttributeHashCalculator.NativeAttributeHasher;
 import com.google.devtools.build.lib.skyframe.ArtifactFunction;
 import com.google.devtools.build.lib.skyframe.BzlLoadFailedException;
 import com.google.devtools.build.lib.skyframe.PackageLookupValue;
@@ -102,9 +97,11 @@ public final class DirectTargetHashFunction implements SkyFunction {
       SkyFunctionName.createHermetic("QUERY_DIRECT_TARGET_HASH");
 
   private final BlazeDirectories directories;
+  private final NativeAttributeHasher attributeHasher;
 
   public DirectTargetHashFunction(BlazeDirectories directories) {
     this.directories = directories;
+    this.attributeHasher = new NativeAttributeHasher(this::normalizeAttributeValue);
   }
 
   public static Key key(Label label) {
@@ -304,15 +301,7 @@ public final class DirectTargetHashFunction implements SkyFunction {
     fp.addString(label.getUnambiguousCanonicalForm());
     fp.addString(target.getTargetKind());
     if (target instanceof Rule rule) {
-      fp.addString(
-          SyntheticAttributeHashCalculator.compute(
-              rule,
-              /* serializedAttributes= */ pathIndependentAttributes(rule),
-              /* extraDataForAttrHash= */ "",
-              Hashing.sha256(),
-              /* includeAttributeSourceAspects= */ false,
-              /* includeStarlarkRuleEnv= */ true,
-              /* canonicalizeLabelSelects= */ true));
+      fp.addString(attributeHasher.compute(rule, Hashing.sha256()));
     } else if (target instanceof PackageGroup packageGroup) {
       fp.addStrings(packageGroup.getContainedPackages(/* includeDoubleSlash= */ true));
     }
@@ -427,36 +416,20 @@ public final class DirectTargetHashFunction implements SkyFunction {
    * message of a toolchain that can't be configured on the host. The hash shouldn't depend on where
    * the output base or the workspace is.
    */
-  private ImmutableMap<Attribute, Build.Attribute> pathIndependentAttributes(Rule rule) {
-    ImmutableMap.Builder<Attribute, Build.Attribute> result = ImmutableMap.builder();
-    RawAttributeMapper attributes = RawAttributeMapper.of(rule);
-    for (Attribute attribute : rule.getAttributes()) {
-      Object value = attributes.getRawAttributeValue(rule, attribute);
-      Object replaced;
-      if (value instanceof String string && containsAbsolutePath(string)) {
-        replaced = replaceAbsolutePaths(string);
-      } else if (value instanceof List<?> list
-          && list.stream()
-              .anyMatch(e -> e instanceof String string && containsAbsolutePath(string))) {
-        replaced =
-            list.stream()
-                .map(e -> e instanceof String string ? replaceAbsolutePaths(string) : e)
-                .collect(toImmutableList());
-      } else {
-        continue;
-      }
-      result.put(
-          attribute,
-          AttributeFormatter.getAttributeProto(
-              attribute,
-              replaced,
-              /* explicitlySpecified= */ false,
-              /* encodeBooleanAndTriStateAsIntegerAndString= */ false,
-              /* sourceAspect= */ null,
-              /* includeAttributeSourceAspects= */ false,
-              LabelPrinter.legacy()));
+  private Object normalizeAttributeValue(Object value) {
+    if (value instanceof String string && containsAbsolutePath(string)) {
+      return replaceAbsolutePaths(string);
     }
-    return result.buildOrThrow();
+    if (value instanceof List<?> list) {
+      for (Object entry : list) {
+        if (entry instanceof String string && containsAbsolutePath(string)) {
+          return list.stream()
+              .map(e -> e instanceof String element ? replaceAbsolutePaths(element) : e)
+              .collect(toImmutableList());
+        }
+      }
+    }
+    return value;
   }
 
   private boolean containsAbsolutePath(String string) {
