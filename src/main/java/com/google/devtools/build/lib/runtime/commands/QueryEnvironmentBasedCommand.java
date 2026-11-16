@@ -38,6 +38,7 @@ import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.query.aspectresolvers.AspectResolver;
 import com.google.devtools.build.lib.query2.query.output.OutputFormatter;
 import com.google.devtools.build.lib.query2.query.output.OutputFormatters;
+import com.google.devtools.build.lib.query2.query.output.ProtoOutputFormatter;
 import com.google.devtools.build.lib.query2.query.output.QueryOptions;
 import com.google.devtools.build.lib.query2.query.output.QueryOutputUtils;
 import com.google.devtools.build.lib.runtime.BlazeCommand;
@@ -231,6 +232,10 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
     } catch (QueryRuntimeHelperException e) {
       env.getReporter().handle(Event.error(e.getMessage()));
       return BlazeCommandResult.detailedExitCode(DetailedExitCode.of(e.getFailureDetail()));
+    } finally {
+      if (formatter instanceof ProtoOutputFormatter protoFormatter) {
+        protoFormatter.clearDefaultAttributeCache();
+      }
     }
   }
 
