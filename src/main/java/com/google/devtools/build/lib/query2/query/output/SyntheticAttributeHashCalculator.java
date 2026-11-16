@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.query2.query.output;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.MapMaker;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.hash.HashFunction;
 import com.google.common.hash.HashingOutputStream;
@@ -24,6 +25,7 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.Attribute.ComputedDefault;
 import com.google.devtools.build.lib.packages.AttributeFormatter;
+import com.google.devtools.build.lib.packages.AttributeProvider;
 import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.BuildType.SelectorList;
 import com.google.devtools.build.lib.packages.LabelPrinter;
@@ -36,6 +38,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
+import java.util.function.UnaryOperator;
 import javax.annotation.Nullable;
 
 /**
@@ -98,7 +102,8 @@ public final class SyntheticAttributeHashCalculator {
         includeAttributeSourceAspects,
         includeStarlarkRuleEnv,
         canonicalizeLabelSelects,
-        /* defaults= */ null);
+        /* defaults= */ null,
+        /* normalizeRawValue= */ null);
   }
 
   static String computeWithIndexedAttributes(
@@ -118,7 +123,44 @@ public final class SyntheticAttributeHashCalculator {
         includeAttributeSourceAspects,
         includeStarlarkRuleEnv,
         /* canonicalizeLabelSelects= */ false,
-        defaults);
+        defaults,
+        /* normalizeRawValue= */ null);
+  }
+
+  /** Hashes native query targets with defaults reused for the lifetime of their rule classes. */
+  public static final class NativeAttributeHasher {
+    private final UnaryOperator<Object> normalizeRawValue;
+    private final ConcurrentMap<AttributeProvider, DefaultAttributeProtos> defaultsByProvider =
+        new MapMaker().weakKeys().makeMap();
+
+    public NativeAttributeHasher(UnaryOperator<Object> normalizeRawValue) {
+      this.normalizeRawValue = normalizeRawValue;
+    }
+
+    public String compute(Rule rule, HashFunction hashFunction) {
+      AttributeProvider provider = rule.getAttributeProvider();
+      DefaultAttributeProtos defaults = defaultsByProvider.get(provider);
+      if (defaults == null) {
+        defaults =
+            defaultsByProvider.computeIfAbsent(
+                provider,
+                unused ->
+                    new DefaultAttributeProtos(
+                        provider.getAttributeCount(),
+                        LabelPrinter.legacy(),
+                        /* includeAttributeSourceAspects= */ false));
+      }
+      return SyntheticAttributeHashCalculator.compute(
+          rule,
+          (attribute, attrIndex) -> null,
+          /* extraDataForAttrHash= */ "",
+          hashFunction,
+          /* includeAttributeSourceAspects= */ false,
+          /* includeStarlarkRuleEnv= */ true,
+          /* canonicalizeLabelSelects= */ true,
+          defaults,
+          normalizeRawValue);
+    }
   }
 
   private static String compute(
@@ -129,7 +171,8 @@ public final class SyntheticAttributeHashCalculator {
       boolean includeAttributeSourceAspects,
       boolean includeStarlarkRuleEnv,
       boolean canonicalizeLabelSelects,
-      @Nullable DefaultAttributeProtos defaults) {
+      @Nullable DefaultAttributeProtos defaults,
+      @Nullable UnaryOperator<Object> normalizeRawValue) {
     HashingOutputStream hashingOutputStream =
         new HashingOutputStream(hashFunction, ByteStreams.nullOutputStream());
     CodedOutputStream codedOut = CodedOutputStream.newInstance(hashingOutputStream);
@@ -156,6 +199,9 @@ public final class SyntheticAttributeHashCalculator {
       }
 
       Object valueToHash = rawAttributeMapper.getRawAttributeValue(rule, attr);
+      if (normalizeRawValue != null) {
+        valueToHash = normalizeRawValue.apply(valueToHash);
+      }
 
       if (valueToHash instanceof ComputedDefault computedDefault) {
         // ConfiguredDefaults need special handling to detect changes in evaluated values.
