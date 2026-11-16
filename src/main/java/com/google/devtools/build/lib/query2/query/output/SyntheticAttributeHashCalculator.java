@@ -36,6 +36,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Map;
+import javax.annotation.Nullable;
 
 /**
  * Contains the logic for condensing the various properties of rules that contribute to their
@@ -47,6 +48,12 @@ public final class SyntheticAttributeHashCalculator {
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
   private SyntheticAttributeHashCalculator() {}
+
+  @FunctionalInterface
+  private interface SerializedAttributeLookup {
+    @Nullable
+    Build.Attribute get(Attribute attribute, int attrIndex);
+  }
 
   /**
    * Returns a hash of various properties of a rule which might contribute to the rule's
@@ -65,14 +72,55 @@ public final class SyntheticAttributeHashCalculator {
       boolean includeAttributeSourceAspects,
       boolean includeStarlarkRuleEnv) {
     return compute(
-        rule, serializedAttributes, extraDataForAttrHash, hashFunction, includeAttributeSourceAspects,
-        includeStarlarkRuleEnv, /* canonicalizeLabelSelects= */ false);
+        rule,
+        serializedAttributes,
+        extraDataForAttrHash,
+        hashFunction,
+        includeAttributeSourceAspects,
+        includeStarlarkRuleEnv,
+        /* canonicalizeLabelSelects= */ false);
   }
 
   /** Computes the native target hash with optional ordering of label-valued select conditions. */
   public static String compute(
       Rule rule,
       Map<Attribute, Build.Attribute> serializedAttributes,
+      Object extraDataForAttrHash,
+      HashFunction hashFunction,
+      boolean includeAttributeSourceAspects,
+      boolean includeStarlarkRuleEnv,
+      boolean canonicalizeLabelSelects) {
+    return compute(
+        rule,
+        (attribute, attrIndex) -> serializedAttributes.get(attribute),
+        extraDataForAttrHash,
+        hashFunction,
+        includeAttributeSourceAspects,
+        includeStarlarkRuleEnv,
+        canonicalizeLabelSelects);
+  }
+
+  static String computeWithIndexedAttributes(
+      Rule rule,
+      @Nullable Build.Attribute[] serializedAttributes,
+      Object extraDataForAttrHash,
+      HashFunction hashFunction,
+      boolean includeAttributeSourceAspects,
+      boolean includeStarlarkRuleEnv) {
+    return compute(
+        rule,
+        (attribute, attrIndex) ->
+            serializedAttributes == null ? null : serializedAttributes[attrIndex],
+        extraDataForAttrHash,
+        hashFunction,
+        includeAttributeSourceAspects,
+        includeStarlarkRuleEnv,
+        /* canonicalizeLabelSelects= */ false);
+  }
+
+  private static String compute(
+      Rule rule,
+      SerializedAttributeLookup serializedAttributes,
       Object extraDataForAttrHash,
       HashFunction hashFunction,
       boolean includeAttributeSourceAspects,
@@ -93,7 +141,9 @@ public final class SyntheticAttributeHashCalculator {
     }
 
     RawAttributeMapper rawAttributeMapper = RawAttributeMapper.of(rule);
-    for (Attribute attr : rule.getAttributes()) {
+    var attributes = rule.getAttributeProvider().getAttributes();
+    for (int attrIndex = 0; attrIndex < attributes.size(); attrIndex++) {
+      Attribute attr = attributes.get(attrIndex);
       String attrName = attr.getName();
 
       if (attrName.equals("generator_location")) {
@@ -129,8 +179,9 @@ public final class SyntheticAttributeHashCalculator {
         }
       }
 
-      Build.Attribute attrPb;
-      if (valueToHash instanceof SelectorList<?> || !serializedAttributes.containsKey(attr)) {
+      Build.Attribute attrPb =
+          valueToHash instanceof SelectorList<?> ? null : serializedAttributes.get(attr, attrIndex);
+      if (attrPb == null) {
         // We didn't already serialize the attribute or it's a SelectorList. Latter may
         // have been flattened while we want the full representation, so we start from scratch.
         attrPb =
@@ -142,8 +193,6 @@ public final class SyntheticAttributeHashCalculator {
                 /* sourceAspect= */ null,
                 includeAttributeSourceAspects,
                 LabelPrinter.legacy());
-      } else {
-        attrPb = serializedAttributes.get(attr);
       }
 
       if (canonicalizeLabelSelects && attrName.equals(RuleClass.CONFIG_SETTING_DEPS_ATTRIBUTE)) {
