@@ -32,9 +32,12 @@ import com.google.devtools.build.lib.packages.RawAttributeMapper;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.query2.proto.proto2api.Build;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.protobuf.CodedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.security.DigestException;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Map;
@@ -344,11 +347,18 @@ public final class SyntheticAttributeHashCalculator {
   private static final class HashOutput extends OutputStream {
     private final CodedOutputStream codedOut = CodedOutputStream.newInstance(this);
     private Hasher hasher;
+    private MessageDigest sha256;
+    private byte[] sha256Result;
     private boolean inUse;
 
     void begin(HashFunction hashFunction) {
       inUse = true;
-      hasher = hashFunction.newHasher();
+      if (hashFunction != DigestHashFunction.SHA256.getHashFunction()) {
+        hasher = hashFunction.newHasher();
+      } else if (sha256 == null) {
+        sha256 = DigestHashFunction.SHA256.newMessageDigest();
+        sha256Result = new byte[hashFunction.bits() / Byte.SIZE];
+      }
     }
 
     String finish() {
@@ -357,7 +367,17 @@ public final class SyntheticAttributeHashCalculator {
       } catch (IOException e) {
         throw new IllegalStateException("Unexpected flush failure", e);
       }
-      return BaseEncoding.base64().encode(hasher.hash().asBytes());
+      if (hasher != null) {
+        return BaseEncoding.base64().encode(hasher.hash().asBytes());
+      }
+      try {
+        Preconditions.checkState(
+            sha256.digest(sha256Result, 0, sha256Result.length) == sha256Result.length,
+            "Unexpected SHA-256 digest length");
+      } catch (DigestException e) {
+        throw new IllegalStateException("Could not write the SHA-256 digest", e);
+      }
+      return BaseEncoding.base64().encode(sha256Result);
     }
 
     void clear() {
@@ -367,12 +387,20 @@ public final class SyntheticAttributeHashCalculator {
 
     @Override
     public void write(int value) {
-      hasher.putByte((byte) value);
+      if (hasher != null) {
+        hasher.putByte((byte) value);
+      } else {
+        sha256.update((byte) value);
+      }
     }
 
     @Override
     public void write(byte[] bytes, int offset, int length) {
-      hasher.putBytes(bytes, offset, length);
+      if (hasher != null) {
+        hasher.putBytes(bytes, offset, length);
+      } else {
+        sha256.update(bytes, offset, length);
+      }
     }
   }
 }
