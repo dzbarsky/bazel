@@ -330,12 +330,8 @@ public final class SyntheticAttributeHashCalculator {
       // Include a summary of any package-wide data that applies to this target (e.g. custom make
       // variables aka `vardef`).
       codedOut.writeStringNoTag((String) extraDataForAttrHash);
-    } catch (IOException e) {
-      throw new IllegalStateException("Unexpected IO failure writing to digest stream", e);
-    }
 
-    Label transitiveVisibility = rule.getTransitiveVisibility();
-    try {
+      Label transitiveVisibility = rule.getTransitiveVisibility();
       codedOut.writeBoolNoTag(transitiveVisibility != null);
       if (transitiveVisibility != null) {
         codedOut.writeStringNoTag(transitiveVisibility.getCanonicalForm());
