@@ -124,22 +124,21 @@ public final class ActionCacheCheckerTest {
   }
 
   private ActionCacheChecker createActionCacheChecker(boolean storeOutputMetadata) {
-    return createActionCacheChecker(storeOutputMetadata, /* bustActionCachesTarget= */ null);
-  }
-
-  private ActionCacheChecker createActionCacheChecker(
-      boolean storeOutputMetadata, @Nullable Label bustActionCachesTarget) {
     return createActionCacheChecker(
-        storeOutputMetadata, bustActionCachesTarget, /* checkOutputFiles= */ true);
+        storeOutputMetadata,
+        /* bustActionCachesTarget= */ null,
+        /* checkOutputFiles= */ true,
+        new FakeArtifactResolverBase());
   }
 
   private ActionCacheChecker createActionCacheChecker(
       boolean storeOutputMetadata,
       @Nullable Label bustActionCachesTarget,
-      boolean checkOutputFiles) {
+      boolean checkOutputFiles,
+      ArtifactResolver artifactResolver) {
     return new ActionCacheChecker(
         cache,
-        new FakeArtifactResolverBase(),
+        artifactResolver,
         new ActionKeyContext(),
         action -> true,
         proxyMetadataFactory,
@@ -507,7 +506,12 @@ public final class ActionCacheCheckerTest {
   @Test
   public void bustActionCaches_skipsCacheHitForMatchingTarget() throws Exception {
     Label target = Label.parseCanonicalUnchecked("//pkg:target");
-    cacheChecker = createActionCacheChecker(/* storeOutputMetadata= */ true, target);
+    cacheChecker =
+        createActionCacheChecker(
+            /* storeOutputMetadata= */ true,
+            target,
+            /* checkOutputFiles= */ true,
+            new FakeArtifactResolverBase());
     Artifact output = createArtifact(artifactRoot, "bin/dummy");
     Action action = new WriteEmptyOutputAction(createActionOwner(target), output);
 
@@ -521,7 +525,12 @@ public final class ActionCacheCheckerTest {
   @Test
   public void bustActionCaches_acceptsCacheHitForNonMatchingTarget() throws Exception {
     Label target = Label.parseCanonicalUnchecked("//pkg:target");
-    cacheChecker = createActionCacheChecker(/* storeOutputMetadata= */ true, target);
+    cacheChecker =
+        createActionCacheChecker(
+            /* storeOutputMetadata= */ true,
+            target,
+            /* checkOutputFiles= */ true,
+            new FakeArtifactResolverBase());
     Artifact output = createArtifact(artifactRoot, "bin/dummy");
     Action action =
         new WriteEmptyOutputAction(
@@ -724,7 +733,8 @@ public final class ActionCacheCheckerTest {
         createActionCacheChecker(
             /* storeOutputMetadata= */ true,
             /* bustActionCachesTarget= */ null,
-            /* checkOutputFiles= */ false);
+            /* checkOutputFiles= */ false,
+            new FakeArtifactResolverBase());
     Artifact output = createArtifact(artifactRoot, "bin/dummy");
     FileArtifactValue metadata = createRemoteMetadata("content");
     Action action = new InjectOutputFileMetadataAction(output, metadata);
@@ -746,7 +756,8 @@ public final class ActionCacheCheckerTest {
         createActionCacheChecker(
             /* storeOutputMetadata= */ true,
             /* bustActionCachesTarget= */ null,
-            /* checkOutputFiles= */ false);
+            /* checkOutputFiles= */ false,
+            new FakeArtifactResolverBase());
     Artifact output = createArtifact(artifactRoot, "bin/dummy");
     Action action = new InjectOutputFileMetadataAction(output, createRemoteMetadata("content"));
     runAction(action);
@@ -773,7 +784,10 @@ public final class ActionCacheCheckerTest {
       @TestParameter boolean checkOutputFiles) throws Exception {
     cacheChecker =
         createActionCacheChecker(
-            /* storeOutputMetadata= */ true, /* bustActionCachesTarget= */ null, checkOutputFiles);
+            /* storeOutputMetadata= */ true,
+            /* bustActionCachesTarget= */ null,
+            checkOutputFiles,
+            new FakeArtifactResolverBase());
     Artifact output = createArtifact(artifactRoot, "bin/dummy");
     String content = "content";
     Action action =
@@ -2135,8 +2149,10 @@ public final class ActionCacheCheckerTest {
     runAction(action);
 
     ActionCacheChecker checker =
-        new ActionCacheChecker(
-            cache,
+        createActionCacheChecker(
+            /* storeOutputMetadata= */ false,
+            /* bustActionCachesTarget= */ null,
+            /* checkOutputFiles= */ true,
             new FakeArtifactResolverBase() {
               @Override
               public Map<PathFragment, SourceArtifact> resolveSourceArtifacts(
@@ -2145,14 +2161,7 @@ public final class ActionCacheCheckerTest {
                 execPaths.forEach(execPath -> result.put(execPath, null));
                 return result;
               }
-            },
-            new ActionKeyContext(),
-            unused -> true,
-            proxyMetadataFactory,
-            ActionCacheChecker.CacheConfig.builder()
-                .setEnabled(true)
-                .setStoreOutputMetadata(false)
-                .build());
+            });
 
     assertThat(checker.getCachedInputs(action, /* resolver= */ null))
         .containsExactly(discoveredInput);
