@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.bazel.repository;
 
+import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelDepGraphValue;
 import com.google.devtools.build.lib.bazel.bzlmod.ModuleExtensionId;
@@ -49,7 +50,7 @@ final class RepoDefinitionInputs {
 
   record Resolved(
       ImmutableMap<RepositoryName, RepoSpec> moduleSpecs,
-      ImmutableMap<ModuleExtensionId, String> extensionUniqueNames)
+      ImmutableMap<String, ModuleExtensionId> extensionsByName)
       implements SkyValue {}
 
   /** Which entry in the resolved graph supplies this repository's definition. */
@@ -137,7 +138,8 @@ final class RepoDefinitionInputs {
                 specs.put(repo, spec);
               }
             });
-    return new Resolved(specs.buildOrThrow(), graph.getExtensionUniqueNames());
+    return new Resolved(
+        specs.buildOrThrow(), ImmutableBiMap.copyOf(graph.getExtensionUniqueNames()).inverse());
   }
 
   // A change to one module's spec should not recreate unrelated repository definitions.
@@ -153,9 +155,14 @@ final class RepoDefinitionInputs {
     if (spec != null) {
       return new ResolvedRepo.Module(spec);
     }
-    for (var entry : resolved.extensionUniqueNames().entrySet()) {
-      if (name.getName().startsWith(entry.getValue() + "+")) {
-        return new ResolvedRepo.Extension(entry.getKey(), entry.getValue());
+    // Extension names followed by '+' are prefix-free. Check delimiter positions so even a
+    // nonexistent canonical repo with an extra '+' still identifies its generating extension.
+    String repoName = name.getName();
+    for (int end = repoName.lastIndexOf('+'); end >= 0; end = repoName.lastIndexOf('+', end - 1)) {
+      String uniqueName = repoName.substring(0, end);
+      ModuleExtensionId id = resolved.extensionsByName().get(uniqueName);
+      if (id != null) {
+        return new ResolvedRepo.Extension(id, uniqueName);
       }
     }
     return ResolvedRepo.Missing.INSTANCE;
