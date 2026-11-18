@@ -37,6 +37,7 @@ import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.InMemoryCacheClient;
 import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.DetailedIOException;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
@@ -504,6 +505,27 @@ public final class RemoteExternalOverlayFileSystemTest {
   }
 
   @Test
+  public void injectRemoteRepo_usesHostPathSeparators() throws Exception {
+    var digestUtil = new DigestUtil(SyscallCache.NO_CACHE, DigestHashFunction.SHA256);
+    var name = "run-kata\\x2dcontainers.mount";
+    var file = FileNode.newBuilder().setName(name).setDigest(digestUtil.compute(new byte[0]));
+    var tree = Tree.newBuilder().setRoot(Directory.newBuilder().addFiles(file)).build();
+    var overlay = newOverlay(digestUtil);
+    var repo = RepositoryName.create("systemd_unit");
+    try {
+      if (OS.getCurrent() == OS.WINDOWS) {
+        var error = assertThrows(IOException.class, () -> overlay.injectRemoteRepo(repo, tree, ""));
+        assertThat(error).hasMessageThat().contains("invalid remote repo tree node name: " + name);
+      } else {
+        assertThat(overlay.injectRemoteRepo(repo, tree, "marker")).isTrue();
+        assertThat(overlay.getPath("/output/external/systemd_unit").getChild(name).isFile()).isTrue();
+      }
+    } finally {
+      overlay.afterCommand();
+    }
+  }
+
+  @Test
   public void injectRemoteRepo_rejectsUnsafeNodeNames() throws Exception {
     var digestUtil = new DigestUtil(SyscallCache.NO_CACHE, DigestHashFunction.SHA256);
     var child = Directory.getDefaultInstance();
@@ -511,8 +533,7 @@ public final class RemoteExternalOverlayFileSystemTest {
     var overlay = newOverlay(digestUtil);
     try {
       int index = 0;
-      for (String name :
-          new String[] {"", ".", "..", "../outside", "/outside", "nested/file", "nested\\file"}) {
+      for (String name : new String[] {"", ".", "..", "../outside", "/outside", "nested/file"}) {
         for (String kind : new String[] {"file", "directory", "symlink"}) {
           var root = Directory.newBuilder();
           switch (kind) {
