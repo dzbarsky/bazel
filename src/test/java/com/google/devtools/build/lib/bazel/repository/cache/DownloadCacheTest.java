@@ -125,6 +125,24 @@ public class DownloadCacheTest {
         .isEqualTo(FileSystemUtils.readContent(cacheValue, Charset.defaultCharset()));
   }
 
+  @Test
+  public void testPutHardlinksOnlyWhenCallerAllowsIt() throws Exception {
+    downloadCache.setHardlink(true);
+    Path cacheEntry = keyType.getCachePath(repositoryCachePath).getChild(hash);
+    Path cacheValue = cacheEntry.getChild(DownloadCache.DEFAULT_CACHE_FILENAME);
+    long sourceInode = downloadedFile.stat().getNodeId();
+
+    downloadCache.put(hash, downloadedFile, keyType, /* canonicalId= */ null);
+    assertThat(cacheValue.stat().getNodeId()).isNotEqualTo(sourceInode);
+
+    downloadCache.put(
+        hash, downloadedFile, keyType, /* canonicalId= */ null, /* mayHardlink= */ true);
+    downloadCache.put(
+        hash, downloadedFile, keyType, /* canonicalId= */ null, /* mayHardlink= */ true);
+    assertThat(cacheValue.stat().getNodeId()).isEqualTo(sourceInode);
+    assertThat(cacheEntry.getDirectoryEntries()).containsExactly(cacheValue);
+  }
+
   /**
    * Test that the put method without cache key correctly stores the downloaded file into the cache.
    */
