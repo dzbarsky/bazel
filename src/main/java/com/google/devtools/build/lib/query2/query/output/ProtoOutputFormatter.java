@@ -114,6 +114,7 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
 
   /** Null when all rule attributes are eligible for output. */
   @Nullable private ImmutableSet<String> ruleAttributes;
+  @Nullable private ImmutableSet<String> hashCatalogAttributes;
 
   private boolean flattenSelects = true;
   private boolean includeLocations = true;
@@ -168,7 +169,6 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
     super.setOptions(options, aspectResolver, hashFunction);
     clearDefaultAttributeCache();
     this.aspectResolver = aspectResolver;
-    this.dependencyFilter = FormatUtils.getDependencyFilter(options);
     this.packageGroupIncludesDoubleSlash = options.getIncompatiblePackageGroupIncludesDoubleSlash();
     this.relativeLocations = options.getRelativeLocations();
     this.includeDefaultValues = options.getProtoIncludeDefaultValues();
@@ -180,6 +180,14 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
     this.flattenSelects = options.getProtoFlattenSelects();
     this.includeLocations = options.getProtoIncludeLocations();
     this.includeRuleInputsAndOutputs = options.getProtoIncludeRuleInputsAndOutputs();
+    this.hashCatalogAttributes =
+        options instanceof QueryOptions query && query.getGenerateHashes() ? ruleAttributes : null;
+    DependencyFilter deps = FormatUtils.getDependencyFilter(options);
+    this.dependencyFilter =
+        hashCatalogAttributes != null && !includeRuleInputsAndOutputs
+            ? (aspect, attr) ->
+                hashCatalogAttributes.contains(attr.getName()) && deps.test(aspect, attr)
+            : deps;
     this.includeSyntheticAttributeHash = options.getProtoIncludeSyntheticAttributeHash();
     this.includeInstantiationStack = options.getProtoIncludeInstantiationStack();
     this.includeDefinitionStack = options.getProtoIncludeDefinitionStack();
@@ -546,11 +554,12 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
 
   /** Allow filtering of aspect attributes. */
   protected boolean includeAspectAttribute(Attribute attr, Collection<Label> value) {
-    return true;
+    return hashCatalogAttributes == null || hashCatalogAttributes.contains(attr.getName());
   }
 
   protected boolean includeRuleDefinitionEnvironment() {
-    return true;
+    return hashCatalogAttributes == null
+        || hashCatalogAttributes.contains(RULE_IMPLEMENTATION_HASH_ATTR_NAME);
   }
 
   /**
