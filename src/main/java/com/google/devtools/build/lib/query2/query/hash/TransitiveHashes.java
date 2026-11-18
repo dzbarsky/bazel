@@ -41,6 +41,7 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.ToLongFunction;
 import javax.annotation.Nullable;
 
 /**
@@ -68,7 +69,14 @@ public final class TransitiveHashes {
    *     dependencies whose hashes may be wrong. A dependency that does not exist is not an error:
    *     it is hashed as missing, so creating it changes the hashes of its dependents.
    */
-  public record Result(ImmutableMap<Label, String> hashes, ImmutableMap<Label, ErrorInfo> errors) {}
+  public record Result(
+      ImmutableMap<Label, String> hashes,
+      ImmutableMap<Label, ErrorInfo> errors,
+      ImmutableMap<String, FailureImpact> failureImpact,
+      int unlistedFailureImpact) {}
+
+  /** Requested targets reaching a direct failure, and those reaching only that failure. */
+  public record FailureImpact(int affected, int exclusive) {}
 
   /** Evaluates Skyframe keys with keep-going semantics. */
   @FunctionalInterface
@@ -138,15 +146,55 @@ public final class TransitiveHashes {
     }
 
     progress.accept(String.format("Hashing: combining hashes of %d targets", graph.size()));
-    combineStates(graph, Comparator.naturalOrder(), Label::getUnambiguousCanonicalForm, failed);
+    // Reserve the last bit for failures beyond the diagnostic limit. Include it in
+    // propagation so those failures never disappear or make another failure look exclusive.
+    Set<String> groups = new TreeSet<>();
+    failed.forEach(label -> groups.add(failureGroup(label)));
+    List<String> reported = groups.stream().limit(Long.SIZE - 1).toList();
+    Map<String, Long> groupMasks = HashMap.newHashMap(reported.size());
+    for (int i = 0; i < reported.size(); i++) {
+      groupMasks.put(reported.get(i), 1L << i);
+    }
+    Map<Label, Long> masks = HashMap.newHashMap(failed.size());
+    failed.forEach(
+        label -> masks.put(label, groupMasks.getOrDefault(failureGroup(label), Long.MIN_VALUE)));
+    ToLongFunction<Label> failedMask = label -> masks.getOrDefault(label, 0L);
+    combineStates(graph, Comparator.naturalOrder(), Label::getUnambiguousCanonicalForm, failedMask);
+    int[] affected = new int[Long.SIZE];
+    int[] exclusive = new int[reported.size()];
     ImmutableMap.Builder<Label, String> rootHashes = ImmutableMap.builderWithExpectedSize(roots.size());
     for (Label root : rootSet) {
       State<Label> state = graph.get(root);
       if (state != null && state.hash != null) {
         rootHashes.put(root, BaseEncoding.base16().lowerCase().encode(state.hash));
+      } else {
+        long reachable = state == null ? failedMask.applyAsLong(root) : state.failures;
+        int only = Long.numberOfTrailingZeros(reachable);
+        if (only < exclusive.length && Long.bitCount(reachable) == 1) {
+          exclusive[only]++;
+        }
+        while (reachable != 0) {
+          affected[Long.numberOfTrailingZeros(reachable)]++;
+          reachable &= reachable - 1;
+        }
       }
     }
-    return new Result(rootHashes.buildOrThrow(), ImmutableMap.copyOf(errors));
+    var impact = ImmutableMap.<String, FailureImpact>builderWithExpectedSize(reported.size());
+    for (int i = 0; i < reported.size(); i++) {
+      impact.put(reported.get(i), new FailureImpact(affected[i], exclusive[i]));
+    }
+    return new Result(
+        rootHashes.buildOrThrow(),
+        ImmutableMap.copyOf(errors),
+        impact.buildOrThrow(),
+        affected[Long.SIZE - 1]);
+  }
+
+  private static String failureGroup(Label label) {
+    var repository = label.getRepository();
+    return repository.isMain()
+        ? label.getUnambiguousCanonicalForm()
+        : repository.getCanonicalForm();
   }
 
   private static boolean isKnownAbsent(@Nullable ErrorInfo error) {
@@ -232,7 +280,7 @@ public final class TransitiveHashes {
       Set<K> failedKeys) {
     Map<K, State<K>> states = HashMap.newHashMap(graph.size());
     graph.forEach((key, node) -> states.put(key, new State<>(key, node, failedKeys.contains(key))));
-    combineStates(states, order, name, failedKeys);
+    combineStates(states, order, name, key -> failedKeys.contains(key) ? 1 : 0);
     Map<K, byte[]> hashes = HashMap.newHashMap(states.size());
     states.forEach(
         (key, state) -> {
@@ -247,7 +295,7 @@ public final class TransitiveHashes {
       Map<K, State<K>> states,
       Comparator<? super K> order,
       Function<? super K, String> name,
-      Set<K> failedKeys) {
+      ToLongFunction<? super K> failedMask) {
     Deque<State<K>> stack = new ArrayDeque<>();
     Deque<State<K>> work = new ArrayDeque<>();
     List<State<K>> component = new ArrayList<>();
@@ -265,14 +313,14 @@ public final class TransitiveHashes {
           K depKey = state.node.deps().get(state.nextDep++);
           State<K> dep = states.get(depKey);
           if (dep == null) {
-            state.failed |= failedKeys.contains(depKey);
+            state.failures |= failedMask.applyAsLong(depKey);
           } else if (dep.index < 0) {
             push(dep, nextIndex++, stack, work);
           } else if (dep.component < 0) {
             state.lowLink = Math.min(state.lowLink, dep.index);
             state.selfEdge |= state == dep;
           } else {
-            state.failed |= dep.failed;
+            state.failures |= dep.failures;
           }
           continue;
         }
@@ -281,16 +329,16 @@ public final class TransitiveHashes {
         if (state.lowLink == state.index) {
           component.clear();
           State<K> member;
-          boolean failed = false;
+          long failures = 0;
           do {
             member = stack.pop();
             member.component = state.index;
             component.add(member);
-            failed |= member.failed;
+            failures |= member.failures;
           } while (member != state);
-          if (failed) {
+          if (failures != 0) {
             for (State<K> failedMember : component) {
-              failedMember.failed = true;
+              failedMember.failures = failures;
             }
           } else {
             hashComponent(component, states, order, name, fp);
@@ -299,7 +347,7 @@ public final class TransitiveHashes {
         if (!work.isEmpty()) {
           State<K> parent = work.peek();
           parent.lowLink = Math.min(parent.lowLink, state.lowLink);
-          parent.failed |= state.failed;
+          parent.failures |= state.failures;
         }
       }
     }
@@ -314,14 +362,14 @@ public final class TransitiveHashes {
     int component = -1;
     int nextDep;
     boolean selfEdge;
-    boolean failed;
+    long failures;
     byte[] hash;
     @Nullable String displayName;
 
     State(K key, Node<K> node, boolean failed) {
       this.key = key;
       this.node = node;
-      this.failed = failed;
+      this.failures = failed ? 1 : 0;
     }
 
     String displayName(Function<? super K, String> name) {
