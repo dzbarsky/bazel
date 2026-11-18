@@ -66,6 +66,7 @@ import com.google.devtools.build.lib.query2.query.aspectresolvers.AspectResolver
 import com.google.devtools.build.lib.starlarkdocextract.ExtractorContext;
 import com.google.devtools.build.lib.starlarkdocextract.LabelRenderer;
 import com.google.devtools.build.lib.starlarkdocextract.RuleInfoExtractor;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.CodedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -221,7 +222,19 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
   public Build.Target toTargetProtoBuffer(
       Target target, LabelPrinter labelPrinter, Object extraDataForAttrHash)
       throws InterruptedException {
+    return toTargetProtoBuffer(target, labelPrinter, extraDataForAttrHash, null);
+  }
+
+  protected Build.Target toTargetProtoBuffer(
+      Target target,
+      LabelPrinter labelPrinter,
+      Object extraDataForAttrHash,
+      @Nullable ByteString digest)
+      throws InterruptedException {
     Build.Target.Builder targetPb = Build.Target.newBuilder();
+    if (digest != null) {
+      targetPb.setTransitiveHash(digest);
+    }
 
     if (target instanceof Rule rule) {
       Build.Rule.Builder rulePb =

@@ -13,15 +13,20 @@
 // limitations under the License.
 package com.google.devtools.build.lib.query2.query.output;
 
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.packages.Target;
+import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.io.OutputStream;
-import javax.annotation.Nullable;
+import java.util.Map;
 
 /** A query output format that can retain metadata for targets with unresolved hashes. */
 public interface HashOutputFormatter extends StreamedFormatter {
-  void writeHashedTarget(
-      Target target, LabelPrinter labelPrinter, @Nullable String digest, OutputStream out)
+  void writeHashedTargets(
+      Iterable<Target> targets,
+      LabelPrinter labelPrinter,
+      Map<Label, ByteString> digests,
+      OutputStream out)
       throws IOException, InterruptedException;
 }

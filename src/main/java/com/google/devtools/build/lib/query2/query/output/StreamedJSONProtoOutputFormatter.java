@@ -13,14 +13,17 @@
 // limitations under the License.
 package com.google.devtools.build.lib.query2.query.output;
 
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.query2.engine.OutputFormatterCallback;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.util.JsonFormat;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import javax.annotation.Nullable;
+import java.util.HexFormat;
+import java.util.Map;
 
 /**
  * An output formatter that prints a list of targets according to ndjson spec to the output print
@@ -43,17 +46,22 @@ public class StreamedJSONProtoOutputFormatter extends ProtoOutputFormatter
     out.write('\n');
   }
 
-  /** Writes a snapshot row even if the target's transitive hash is unknown. */
   @Override
-  public void writeHashedTarget(
-      Target target, LabelPrinter labelPrinter, @Nullable String digest, OutputStream out)
+  public void writeHashedTargets(
+      Iterable<Target> targets,
+      LabelPrinter labelPrinter,
+      Map<Label, ByteString> digests,
+      OutputStream out)
       throws IOException, InterruptedException {
-    // Hashes contain only hex digits. Target labels and attributes use the normal JSON printer.
-    String hash = digest == null ? "null" : "\"" + digest + "\"";
-    out.write(("{\"hash\":" + hash + ",\"target\":").getBytes(StandardCharsets.UTF_8));
-    writeTargetJson(target, labelPrinter, out);
-    out.write('}');
-    out.write('\n');
+    for (Target target : targets) {
+      var digest = digests.get(target.getLabel());
+      String hash =
+          digest == null ? "null" : "\"" + HexFormat.of().formatHex(digest.toByteArray()) + "\"";
+      out.write(("{\"hash\":" + hash + ",\"target\":").getBytes(StandardCharsets.UTF_8));
+      writeTargetJson(target, labelPrinter, out);
+      out.write('}');
+      out.write('\n');
+    }
   }
 
   private void writeTargetJson(Target target, LabelPrinter labelPrinter, OutputStream out)

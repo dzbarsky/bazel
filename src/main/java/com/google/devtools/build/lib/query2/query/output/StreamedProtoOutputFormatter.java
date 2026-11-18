@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.query2.query.output;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ExecutorUtil;
 import com.google.devtools.build.lib.concurrent.MoreFutures;
 import com.google.devtools.build.lib.packages.LabelPrinter;
@@ -29,11 +30,11 @@ import java.io.OutputStream;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
-import javax.annotation.Nullable;
 
 /**
  * An output formatter that outputs a protocol buffer representation of a query result and outputs
@@ -62,14 +63,21 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
   }
 
   @Override
-  public void writeHashedTarget(
-      Target target, LabelPrinter labelPrinter, @Nullable String digest, OutputStream out)
+  public void writeHashedTargets(
+      Iterable<Target> targets,
+      LabelPrinter labelPrinter,
+      Map<Label, ByteString> digests,
+      OutputStream out)
       throws IOException, InterruptedException {
-    Build.Target record = toTargetProtoBuffer(target, labelPrinter);
-    if (digest != null) {
-      record = record.toBuilder().setTransitiveHash(ByteString.fromHex(digest)).build();
+    CodedOutputStream codedOut = CodedOutputStream.newInstance(out);
+    for (Target target : targets) {
+      if (Thread.interrupted()) {
+        throw new InterruptedException();
+      }
+      codedOut.writeMessageNoTag(
+          toTargetProtoBuffer(target, labelPrinter, "", digests.get(target.getLabel())));
     }
-    record.writeDelimitedTo(out);
+    codedOut.flush();
   }
 
   @Override
