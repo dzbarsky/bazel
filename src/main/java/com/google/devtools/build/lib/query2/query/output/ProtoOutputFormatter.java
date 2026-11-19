@@ -132,30 +132,51 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
   @Nullable private volatile DefaultAttributeCache defaultAttributeCache;
 
   private record DefaultAttributeCache(
-      LabelPrinter labelPrinter, Map<AttributeProvider, DefaultAttributeProtos> byProvider) {}
+      LabelPrinter labelPrinter, Map<AttributeProvider, RuleAttributeOutput> byProvider) {}
 
-  /** Releases the default protobufs and label printer after query output completes. */
+  private record RuleAttributeOutput(
+      ImmutableList<Integer> sortedIndices, DefaultAttributeProtos defaults) {}
+
+  /** Releases projected attributes, default protobufs and the label printer after output. */
   public final void clearDefaultAttributeCache() {
     defaultAttributeCache = null;
   }
 
-  private DefaultAttributeProtos getDefaultAttributeProtos(Rule rule, LabelPrinter labelPrinter) {
+  private RuleAttributeOutput getRuleAttributeOutput(
+      AttributeProvider provider, LabelPrinter labelPrinter) {
     DefaultAttributeCache cache = defaultAttributeCache;
     if (cache == null || cache.labelPrinter() != labelPrinter) {
       cache = new DefaultAttributeCache(labelPrinter, new ConcurrentHashMap<>());
       defaultAttributeCache = cache;
     }
-    AttributeProvider provider = rule.getAttributeProvider();
-    DefaultAttributeProtos defaults = cache.byProvider().get(provider);
-    return defaults != null
-        ? defaults
+    RuleAttributeOutput output = cache.byProvider().get(provider);
+    return output != null
+        ? output
         : cache
             .byProvider()
             .computeIfAbsent(
                 provider,
-                unused ->
-                    new DefaultAttributeProtos(
-                        provider.getAttributeCount(), labelPrinter, includeAttributeSourceAspects));
+                key ->
+                    new RuleAttributeOutput(
+                        projectedAttributeIndices(key),
+                        new DefaultAttributeProtos(
+                            key.getAttributeCount(), labelPrinter, includeAttributeSourceAspects)));
+  }
+
+  private ImmutableList<Integer> projectedAttributeIndices(AttributeProvider provider) {
+    var sortedIndices = provider.getAttributeIndicesSortedByName();
+    if (ruleAttributes == null) {
+      return sortedIndices;
+    }
+    var selected =
+        ImmutableList.<Integer>builderWithExpectedSize(
+            Math.min(sortedIndices.size(), ruleAttributes.size()));
+    for (int index : sortedIndices) {
+      if (ruleAttributes.contains(provider.getAttribute(index).getName())) {
+        selected.add(index);
+      }
+    }
+    return selected.build();
   }
 
   @Override
@@ -440,8 +461,8 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
       Rule rule,
       Object extraDataForAttrHash,
       LabelPrinter labelPrinter) {
-    DefaultAttributeProtos defaults = getDefaultAttributeProtos(rule, labelPrinter);
-    var serializedAttributes = addRuleAttributes(rulePb, rule, labelPrinter, defaults);
+    var attributes = getRuleAttributeOutput(rule.getAttributeProvider(), labelPrinter);
+    var serializedAttributes = addRuleAttributes(rulePb, rule, labelPrinter, attributes);
     if (includeSyntheticAttributeHash) {
       rulePb.addAttribute(
           Build.Attribute.newBuilder()
@@ -454,7 +475,7 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
                       hashFunction,
                       includeAttributeSourceAspects,
                       includeStarlarkRuleEnv,
-                      defaults))
+                      attributes.defaults()))
               .setType(Discriminator.STRING));
     }
   }
@@ -464,12 +485,13 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
       Build.Rule.Builder rulePb,
       Rule rule,
       LabelPrinter labelPrinter,
-      DefaultAttributeProtos defaults) {
-    if (ruleAttributes != null && ruleAttributes.isEmpty()) {
+      RuleAttributeOutput attributes) {
+    var sortedIndices = attributes.sortedIndices();
+    if (sortedIndices.isEmpty()) {
       return null;
     }
     AttributeProvider attributeProvider = rule.getAttributeProvider();
-    var sortedIndices = attributeProvider.getAttributeIndicesSortedByName();
+    var defaults = attributes.defaults();
     AggregatingAttributeMapper attributeMapper = AggregatingAttributeMapper.of(rule);
     Build.Attribute[] serializedAttributes = null;
     for (int i = 0; i < sortedIndices.size(); i++) {
