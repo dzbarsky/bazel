@@ -45,7 +45,8 @@ public class CompiledModuleFileTest {
         """;
     assertThat(checkSyntax(program))
         .containsExactly(
-            new IncludeStatement("hullo", false, Location.fromFileLineColumn("test file", 2, 1)));
+            new IncludeStatement(
+                "include", "hullo", false, Location.fromFileLineColumn("test file", 2, 1)));
   }
 
   @Test
@@ -59,8 +60,10 @@ public class CompiledModuleFileTest {
         """;
     assertThat(checkSyntax(program))
         .containsExactly(
-            new IncludeStatement("hullo", false, Location.fromFileLineColumn("test file", 2, 1)),
-            new IncludeStatement("world", false, Location.fromFileLineColumn("test file", 4, 1)));
+            new IncludeStatement(
+                "include", "hullo", false, Location.fromFileLineColumn("test file", 2, 1)),
+            new IncludeStatement(
+                "include", "world", false, Location.fromFileLineColumn("test file", 4, 1)));
   }
 
   @Test
@@ -75,7 +78,7 @@ public class CompiledModuleFileTest {
     assertThat(checkSyntax(program))
         .containsExactly(
             new IncludeStatement(
-                "hullo\nworld", false, Location.fromFileLineColumn("test file", 3, 1)));
+                "include", "hullo\nworld", false, Location.fromFileLineColumn("test file", 3, 1)));
   }
 
   @Test
@@ -88,9 +91,15 @@ public class CompiledModuleFileTest {
     assertThat(checkSyntax(program))
         .containsExactly(
             new IncludeStatement(
-                "dev.MODULE.bazel", true, Location.fromFileLineColumn("test file", 1, 1)),
+                "include",
+                "dev.MODULE.bazel",
+                true,
+                Location.fromFileLineColumn("test file", 1, 1)),
             new IncludeStatement(
-                "prod.MODULE.bazel", false, Location.fromFileLineColumn("test file", 2, 1)))
+                "include",
+                "prod.MODULE.bazel",
+                false,
+                Location.fromFileLineColumn("test file", 2, 1)))
         .inOrder();
   }
 
@@ -100,6 +109,7 @@ public class CompiledModuleFileTest {
         """
         myext = use_extension('whatever')
         myext.include(include="hullo")
+        myext.try_include(try_include="world")
         """;
     assertThat(checkSyntax(program)).isEmpty();
   }
@@ -117,7 +127,60 @@ public class CompiledModuleFileTest {
         """;
     assertThat(checkSyntax(program))
         .containsExactly(
-            new IncludeStatement("world", false, Location.fromFileLineColumn("test file", 1, 1)));
+            new IncludeStatement(
+                "include", "world", false, Location.fromFileLineColumn("test file", 1, 1)));
+  }
+
+  @Test
+  public void checkSyntax_tryIncludeAndIncludeCanBeShadowedIndependently() throws Exception {
+    assertThat(
+            checkSyntax(
+                """
+                include = print
+                include(1, 2)
+                try_include("local", dev_dependency = True)
+                """))
+        .containsExactly(
+            new IncludeStatement(
+                "try_include", "local", true, Location.fromFileLineColumn("test file", 3, 1)));
+    assertThat(
+            checkSyntax(
+                """
+                try_include("local")
+                try_include = print
+                try_include(1, 2)
+                include("required")
+                """))
+        .containsExactly(
+            new IncludeStatement(
+                "try_include", "local", false, Location.fromFileLineColumn("test file", 1, 1)),
+            new IncludeStatement(
+                "include", "required", false, Location.fromFileLineColumn("test file", 4, 1)))
+        .inOrder();
+  }
+
+  @Test
+  public void checkSyntax_tryIncludeRequiresDirectCall() {
+    for (String program : ImmutableList.of("alias = try_include", "print(try_include('local'))")) {
+      var ex = assertThrows(SyntaxError.Exception.class, () -> checkSyntax(program));
+      assertThat(ex)
+          .hasMessageThat()
+          .contains("the `try_include` directive MUST be called directly at the top-level");
+    }
+  }
+
+  @Test
+  public void checkSyntax_tryIncludeRequiresLiteralArguments() {
+    for (String program :
+        ImmutableList.of(
+            "try_include(path)",
+            "try_include(label='local')",
+            "try_include('local', dev_dependency = dev)")) {
+      var ex = assertThrows(SyntaxError.Exception.class, () -> checkSyntax(program));
+      assertThat(ex)
+          .hasMessageThat()
+          .contains("`try_include` directive MUST be called with one positional string literal");
+    }
   }
 
   @Test

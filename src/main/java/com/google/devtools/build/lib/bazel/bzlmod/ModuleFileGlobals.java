@@ -884,6 +884,14 @@ public class ModuleFileGlobals {
     }
   }
 
+  private static final String INCLUDE_LABEL_DOC =
+      "A repo-relative label starting with <code>//</code>. The filename must end with"
+          + " <code>.MODULE.bazel</code> and must not start with <code>.</code>.";
+  private static final String INCLUDE_DEV_DEPENDENCY_DOC =
+      "If true, this include is ignored outside the root module and when"
+          + " <code>--ignore_dev_dependency</code> is enabled. The value must be a literal"
+          + " <code>True</code> or <code>False</code>.";
+
   @StarlarkMethod(
       name = CompiledModuleFile.INCLUDE_IDENTIFIER,
       doc =
@@ -898,19 +906,10 @@ public class ModuleFileGlobals {
               + " to avoid having an enormous MODULE.bazel file or to better manage access control"
               + " for individual semantic segments.",
       parameters = {
-        @Param(
-            name = "label",
-            doc =
-                "The label pointing to the file to include. The label must point to a file in the"
-                    + " main repo; in other words, it <strong>must<strong> start with double"
-                    + " slashes (<code>//</code>). The name of the file must end with"
-                    + " <code>.MODULE.bazel</code> and must not start with <code>.</code>."),
+        @Param(name = "label", doc = INCLUDE_LABEL_DOC),
         @Param(
             name = "dev_dependency",
-            doc =
-                "If true, this include will be ignored if the current module is not the root"
-                    + " module or <code>--ignore_dev_dependency</code> is enabled. The value must"
-                    + " be a literal <code>True</code> or <code>False</code>.",
+            doc = INCLUDE_DEV_DEPENDENCY_DOC,
             named = true,
             positional = false,
             defaultValue = "False"),
@@ -918,10 +917,35 @@ public class ModuleFileGlobals {
       useStarlarkThread = true)
   public void include(String label, boolean devDependency, StarlarkThread thread)
       throws InterruptedException, EvalException {
-    ModuleThreadContext context =
-        ModuleThreadContext.fromOrFail(thread, CompiledModuleFile.INCLUDE_IDENTIFIER + "()");
+    include(CompiledModuleFile.INCLUDE_IDENTIFIER, label, devDependency, thread);
+  }
+
+  @StarlarkMethod(
+      name = CompiledModuleFile.TRY_INCLUDE_IDENTIFIER,
+      doc =
+          "Like <code>include()</code>, but silently skips a missing fragment. An existing"
+              + " fragment must belong to a package and satisfy all <code>include()</code> rules.",
+      parameters = {
+        @Param(name = "label", doc = INCLUDE_LABEL_DOC),
+        @Param(
+            name = "dev_dependency",
+            doc = INCLUDE_DEV_DEPENDENCY_DOC,
+            named = true,
+            positional = false,
+            defaultValue = "False"),
+      },
+      useStarlarkThread = true)
+  public void tryInclude(String label, boolean devDependency, StarlarkThread thread)
+      throws InterruptedException, EvalException {
+    include(CompiledModuleFile.TRY_INCLUDE_IDENTIFIER, label, devDependency, thread);
+  }
+
+  private static void include(
+      String directive, String label, boolean devDependency, StarlarkThread thread)
+      throws InterruptedException, EvalException {
+    ModuleThreadContext context = ModuleThreadContext.fromOrFail(thread, directive + "()");
     context.setNonModuleCalled();
-    context.include(label, devDependency, thread);
+    context.include(directive, label, devDependency, thread);
   }
 
   @StarlarkMethod(
