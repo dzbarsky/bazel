@@ -190,9 +190,7 @@ final class GenAnalysisQuery {
         .addProvider(
             RunfilesProvider.class,
             RunfilesProvider.simple(
-                new Runfiles.Builder(ruleContext.getWorkspaceName())
-                    .addTransitiveArtifacts(files)
-                    .build()))
+                new Runfiles.Builder().addTransitiveArtifacts(files).build()))
         .addOutputGroup(
             OutputGroupInfo.VALIDATION_TRANSITIVE, NestedSetBuilder.emptySet(Order.STABLE_ORDER))
         .build();

@@ -33,7 +33,6 @@ import com.google.devtools.build.lib.causes.Cause;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.exec.ExecutionOptions;
-import com.google.devtools.build.lib.pkgcache.LoadingFailureEvent;
 import com.google.devtools.build.lib.pkgcache.TargetParsingCompleteEvent;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn;
@@ -158,18 +157,6 @@ public final class CacheProbe implements AutoCloseable {
       incomplete.compareAndSet(
           null, "Cache probe could not analyze target: " + event.getFailedTarget().getLabel());
     }
-  }
-
-  @Subscribe
-  @AllowConcurrentEvents
-  public void loadingFailure(LoadingFailureEvent event) {
-    // The paired analysis event normally supplies the detailed failure code.
-    incomplete.compareAndSet(
-        null,
-        "Cache probe could not load "
-            + event.getFailedTarget()
-            + " because of "
-            + event.getFailureReason());
   }
 
   private void markMissing(ConfiguredTargetKey key) {
