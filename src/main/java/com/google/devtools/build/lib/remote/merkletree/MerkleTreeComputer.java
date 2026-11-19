@@ -433,6 +433,15 @@ public final class MerkleTreeComputer {
     }
   }
 
+  static Path resolveInputPath(ActionInput input, ArtifactPathResolver pathResolver) {
+    if (input instanceof ChildActionInput child) {
+      // R2C2 can resolve a source directory under external/ even while its children
+      // are absent from the execroot's physical symlink tree.
+      return pathResolver.toPath(child.parent).getRelative(child.relativePath);
+    }
+    return pathResolver.toPath(input);
+  }
+
   /**
    * Adapts a {@link Path} to an {@link ActionInput}.
    *
@@ -733,7 +742,7 @@ public final class MerkleTreeComputer {
         default -> {
           // The input is not represented by a known subtype of ActionInput. Bare ActionInputs
           // arise from exploded source directories, repository rules or tests.
-          var inputPath = artifactPathResolver.toPath(input);
+          var inputPath = resolveInputPath(input, artifactPathResolver);
           var digest = digestUtil.compute(input.getExecPath(), inputPath, inputPath.stat());
           addFile(currentDirectory, name, digest, nodeProperties);
           if (blobPolicy != BlobPolicy.DISCARD && digest.getSizeBytes() != 0) {
