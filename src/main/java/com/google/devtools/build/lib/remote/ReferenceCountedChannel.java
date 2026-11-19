@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.remote;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 import build.bazel.remote.execution.v2.ServerCapabilities;
 import com.google.common.base.Throwables;
@@ -26,6 +27,8 @@ import com.google.devtools.build.lib.remote.grpc.SharedConnectionFactory.SharedC
 import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.grpc.Channel;
+import io.grpc.Deadline;
+import io.grpc.Status;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.ReferenceCounted;
 import io.reactivex.rxjava3.annotations.CheckReturnValue;
@@ -36,6 +39,7 @@ import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Function;
 import java.io.IOException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import javax.annotation.Nullable;
 
 /**
@@ -102,7 +106,8 @@ public class ReferenceCountedChannel implements ReferenceCounted {
             caps =
                 blockingGet(
                     withChannelConnection(
-                        ChannelConnectionWithServerCapabilities::getServerCapabilities));
+                        ChannelConnectionWithServerCapabilities::getServerCapabilities),
+                    /* deadline= */ null);
             cachedServerCapabilities = caps;
           } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -142,11 +147,18 @@ public class ReferenceCountedChannel implements ReferenceCounted {
 
   public <T> T withChannelBlocking(IOFunction<Channel, T> source)
       throws IOException, InterruptedException {
-    return blockingGet(withChannel(channel -> Single.just(source.apply(channel))));
+    return withChannelBlocking(source, /* deadline= */ null);
+  }
+
+  /** Acquires a channel and invokes a call whose own deadline is the same as this wait deadline. */
+  public <T> T withChannelBlocking(IOFunction<Channel, T> source, @Nullable Deadline deadline)
+      throws IOException, InterruptedException {
+    return blockingGet(withChannel(channel -> Single.just(source.apply(channel))), deadline);
   }
 
   // prevents rxjava silent possible wrap of RuntimeException and misinterpretation
-  private <T> T blockingGet(Single<T> single) throws IOException, InterruptedException {
+  private <T> T blockingGet(Single<T> single, @Nullable Deadline deadline)
+      throws IOException, InterruptedException {
     SettableFuture<T> future = SettableFuture.create();
     single.subscribe(
         new SingleObserver<T>() {
@@ -173,12 +185,19 @@ public class ReferenceCountedChannel implements ReferenceCounted {
         });
 
     try {
-      return future.get();
-    } catch (InterruptedException e) {
-      // Dispose of the queued subscription, which would otherwise run its callback on the thread
-      // that returns the next permit.
+      return deadline == null
+          ? future.get()
+          : future.get(deadline.timeRemaining(NANOSECONDS), NANOSECONDS);
+    } catch (InterruptedException | TimeoutException e) {
+      // Dispose of the queued subscription before its callback can take the next permit.
       future.cancel(/* mayInterruptIfRunning= */ false);
-      throw e;
+      if (e instanceof InterruptedException interrupted) {
+        throw interrupted;
+      }
+      throw Status.DEADLINE_EXCEEDED
+          .withDescription("Remote gRPC channel wait exceeded the call deadline")
+          .withCause(e)
+          .asRuntimeException();
     } catch (ExecutionException e) {
       Throwable cause = e.getCause();
       Throwables.throwIfInstanceOf(cause, IOException.class);

@@ -180,6 +180,18 @@ public abstract class RemoteOptions extends CommonRemoteOptions {
   public abstract void setRemoteDownloader(String value);
 
   @Option(
+      name = "remote_downloader_fetch_timeout",
+      defaultValue = "0",
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      converter = RemoteDurationConverter.class,
+      help =
+          "The overall timeout for a Remote Asset FetchBlob request, including retries and time"
+              + " spent waiting for a connection. Zero leaves FetchBlob governed by the existing"
+              + " gRPC per-call settings. CAS downloads and local fallback have separate timeouts.")
+  public abstract Duration getRemoteDownloaderFetchTimeout();
+
+  @Option(
       name = "remote_downloader_local_fallback",
       oldName = "experimental_remote_downloader_local_fallback",
       defaultValue = "false",
