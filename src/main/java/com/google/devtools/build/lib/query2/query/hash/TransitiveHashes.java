@@ -95,6 +95,16 @@ public final class TransitiveHashes {
   public static Result compute(
       Collection<Label> roots, Evaluator evaluator, Consumer<String> progress)
       throws InterruptedException {
+    return compute(roots, evaluator, progress, false);
+  }
+
+  /** Computes hashes and, if requested, counts requested roots affected by each failure group. */
+  public static Result compute(
+      Collection<Label> roots,
+      Evaluator evaluator,
+      Consumer<String> progress,
+      boolean reportFailureImpact)
+      throws InterruptedException {
     Map<Label, State<Label>> graph = HashMap.newHashMap(roots.size());
     Set<Label> failed = new HashSet<>();
     Map<Label, ErrorInfo> errors = new TreeMap<>();
@@ -146,55 +156,81 @@ public final class TransitiveHashes {
     }
 
     progress.accept(String.format("Hashing: combining hashes of %d targets", graph.size()));
-    // Reserve the last bit for failures beyond the diagnostic limit. Include it in
-    // propagation so those failures never disappear or make another failure look exclusive.
-    Set<String> groups = new TreeSet<>();
-    failed.forEach(label -> groups.add(failureGroup(label)));
-    List<String> reported = groups.stream().limit(Long.SIZE - 1).toList();
-    Map<String, Long> groupMasks = HashMap.newHashMap(reported.size());
-    for (int i = 0; i < reported.size(); i++) {
-      groupMasks.put(reported.get(i), 1L << i);
-    }
-    Map<Label, Long> masks = HashMap.newHashMap(failed.size());
-    failed.forEach(
-        label -> masks.put(label, groupMasks.getOrDefault(failureGroup(label), Long.MIN_VALUE)));
-    ToLongFunction<Label> failedMask = label -> masks.getOrDefault(label, 0L);
+    var failureImpact =
+        reportFailureImpact && !failed.isEmpty() ? new FailureImpactCollector(failed) : null;
+    ToLongFunction<Label> failedMask =
+        failureImpact == null ? label -> failed.contains(label) ? 1L : 0L : failureImpact::mask;
     combineStates(graph, Comparator.naturalOrder(), Label::getUnambiguousCanonicalForm, failedMask);
-    int[] affected = new int[Long.SIZE];
-    int[] exclusive = new int[reported.size()];
     ImmutableMap.Builder<Label, String> rootHashes = ImmutableMap.builderWithExpectedSize(roots.size());
     for (Label root : rootSet) {
       State<Label> state = graph.get(root);
       if (state != null && state.hash != null) {
         rootHashes.put(root, BaseEncoding.base16().lowerCase().encode(state.hash));
-      } else {
-        long reachable = state == null ? failedMask.applyAsLong(root) : state.failures;
-        int only = Long.numberOfTrailingZeros(reachable);
-        if (only < exclusive.length && Long.bitCount(reachable) == 1) {
-          exclusive[only]++;
-        }
-        while (reachable != 0) {
-          affected[Long.numberOfTrailingZeros(reachable)]++;
-          reachable &= reachable - 1;
-        }
+      } else if (failureImpact != null) {
+        failureImpact.record(state == null ? failureImpact.mask(root) : state.failures);
       }
-    }
-    var impact = ImmutableMap.<String, FailureImpact>builderWithExpectedSize(reported.size());
-    for (int i = 0; i < reported.size(); i++) {
-      impact.put(reported.get(i), new FailureImpact(affected[i], exclusive[i]));
     }
     return new Result(
         rootHashes.buildOrThrow(),
         ImmutableMap.copyOf(errors),
-        impact.buildOrThrow(),
-        affected[Long.SIZE - 1]);
+        failureImpact == null ? ImmutableMap.of() : failureImpact.build(),
+        failureImpact == null ? 0 : failureImpact.unlisted());
   }
 
-  private static String failureGroup(Label label) {
-    var repository = label.getRepository();
-    return repository.isMain()
-        ? label.getUnambiguousCanonicalForm()
-        : repository.getCanonicalForm();
+  private static final class FailureImpactCollector {
+    private final List<String> reported;
+    private final Map<Label, Long> masks;
+    private final int[] affected = new int[Long.SIZE];
+    private final int[] exclusive;
+
+    FailureImpactCollector(Set<Label> failed) {
+      // The last bit retains unlisted failures so they cannot make a listed group look exclusive.
+      Set<String> groups = new TreeSet<>();
+      failed.forEach(label -> groups.add(failureGroup(label)));
+      this.reported = groups.stream().limit(Long.SIZE - 1).toList();
+      this.exclusive = new int[reported.size()];
+      Map<String, Long> groupMasks = HashMap.newHashMap(reported.size());
+      for (int i = 0; i < reported.size(); i++) {
+        groupMasks.put(reported.get(i), 1L << i);
+      }
+      this.masks = HashMap.newHashMap(failed.size());
+      failed.forEach(
+          label -> masks.put(label, groupMasks.getOrDefault(failureGroup(label), Long.MIN_VALUE)));
+    }
+
+    long mask(Label label) {
+      return masks.getOrDefault(label, 0L);
+    }
+
+    void record(long reachable) {
+      int only = Long.numberOfTrailingZeros(reachable);
+      if (only < exclusive.length && Long.bitCount(reachable) == 1) {
+        exclusive[only]++;
+      }
+      while (reachable != 0) {
+        affected[Long.numberOfTrailingZeros(reachable)]++;
+        reachable &= reachable - 1;
+      }
+    }
+
+    ImmutableMap<String, FailureImpact> build() {
+      var impact = ImmutableMap.<String, FailureImpact>builderWithExpectedSize(reported.size());
+      for (int i = 0; i < reported.size(); i++) {
+        impact.put(reported.get(i), new FailureImpact(affected[i], exclusive[i]));
+      }
+      return impact.buildOrThrow();
+    }
+
+    int unlisted() {
+      return affected[Long.SIZE - 1];
+    }
+
+    private static String failureGroup(Label label) {
+      var repository = label.getRepository();
+      return repository.isMain()
+          ? label.getUnambiguousCanonicalForm()
+          : repository.getCanonicalForm();
+    }
   }
 
   private static boolean isKnownAbsent(@Nullable ErrorInfo error) {

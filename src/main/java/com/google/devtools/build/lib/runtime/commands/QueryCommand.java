@@ -281,7 +281,8 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
         TransitiveHashes.compute(
             labels,
             keys -> env.getSkyframeExecutor().prepareAndGet(keys, evaluationContext),
-            message -> env.getReporter().handle(Event.progress(message)));
+            message -> env.getReporter().handle(Event.progress(message)),
+            queryOptions.getQueryHashFailureImpact());
     CountingOutputStream binary = null;
     if (catalog instanceof StreamedProtoOutputFormatter) {
       binary = new CountingOutputStream(out);
