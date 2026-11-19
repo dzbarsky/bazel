@@ -15,13 +15,16 @@ package com.google.devtools.build.lib.query2.query.output;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Iterables;
+import com.google.common.hash.HashFunction;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ExecutorUtil;
 import com.google.devtools.build.lib.concurrent.MoreFutures;
-import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.query2.common.CommonQueryOptions;
 import com.google.devtools.build.lib.query2.engine.OutputFormatterCallback;
 import com.google.devtools.build.lib.query2.proto.proto2api.Build;
+import com.google.devtools.build.lib.query2.query.aspectresolvers.AspectResolver;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.CodedOutputStream;
 import java.io.ByteArrayOutputStream;
@@ -35,6 +38,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
+import javax.annotation.Nullable;
 
 /**
  * An output formatter that outputs a protocol buffer representation of a query result and outputs
@@ -49,13 +53,23 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
   // to amortize task overhead without retaining the roughly 5 MB chunks used by the previous PR.
   @VisibleForTesting static final int TARGETS_PER_CHUNK = 50;
 
-  // Two pending chunks per worker keep serialization busy while this callback writes the head
-  // chunk. Retained serialized bytes are approximately MAX_PENDING_CHUNKS * TARGETS_PER_CHUNK *
-  // average serialized target bytes, plus worker-local buffers and temporary array copies.
-  private static final int MAX_PENDING_CHUNKS = 2 * OUTPUT_PARALLELISM;
+  private static final int HASH_OUTPUT_PARALLELISM = Math.min(4, OUTPUT_PARALLELISM);
 
   private static final ThreadFactory THREAD_FACTORY =
       Thread.ofPlatform().daemon().name("streamed-proto-output-", 0).factory();
+
+  private boolean parallelHashOutput;
+
+  @Override
+  public void setOptions(
+      CommonQueryOptions options, AspectResolver aspectResolver, HashFunction hashFunction) {
+    super.setOptions(options, aspectResolver, hashFunction);
+    parallelHashOutput =
+        options instanceof QueryOptions query
+            && query.getParallelStreamedProtoOutput()
+            && !query.getProtoRuleClasses()
+            && HASH_OUTPUT_PARALLELISM > 1;
+  }
 
   @Override
   public String getName() {
@@ -64,21 +78,38 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
 
   @Override
   public void writeHashedTargets(
-      Iterable<Target> targets, LabelPrinter labelPrinter, Map<Label, String> hashes, OutputStream out)
+      Iterable<Target> targets,
+      LabelPrinter labelPrinter,
+      Map<Label, String> hashes,
+      OutputStream out)
       throws IOException, InterruptedException {
+    if (parallelHashOutput) {
+      var callback = new ParallelCallback(out, labelPrinter, hashes, HASH_OUTPUT_PARALLELISM);
+      try {
+        callback.processOutput(targets);
+      } finally {
+        callback.shutdown();
+      }
+      return;
+    }
     CodedOutputStream codedOut = CodedOutputStream.newInstance(out);
     for (Target target : targets) {
       if (Thread.interrupted()) {
         throw new InterruptedException();
       }
-      Build.Target record = toTargetProtoBuffer(target, labelPrinter);
-      String digest = hashes.get(target.getLabel());
-      if (digest != null) {
-        record = record.toBuilder().setTransitiveHash(ByteString.fromHex(digest)).build();
-      }
-      codedOut.writeMessageNoTag(record);
+      codedOut.writeMessageNoTag(
+          toTargetWithHash(target, labelPrinter, hashes.get(target.getLabel())));
     }
     codedOut.flush();
+  }
+
+  private Build.Target toTargetWithHash(
+      Target target, LabelPrinter labelPrinter, @Nullable String digest)
+      throws InterruptedException {
+    Build.Target record = toTargetProtoBuffer(target, labelPrinter);
+    return digest == null
+        ? record
+        : record.toBuilder().setTransitiveHash(ByteString.fromHex(digest)).build();
   }
 
   @Override
@@ -87,7 +118,7 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
     // rule_class_info is emitted for the first rule in the stream with a given key. Parallel target
     // construction would race that stateful first-seen decision even though writes remain ordered.
     if (options.getParallelStreamedProtoOutput() && !options.getProtoRuleClasses()) {
-      return new ParallelCallback(out, labelPrinter);
+      return new ParallelCallback(out, labelPrinter, /* hashes= */ null, OUTPUT_PARALLELISM);
     }
     return new OutputFormatterCallback<Target>() {
       private final CodedOutputStream codedOut = CodedOutputStream.newInstance(out);
@@ -110,12 +141,21 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
   private final class ParallelCallback extends OutputFormatterCallback<Target> {
     private final OutputStream out;
     private final LabelPrinter labelPrinter;
-    private final ExecutorService executor =
-        Executors.newFixedThreadPool(OUTPUT_PARALLELISM, THREAD_FACTORY);
+    @Nullable private final Map<Label, String> hashes;
+    private final ExecutorService executor;
+    private final int maxPendingChunks;
 
-    private ParallelCallback(OutputStream out, LabelPrinter labelPrinter) {
+    private ParallelCallback(
+        OutputStream out,
+        LabelPrinter labelPrinter,
+        @Nullable Map<Label, String> hashes,
+        int parallelism) {
       this.out = out;
       this.labelPrinter = labelPrinter;
+      this.hashes = hashes;
+      this.executor = Executors.newFixedThreadPool(parallelism, THREAD_FACTORY);
+      // Keep enough work queued while the head chunk is being written.
+      this.maxPendingChunks = 2 * parallelism;
     }
 
     @Override
@@ -126,7 +166,7 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
       Deque<Future<byte[]>> pendingChunks = new ArrayDeque<>();
       try {
         for (List<Target> targets : Iterables.partition(partialResult, TARGETS_PER_CHUNK)) {
-          if (pendingChunks.size() == MAX_PENDING_CHUNKS) {
+          if (pendingChunks.size() == maxPendingChunks) {
             writeChunk(pendingChunks.removeFirst());
           }
           pendingChunks.addLast(executor.submit(() -> serializeChunk(targets)));
@@ -149,7 +189,9 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
         if (Thread.interrupted()) {
           throw new InterruptedException();
         }
-        codedOut.writeMessageNoTag(toTargetProtoBuffer(target, labelPrinter));
+        codedOut.writeMessageNoTag(
+            toTargetWithHash(
+                target, labelPrinter, hashes == null ? null : hashes.get(target.getLabel())));
       }
       codedOut.flush();
       return bytes.toByteArray();
@@ -163,6 +205,10 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
 
     @Override
     public void close(boolean failFast) {
+      shutdown();
+    }
+
+    private void shutdown() {
       // processOutput drains all work on success. On failure, cancel remaining work without
       // replacing the primary query, output, or interruption failure during cleanup.
       if (!executor.isShutdown() && ExecutorUtil.uninterruptibleShutdownNow(executor)) {
