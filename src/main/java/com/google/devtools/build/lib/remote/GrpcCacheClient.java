@@ -476,7 +476,9 @@ public class GrpcCacheClient extends RemoteCacheClient implements MissingDigests
   }
 
   boolean supportsRepositoryBatchReads() {
-    return !batchReadUnsupported.get();
+    // Repository batches request identity responses. Keep the compressed ByteStream path when
+    // compression is enabled.
+    return !options.getCacheCompression() && !batchReadUnsupported.get();
   }
 
   ListenableFuture<ImmutableMap<Digest, ByteString>> downloadRepositoryBlobBatch(
