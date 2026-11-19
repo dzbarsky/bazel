@@ -49,6 +49,9 @@ import com.google.devtools.build.lib.exec.SingleBuildFileCache;
 import com.google.devtools.build.lib.pkgcache.PackageManager;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.query2.cquery.CqueryOptions;
+import com.google.devtools.build.lib.query2.query.output.HashOutputFormatter;
+import com.google.devtools.build.lib.query2.query.output.OutputFormatters;
+import com.google.devtools.build.lib.query2.query.output.QueryOptions;
 import com.google.devtools.build.lib.runtime.proto.InvocationPolicyOuterClass.InvocationPolicy;
 import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.ExternalRepository;
@@ -500,6 +503,18 @@ public class CommandEnvironment {
 
   public String getCommandName() {
     return command.name();
+  }
+
+  /** These hash streams can be retried without exposing a partial result. */
+  public boolean usesQueryHashStream() {
+    if (!getCommandName().equals("query")) {
+      return false;
+    }
+    var options = getOptions().getOptions(QueryOptions.class);
+    return options.getGenerateHashes()
+        && OutputFormatters.getFormatter(
+                runtime.getQueryOutputFormatters(), options.getOutputFormat())
+            instanceof HashOutputFormatter;
   }
 
   public boolean usesCqueryHashStreamReceipt() {

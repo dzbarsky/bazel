@@ -53,6 +53,7 @@ import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.server.FailureDetails.Query.Code;
+import com.google.devtools.build.lib.skyframe.DetailedException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Either;
 import com.google.devtools.build.lib.util.ExitCode;
@@ -283,6 +284,19 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
             keys -> env.getSkyframeExecutor().prepareAndGet(keys, evaluationContext),
             message -> env.getReporter().handle(Event.progress(message)),
             queryOptions.getQueryHashFailureImpact());
+    if (catalog != null) {
+      // The dispatcher can retry a lost repository input only before the first catalog record.
+      for (var error : result.errors().values()) {
+        if (error.getException() instanceof DetailedException detailed) {
+          var failure = detailed.getDetailedExitCode().getFailureDetail();
+          if (failure != null
+              && failure.getFilesystem().getCode()
+                  == FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED) {
+            return BlazeCommandResult.failureDetail(failure);
+          }
+        }
+      }
+    }
     CountingOutputStream binary = null;
     if (catalog instanceof StreamedProtoOutputFormatter) {
       binary = new CountingOutputStream(out);

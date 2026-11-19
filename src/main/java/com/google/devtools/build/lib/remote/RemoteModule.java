@@ -329,6 +329,10 @@ public final class RemoteModule extends BlazeModule {
     if (combinedCache == null) {
       return;
     }
+    var buildOptions = env.getOptions().getOptions(BuildRequestOptions.class);
+    boolean deferRepoDirectoryBlobs =
+        (env.usesQueryHashStream() && GrpcCacheClient.isRemoteCacheOptions(remoteOptions))
+            || (buildOptions != null && buildOptions.getRewindLostInputs());
     repositoryRemoteHelpersFactoryDelegate.init(
         new RepositoryRemoteHelpersFactoryImpl(
             env.getDirectories(),
@@ -339,6 +343,7 @@ public final class RemoteModule extends BlazeModule {
             remoteOptions.getRemoteInstanceName(),
             remoteOptions.getRemoteAcceptCached(),
             remoteOptions.getRemoteUploadLocalResults(),
+            deferRepoDirectoryBlobs,
             verboseFailures));
     if (env.getDirectories().getOutputBase().getFileSystem()
         instanceof RemoteExternalOverlayFileSystem remoteFs) {
@@ -1155,7 +1160,7 @@ public final class RemoteModule extends BlazeModule {
         env.getDirectories().getOutputBase().getFileSystem()
                 instanceof RemoteExternalOverlayFileSystem remoteFs
             && remoteFs.afterCommand()
-            && env.usesCqueryHashStreamReceipt();
+            && (env.usesQueryHashStream() || env.usesCqueryHashStreamReceipt());
     remoteDownloader = null;
     actionContextProvider = null;
     actionInputFetcher = null;
@@ -1170,7 +1175,7 @@ public final class RemoteModule extends BlazeModule {
       throw new AbruptExitException(
           DetailedExitCode.of(
               FailureDetail.newBuilder()
-                  .setMessage("Remote repository files were evicted during cquery")
+                  .setMessage("Remote repository files were evicted during query")
                   .setFilesystem(
                       FailureDetails.Filesystem.newBuilder()
                           .setCode(FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED))
