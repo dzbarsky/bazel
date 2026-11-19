@@ -274,9 +274,8 @@ public final class DirectTargetHashFunction implements SkyFunction {
           RootedPath.toRootedPath(inputFile.getPackageMetadata().sourceRoot(), inputFile.getPath());
       try {
         fileDigest =
-            (SourceFileDigestFunction.Value)
-                env.getValueOrThrow(
-                    SourceFileDigestFunction.key(inputPath), IOException.class);
+            SourceFileDigestFunction.forQuery(
+                env.getValueOrThrow(SourceFileDigestFunction.key(inputPath), IOException.class));
       } catch (IOException e) {
         throw new DirectTargetHashFunctionException(e);
       }
@@ -620,8 +619,8 @@ public final class DirectTargetHashFunction implements SkyFunction {
         continue;
       }
       var digest =
-          (SourceFileDigestFunction.Value)
-              fileDigests.getOrThrow(fileKeys.get(i), IOException.class);
+          SourceFileDigestFunction.forQuery(
+              fileDigests.getOrThrow(fileKeys.get(i), IOException.class));
       if (digest == null) {
         return null;
       }

@@ -433,7 +433,9 @@ public class SingleExtensionEvalFunction implements SkyFunction {
     // Check inputs in batches to prevent Skyframe cycles caused by outdated dependencies.
     for (ImmutableList<RepoRecordedInput.WithValue> batch :
         RepoRecordedInput.WithValue.splitIntoBatches(recordedInputs)) {
-      Optional<String> outdated = RepoRecordedInput.isAnyValueOutdated(env, directories, batch);
+      Optional<String> outdated =
+          RepoRecordedInput.isAnyValueOutdated(
+              env, directories, batch, /* memoizeContents= */ true);
       if (env.valuesMissing()) {
         throw new NeedsSkyframeRestartException();
       }

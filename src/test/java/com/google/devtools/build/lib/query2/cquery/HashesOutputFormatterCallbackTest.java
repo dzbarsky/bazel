@@ -29,7 +29,6 @@ import com.google.devtools.build.lib.query2.engine.QueryExpressionResolver;
 import com.google.devtools.build.lib.query2.engine.QueryParser;
 import com.google.devtools.build.lib.query2.query.hash.DirectTargetHashFunction;
 import com.google.devtools.build.lib.query2.query.hash.RepoContentDigestFunction;
-import com.google.devtools.build.lib.query2.query.hash.SourceFileDigestFunction;
 import com.google.devtools.build.lib.query2.testutil.AbstractQueryTest.QueryHelper;
 import com.google.devtools.build.lib.query2.testutil.PostAnalysisQueryHelper.AnalysisHelper;
 import com.google.devtools.build.skyframe.SkyFunction;
@@ -64,7 +63,6 @@ public class HashesOutputFormatterCallbackTest extends ConfiguredTargetQueryTest
                 return ImmutableMap.<SkyFunctionName, SkyFunction>builder()
                     .putAll(super.getSkyFunctions(directories))
                     .put(DirectTargetHashFunction.NAME, new DirectTargetHashFunction(directories))
-                    .put(SourceFileDigestFunction.NAME, new SourceFileDigestFunction())
                     .put(RepoContentDigestFunction.NAME, new RepoContentDigestFunction(directories))
                     .buildOrThrow();
               }

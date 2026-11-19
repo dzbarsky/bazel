@@ -44,6 +44,7 @@ import com.google.devtools.build.lib.packages.util.LoadingMock;
 import com.google.devtools.build.lib.packages.util.MockCcSupport;
 import com.google.devtools.build.lib.packages.util.MockPythonSupport;
 import com.google.devtools.build.lib.packages.util.MockToolsConfig;
+import com.google.devtools.build.lib.query2.query.hash.SourceFileDigestFunction;
 import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
 import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.skyframe.ClientEnvironmentFunction;
@@ -197,6 +198,7 @@ public abstract class AnalysisMock extends LoadingMock {
             SkyFunctions.BAZEL_LOCK_FILE,
             new BazelLockFileFunction(directories.getWorkspace(), directories.getOutputBase()))
         .put(SkyFunctions.BAZEL_MODULE_RESOLUTION, new BazelModuleResolutionFunction())
+        .put(SourceFileDigestFunction.NAME, new SourceFileDigestFunction())
         .put(SkyFunctions.SINGLE_EXTENSION, new SingleExtensionFunction())
         .put(
             SkyFunctions.SINGLE_EXTENSION_EVAL,
