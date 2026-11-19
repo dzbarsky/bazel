@@ -114,6 +114,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//third_party/java/grpc:core",
         "//third_party/java/guava:base",
         "//third_party/java/guava:collect",
         "//third_party/java/guava:concurrent",
