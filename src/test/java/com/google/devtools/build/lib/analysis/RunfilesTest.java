@@ -249,9 +249,9 @@ public final class RunfilesTest extends FoundationTestCase {
     Artifact first = ActionsTestUtil.createArtifact(root, "first");
     Artifact middle = ActionsTestUtil.createArtifact(root, "middle");
     for (boolean rootSymlink : new boolean[] {false, true}) {
-      Runfiles.Builder merged = new Runfiles.Builder("TESTING");
+      Runfiles.Builder merged = new Runfiles.Builder();
       for (Artifact artifact : ImmutableList.of(first, middle, first)) {
-        Runfiles.Builder entry = new Runfiles.Builder("TESTING");
+        Runfiles.Builder entry = new Runfiles.Builder();
         if (rootSymlink) {
           entry.addRootSymlink(PathFragment.create("same/path"), artifact);
         } else {
@@ -261,7 +261,9 @@ public final class RunfilesTest extends FoundationTestCase {
       }
       assertThat(merged.build().getRunfilesInputs(/* repoMappingManifest= */ null))
           .containsEntry(
-              PathFragment.create(rootSymlink ? "same/path" : "TESTING/same/path"), first);
+              PathFragment.create(
+                  rootSymlink ? "same/path" : LabelConstants.MAIN_REPO_DIR_NAME + "/same/path"),
+              first);
     }
   }
 
