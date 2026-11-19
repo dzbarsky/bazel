@@ -21,7 +21,10 @@ import static com.google.devtools.build.lib.remote.util.DigestUtil.isOldStyleDig
 import build.bazel.remote.execution.v2.ActionCacheGrpc;
 import build.bazel.remote.execution.v2.ActionCacheGrpc.ActionCacheFutureStub;
 import build.bazel.remote.execution.v2.ActionResult;
+import build.bazel.remote.execution.v2.BatchReadBlobsRequest;
+import build.bazel.remote.execution.v2.BatchReadBlobsResponse;
 import build.bazel.remote.execution.v2.ChunkingFunction;
+import build.bazel.remote.execution.v2.Compressor;
 import build.bazel.remote.execution.v2.ContentAddressableStorageGrpc;
 import build.bazel.remote.execution.v2.ContentAddressableStorageGrpc.ContentAddressableStorageFutureStub;
 import build.bazel.remote.execution.v2.Digest;
@@ -42,6 +45,7 @@ import com.google.bytestream.ByteStreamProto.ReadResponse;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Ascii;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.flogger.GoogleLogger;
@@ -76,6 +80,7 @@ import io.grpc.stub.ClientResponseObserver;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -133,6 +138,7 @@ public class GrpcCacheClient extends RemoteCacheClient implements MissingDigests
   private final int maxMissingBlobsDigestsPerMessage;
 
   private final AtomicBoolean closed = new AtomicBoolean();
+  private final AtomicBoolean batchReadUnsupported = new AtomicBoolean();
 
   @Override
   public boolean shouldVerifyDownloads() {
@@ -467,6 +473,106 @@ public class GrpcCacheClient extends RemoteCacheClient implements MissingDigests
             callCredentialsProvider);
 
     return Futures.transform(upload, ac -> null, MoreExecutors.directExecutor());
+  }
+
+  boolean supportsRepositoryBatchReads() {
+    return !batchReadUnsupported.get();
+  }
+
+  ListenableFuture<ImmutableMap<Digest, ByteString>> downloadRepositoryBlobBatch(
+      RemoteActionExecutionContext context, ImmutableSet<Digest> digests) {
+    if (!supportsRepositoryBatchReads() || digests.isEmpty() || digests.size() > 32) {
+      return Futures.immediateFuture(ImmutableMap.of());
+    }
+    long size = 0;
+    for (Digest digest : digests) {
+      long blobSize = digest.getSizeBytes();
+      if (blobSize <= 0 || blobSize > (1 << 20) - size) {
+        return Futures.immediateFuture(ImmutableMap.of());
+      }
+      size += blobSize;
+    }
+    var request =
+        BatchReadBlobsRequest.newBuilder()
+            .setInstanceName(options.getRemoteInstanceName())
+            .setDigestFunction(digestUtil.getDigestFunction())
+            .addAllDigests(digests)
+            .build();
+    if (request.getSerializedSize() > options.getMaxOutboundMessageSize()) {
+      return Futures.immediateFuture(ImmutableMap.of());
+    }
+
+    long payloadBytes = size;
+    var response =
+        Futures.transformAsync(
+            serverCapabilities(),
+            capabilities -> {
+              long limit = capabilities.getCacheCapabilities().getMaxBatchTotalSizeBytes();
+              if (limit > 0 && payloadBytes > limit) {
+                return Futures.immediateFuture(BatchReadBlobsResponse.getDefaultInstance());
+              }
+              return Utils.refreshIfUnauthenticatedAsync(
+                  () ->
+                      retrier.executeAsync(
+                          () ->
+                              channel.withChannelFuture(
+                                  ch -> casFutureStub(context, ch).batchReadBlobs(request))),
+                  callCredentialsProvider);
+            },
+            directExecutor());
+    var verified =
+        Futures.transformAsync(
+            response,
+            result -> {
+              try {
+                return Futures.immediateFuture(verifyRepositoryBlobBatch(digests, result));
+              } catch (IOException e) {
+                return Futures.immediateFailedFuture(e);
+              }
+            },
+            directExecutor());
+    return Futures.catchingAsync(
+        verified,
+        StatusRuntimeException.class,
+        failure ->
+            switch (failure.getStatus().getCode()) {
+              case UNIMPLEMENTED -> {
+                batchReadUnsupported.set(true);
+                yield Futures.immediateFuture(ImmutableMap.of());
+              }
+              // A rejected optional batch must not turn a normal ByteStream hit into a repo miss.
+              default -> Futures.immediateFuture(ImmutableMap.of());
+            },
+        directExecutor());
+  }
+
+  private ImmutableMap<Digest, ByteString> verifyRepositoryBlobBatch(
+      ImmutableSet<Digest> requested, BatchReadBlobsResponse response) throws IOException {
+    var remaining = new HashSet<>(requested);
+    var verified = ImmutableMap.<Digest, ByteString>builder();
+    for (var leaf : response.getResponsesList()) {
+      Digest digest = leaf.getDigest();
+      if (!remaining.remove(digest)) {
+        // Duplicate and unrequested entries invalidate the batch. Retry through ByteStream.
+        return ImmutableMap.of();
+      }
+      // Let normal prefetch resolve missing blobs and other per-leaf batch errors.
+      if (leaf.getStatus().getCode() == Code.OK.value()
+          && leaf.getCompressor() == Compressor.Value.IDENTITY) {
+        ByteString contents = leaf.getData();
+        if (contents.size() != digest.getSizeBytes()) {
+          throw new OutputDigestMismatchException(digest, contents.size());
+        }
+        if (options.getRemoteVerifyDownloads()) {
+          Digest actual = digestUtil.compute(contents);
+          if (!actual.equals(digest)) {
+            throw new OutputDigestMismatchException(digest, actual);
+          }
+        }
+        verified.put(digest, contents);
+      }
+    }
+    return verified.buildOrThrow();
   }
 
   @Override
