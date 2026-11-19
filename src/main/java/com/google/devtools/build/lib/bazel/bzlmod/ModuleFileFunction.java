@@ -50,6 +50,7 @@ import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.packages.BazelStarlarkEnvironment;
 import com.google.devtools.build.lib.packages.StarlarkExportable;
+import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
@@ -79,7 +80,6 @@ import com.google.devtools.build.skyframe.SkyframeLookupResult;
 import com.google.errorprone.annotations.FormatMethod;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -230,8 +230,9 @@ public class ModuleFileFunction implements SkyFunction {
       if (nonDevInclude.isPresent()) {
         throw errorf(
             Code.BAD_MODULE,
-            "include() directive found at %s, but it can only be used in the root module or in "
+            "%s() directive found at %s, but it can only be used in the root module or in "
                 + "modules with non-registry overrides",
+            nonDevInclude.get().directive(),
             nonDevInclude.get().location());
       }
       moduleThreadContext =
@@ -419,14 +420,16 @@ public class ModuleFileFunction implements SkyFunction {
       BazelStarlarkEnvironment starlarkEnv,
       boolean ignoreDevDeps)
       throws ModuleFileFunctionException, InterruptedException {
-    var seenIncludeLabels = new HashSet<>(includeLabelToCompiledModuleFile.keySet());
-    var pendingBuilder = ImmutableList.<IncludeStatement>builder();
-    for (var includeStatement : horizon) {
-      if (seenIncludeLabels.add(includeStatement.includeLabel())) {
-        pendingBuilder.add(includeStatement);
+    var pending = new LinkedHashMap<String, IncludeStatement>();
+    for (var statement : horizon) {
+      if (!includeLabelToCompiledModuleFile.containsKey(statement.includeLabel())) {
+        // A required include of the same label must still report a missing file.
+        pending.merge(
+            statement.includeLabel(),
+            statement,
+            (first, next) -> first.optional() && !next.optional() ? next : first);
       }
     }
-    ImmutableList<IncludeStatement> pending = pendingBuilder.build();
     if (pending.isEmpty()) {
       return ImmutableList.of();
     }
@@ -435,15 +438,16 @@ public class ModuleFileFunction implements SkyFunction {
     var repoContext =
         Label.RepoContext.of(
             moduleKey.getCanonicalRepoNameWithoutVersion(), RepositoryMapping.EMPTY);
-    var includeLabels = new ArrayList<Label>(pending.size());
-    for (var includeStatement : pending) {
+    var includeLabels = new LinkedHashMap<IncludeStatement, Label>();
+    for (var includeStatement : pending.values()) {
       if (!includeStatement.includeLabel().startsWith("//")) {
         throw errorf(
             Code.BAD_MODULE,
-            "bad include label '%s' at %s: include() must be called with repo-relative labels "
+            "bad include label '%s' at %s: %s() must be called with repo-relative labels "
                 + "(starting with double slashes)",
             includeStatement.includeLabel(),
-            includeStatement.location());
+            includeStatement.location(),
+            includeStatement.directive());
       }
       Label includeLabel;
       try {
@@ -475,82 +479,105 @@ public class ModuleFileFunction implements SkyFunction {
             includeStatement.includeLabel(),
             includeStatement.location());
       }
-      includeLabels.add(includeLabel);
+      includeLabels.put(includeStatement, includeLabel);
     }
-    SkyframeLookupResult result =
+    SkyframeLookupResult packages =
         env.getValuesAndExceptions(
-            includeLabels.stream()
+            includeLabels.values().stream()
                 .map(l -> (SkyKey) PackageLookupValue.key(l.getPackageIdentifier()))
                 .collect(toImmutableSet()));
-    var rootedPaths = new ArrayList<RootedPath>(pending.size());
-    for (int i = 0; i < pending.size(); i++) {
-      Label includeLabel = includeLabels.get(i);
-      PackageLookupValue pkgLookupValue =
-          (PackageLookupValue)
-              result.get(PackageLookupValue.key(includeLabel.getPackageIdentifier()));
-      if (pkgLookupValue == null) {
+    record IncludeFile(
+        IncludeStatement statement, Label label, RootedPath path, boolean noBuildFile) {}
+    var files = new ArrayList<IncludeFile>(pending.size());
+    for (var entry : includeLabels.entrySet()) {
+      var statement = entry.getKey();
+      Label label = entry.getValue();
+      var pkg =
+          (PackageLookupValue) packages.get(PackageLookupValue.key(label.getPackageIdentifier()));
+      if (pkg == null) {
         return null;
       }
-      if (!pkgLookupValue.packageExists()) {
-        String message = pkgLookupValue.getErrorMsg();
-        if (pkgLookupValue == PackageLookupValue.NO_BUILD_FILE_VALUE) {
-          message =
-              PackageLookupFunction.explainNoBuildFileValue(
-                  includeLabel.getPackageIdentifier(), env);
+      if (pkg.packageExists()) {
+        files.add(
+            new IncludeFile(
+                statement,
+                label,
+                RootedPath.toRootedPath(pkg.getRoot(), label.toPathFragment()),
+                false));
+      } else if (statement.optional() && pkg == PackageLookupValue.NO_BUILD_FILE_VALUE) {
+        // A missing directory is optional too. An existing fragment still needs a BUILD file.
+        ImmutableList<Root> roots;
+        if (label.getRepository().isMain()) {
+          PathPackageLocator locator = PrecomputedValue.PATH_PACKAGE_LOCATOR.get(env);
+          if (locator == null) {
+            return null;
+          }
+          roots = locator.getPathEntries();
+        } else {
+          var repo = (Success) env.getValue(RepositoryDirectoryValue.key(label.getRepository()));
+          if (repo == null) {
+            return null;
+          }
+          roots = ImmutableList.of(repo.root());
         }
-        throw errorf(
-            Code.BAD_MODULE,
-            "unable to load package for '%s' included at %s: %s",
-            pending.get(i).includeLabel(),
-            pending.get(i).location(),
-            message);
+        for (Root root : roots) {
+          files.add(
+              new IncludeFile(
+                  statement, label, RootedPath.toRootedPath(root, label.toPathFragment()), true));
+        }
+      } else {
+        throw includePackageError(statement, label, pkg, env);
       }
-      rootedPaths.add(
-          RootedPath.toRootedPath(pkgLookupValue.getRoot(), includeLabel.toPathFragment()));
     }
-    result =
+    var fileValues =
         env.getValuesAndExceptions(
-            rootedPaths.stream().map(FileValue::key).collect(toImmutableSet()));
+            files.stream().map(file -> FileValue.key(file.path())).collect(toImmutableSet()));
     // Resolve all file dependencies before compiling so a restart cannot retain a compiled file
     // while discarding its nested includes from the next horizon.
-    var fileValues = new ArrayList<FileValue>(pending.size());
-    for (var rootedPath : rootedPaths) {
-      FileValue fileValue = (FileValue) result.get(FileValue.key(rootedPath));
+    var existingFiles = new ArrayList<IncludeFile>(files.size());
+    for (var file : files) {
+      var fileValue = (FileValue) fileValues.get(FileValue.key(file.path()));
       if (fileValue == null) {
         return null;
       }
-      fileValues.add(fileValue);
-    }
-    var newHorizon = ImmutableList.<IncludeStatement>builder();
-    for (int i = 0; i < pending.size(); i++) {
-      FileValue fileValue = fileValues.get(i);
+      if (file.statement().optional() && !fileValue.exists()) {
+        continue;
+      }
+      if (file.noBuildFile()) {
+        throw includePackageError(
+            file.statement(), file.label(), PackageLookupValue.NO_BUILD_FILE_VALUE, env);
+      }
       if (!fileValue.isFile()) {
         throw errorf(
             Code.BAD_MODULE,
             "error reading '%s' included at %s: not a regular file",
-            pending.get(i).includeLabel(),
-            pending.get(i).location());
+            file.statement().includeLabel(),
+            file.statement().location());
       }
+      existingFiles.add(file);
+    }
+    var newHorizon = ImmutableList.<IncludeStatement>builder();
+    for (var file : existingFiles) {
       byte[] bytes;
       try {
-        bytes = FileSystemUtils.readContent(rootedPaths.get(i).asPath());
+        bytes = FileSystemUtils.readContent(file.path().asPath());
       } catch (IOException e) {
         throw errorf(
             Code.BAD_MODULE,
             "error reading '%s' included at %s: %s",
-            pending.get(i).includeLabel(),
-            pending.get(i).location(),
+            file.statement().includeLabel(),
+            file.statement().location(),
             e.getMessage());
       }
       try {
         var compiledModuleFile =
             CompiledModuleFile.parseAndCompile(
-                ModuleFile.create(bytes, rootedPaths.get(i).asPath().toString()),
+                ModuleFile.create(bytes, file.path().asPath().toString()),
                 ModuleKey.ROOT,
                 starlarkSemantics,
                 starlarkEnv,
                 env.getListener());
-        includeLabelToCompiledModuleFile.put(pending.get(i).includeLabel(), compiledModuleFile);
+        includeLabelToCompiledModuleFile.put(file.statement().includeLabel(), compiledModuleFile);
         newHorizon.addAll(
             activeIncludeStatements(compiledModuleFile.includeStatements(), ignoreDevDeps));
       } catch (ExternalDepsException e) {
@@ -558,6 +585,21 @@ public class ModuleFileFunction implements SkyFunction {
       }
     }
     return newHorizon.build();
+  }
+
+  private static ModuleFileFunctionException includePackageError(
+      IncludeStatement statement, Label label, PackageLookupValue pkg, Environment env)
+      throws InterruptedException {
+    String message =
+        pkg == PackageLookupValue.NO_BUILD_FILE_VALUE
+            ? PackageLookupFunction.explainNoBuildFileValue(label.getPackageIdentifier(), env)
+            : pkg.getErrorMsg();
+    return errorf(
+        Code.BAD_MODULE,
+        "unable to load package for '%s' included at %s: %s",
+        statement.includeLabel(),
+        statement.location(),
+        message);
   }
 
   private static ImmutableList<IncludeStatement> activeIncludeStatements(

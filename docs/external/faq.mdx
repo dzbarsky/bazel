@@ -110,8 +110,11 @@ generally interested in, and they can be solved without `load`s:
 *   Splitting up a very large MODULE.bazel file into manageable sections,
     particularly for monorepos: The root module can use the
     [`include`](/rules/lib/globals/module#include) directive to split its
-    MODULE.bazel file into multiple segments. For the same reason we don't allow
-    `load`s in MODULE.bazel files, `include` cannot be used in non-root modules.
+    MODULE.bazel file into multiple segments. Use `try_include("//:local.MODULE.bazel")`
+    for an optional fragment. Bazel silently skips the fragment when it is missing
+    and picks it up on the next command if it is created. An existing fragment
+    must belong to a Bazel package, and errors in the fragment are reported.
+    Both directives can also be used in modules with non-registry overrides.
 *   Users of the old WORKSPACE system might remember declaring a repo, and then
     immediately `load`ing from that repo to perform complex logic. This
     capability has been replaced by [module extensions](/external/extension).
