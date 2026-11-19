@@ -2594,20 +2594,6 @@ java_library(
 )
 
 java_library(
-    name = "target_patterns_result_builder",
-    srcs = ["TargetPatternsResultBuilder.java"],
-    deps = [
-        ":package_value",
-        "//src/main/java/com/google/devtools/build/lib/cmdline",
-        "//src/main/java/com/google/devtools/build/lib/collect/compacthashset",
-        "//src/main/java/com/google/devtools/build/lib/packages",
-        "//src/main/java/com/google/devtools/build/skyframe",
-        "//third_party/java/guava:base",
-        "//third_party/java/guava:collect",
-    ],
-)
-
-java_library(
     name = "test_completion_value",
     srcs = ["TestCompletionValue.java"],
     deps = [
@@ -3940,7 +3926,6 @@ java_library(
         ":recursive_package_provider_backed_target_pattern_resolver",
         ":skyframe_core",
         ":target_pattern_value",
-        ":target_patterns_result_builder",
         "//src/main/java/com/google/devtools/build/lib/bugreport",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/cmdline:query_exception_marker_interface",
