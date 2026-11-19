@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
+import com.google.devtools.build.lib.packages.AggregatingAttributeMapper;
 import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.NoSuchTargetException;
@@ -37,6 +38,8 @@ import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.pkgcache.FilteringPolicies;
 import com.google.devtools.build.lib.skyframe.PackageValue;
 import com.google.devtools.build.lib.skyframe.RepositoryMappingValue;
+import com.google.devtools.build.lib.skyframe.TargetLoadingUtil;
+import com.google.devtools.build.lib.skyframe.TargetLoadingUtil.TargetAndErrorIfAny;
 import com.google.devtools.build.lib.skyframe.TargetPatternUtil;
 import com.google.devtools.build.lib.skyframe.TargetPatternUtil.InvalidTargetPatternException;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -46,6 +49,7 @@ import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
+import java.util.HashSet;
 import java.util.List;
 import javax.annotation.Nullable;
 
@@ -160,11 +164,11 @@ public final class RegisteredToolchainsByTypeFunction implements SkyFunction {
         }
         Package pkg = packageValue.getPackage();
         Target target = pkg.getTarget(toolchain.getName());
-        // An explicitly registered alias can point through select() or another alias. Keep the
-        // alias itself as a possible dependency of every type and let the hash walk its closure.
         if (target instanceof Rule rule && rule.getRuleClass().equals("toolchain")) {
           toolchainType =
               NonconfigurableAttributeMapper.of(rule).get("toolchain_type", BuildType.LABEL);
+        } else if (isConstantAlias(target)) {
+          toolchainType = getAliasedToolchainType(target, env);
         }
       } catch (NoSuchPackageException | NoSuchTargetException e) {
         // Fall through: a toolchain that can't be read conservatively counts for every type.
@@ -175,7 +179,55 @@ public final class RegisteredToolchainsByTypeFunction implements SkyFunction {
         toolchainsOfUnknownType.add(toolchain);
       }
     }
-    return new Value(toolchainsByType.build(), toolchainsOfUnknownType.build());
+    return env.valuesMissing()
+        ? null
+        : new Value(toolchainsByType.build(), toolchainsOfUnknownType.build());
+  }
+
+  private static boolean isConstantAlias(Target target) {
+    return target instanceof Rule rule
+        && !rule.getRuleClassObject().isStarlark()
+        && rule.getRuleClass().equals("alias")
+        && !rule.isConfigurableAttribute("actual");
+  }
+
+  /**
+   * Follows a native alias with a constant actual attribute. Keep configurable, cyclic and unreadable
+   * aliases in the unknown-type bucket until their type can be proved.
+   */
+  @Nullable
+  private static Label getAliasedToolchainType(Target target, Environment env)
+      throws NoSuchPackageException, NoSuchTargetException, InterruptedException {
+    var seen = new HashSet<Label>();
+    while (isConstantAlias(target) && seen.add(target.getLabel())) {
+      var actuals =
+          AggregatingAttributeMapper.of((Rule) target)
+              .getReachableLabels("actual", /* includeSelectKeys= */ false);
+      if (actuals.size() != 1) {
+        return null;
+      }
+      if (!(TargetLoadingUtil.loadTarget(env, actuals.iterator().next())
+              instanceof TargetAndErrorIfAny loaded)
+          || loaded.getErrorLoadingTarget() != null) {
+        return null;
+      }
+      target = loaded.getTarget();
+    }
+    if (!(target instanceof Rule rule)
+        || rule.getRuleClassObject().isStarlark()
+        || !rule.getRuleClass().equals("toolchain")) {
+      return null;
+    }
+    Label type = NonconfigurableAttributeMapper.of(rule).get("toolchain_type", BuildType.LABEL);
+    if (type == null
+        || !(TargetLoadingUtil.loadTarget(env, type) instanceof TargetAndErrorIfAny loaded)
+        || loaded.getErrorLoadingTarget() != null
+        || !(loaded.getTarget() instanceof Rule typeRule)
+        || typeRule.getRuleClassObject().isStarlark()
+        || !typeRule.getRuleClass().equals("toolchain_type")) {
+      return null;
+    }
+    return type;
   }
 
   /**
