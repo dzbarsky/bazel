@@ -85,7 +85,7 @@ jq --exit-status \
   "${temporary_dir}/draft.json" > /dev/null
 
 # Enable repository release immutability before running this workflow.
-gh api --method PATCH "${release_api}" -F draft=false > /dev/null
+gh api --method PATCH "${release_api}" -F draft=false -f make_latest=false > /dev/null
 gh api "${release_api}" > "${temporary_dir}/published.json"
 jq --exit-status \
   --arg tag "${RELEASE_TAG}" --arg sha "${GITHUB_SHA}" --arg body "${release_body}" \

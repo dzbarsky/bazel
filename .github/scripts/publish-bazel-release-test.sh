@@ -86,6 +86,7 @@ elif endpoint == repo + '/releases/101':
     if method == 'PATCH':
         event('publish')
         assert 'draft=false' in args and release['draft'] is True
+        assert 'make_latest=false' in args
         if case == 'publish_error': fail()
         release.update(draft=False, immutable=case != 'mutable_release')
         save(release)
