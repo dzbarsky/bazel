@@ -338,7 +338,8 @@ public class ModuleThreadContext implements StarlarkThreadContext {
     }
   }
 
-  public void include(String includeLabel, boolean devDependency, StarlarkThread thread)
+  public void include(
+      String directive, String includeLabel, boolean devDependency, StarlarkThread thread)
       throws InterruptedException, EvalException {
     if (shouldIgnoreDevDeps() && devDependency) {
       return;
@@ -346,10 +347,13 @@ public class ModuleThreadContext implements StarlarkThreadContext {
     if (includeLabelToCompiledModuleFile == null) {
       // This should never happen because compiling the non-root module file should have failed, way
       // before evaluation started.
-      throw Starlark.errorf("trying to call `include()` from a non-root module");
+      throw Starlark.errorf("trying to call `%s()` from a registry module", directive);
     }
     var compiledModuleFile = includeLabelToCompiledModuleFile.get(includeLabel);
     if (compiledModuleFile == null) {
+      if (directive.equals(CompiledModuleFile.TRY_INCLUDE_IDENTIFIER)) {
+        return;
+      }
       // This should never happen because the file we're trying to include should have already been
       // compiled before evaluation started.
       throw Starlark.errorf("internal error; included file %s not compiled", includeLabel);
@@ -359,7 +363,8 @@ public class ModuleThreadContext implements StarlarkThreadContext {
       // call, so a cycle would result in unbounded recursion.
       var chain = ImmutableList.copyOf(includeStack);
       throw Starlark.errorf(
-          "include() cycle detected: %s -> %s",
+          "%s() cycle detected: %s -> %s",
+          directive,
           String.join(" -> ", chain.subList(chain.indexOf(includeLabel), chain.size())),
           includeLabel);
     }

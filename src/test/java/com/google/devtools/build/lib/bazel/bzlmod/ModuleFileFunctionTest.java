@@ -417,6 +417,95 @@ public class ModuleFileFunctionTest extends FoundationTestCase {
   }
 
   @Test
+  public void tryInclude_tracksFragmentCreationAndDeletion() throws Exception {
+    scratch.overwriteFile(
+        "MODULE.bazel",
+        "try_include('//:local.MODULE.bazel')",
+        "try_include('//absent:other.MODULE.bazel')");
+    scratch.file("BUILD");
+    Path fragment = scratch.resolve("local.MODULE.bazel");
+    SkyKey fragmentState = FileStateValue.key(RootedPath.toRootedPath(root, fragment));
+
+    var missing = evaluateRootModule().get(ModuleFileValue.KEY_FOR_ROOT_MODULE);
+    assertThat(missing.module().getDeps()).isEmpty();
+    assertThat(missing.moduleFilePaths())
+        .containsExactly(LabelConstants.MODULE_DOT_BAZEL_FILE_NAME);
+    assertNoEvents();
+
+    scratch.file(fragment.getPathString(), "bazel_dep(name='local', version='1.0')");
+    differencer.invalidate(ImmutableList.of(fragmentState));
+    var present = evaluateRootModule().get(ModuleFileValue.KEY_FOR_ROOT_MODULE);
+    assertThat(present.module().getDeps())
+        .containsExactly("local", createModuleKey("local", "1.0"));
+    assertThat(present.moduleFilePaths())
+        .containsExactly(
+            LabelConstants.MODULE_DOT_BAZEL_FILE_NAME, PathFragment.create("local.MODULE.bazel"));
+
+    fragment.delete();
+    differencer.invalidate(ImmutableList.of(fragmentState));
+    var deleted = evaluateRootModule().get(ModuleFileValue.KEY_FOR_ROOT_MODULE);
+    assertThat(deleted.module().getDeps()).isEmpty();
+    assertThat(deleted.moduleFilePaths()).isEqualTo(missing.moduleFilePaths());
+    assertNoEvents();
+  }
+
+  @Test
+  public void tryInclude_presentFragmentRequiresBuildFile() throws Exception {
+    scratch.overwriteFile("MODULE.bazel", "try_include('//unpackaged:local.MODULE.bazel')");
+    scratch.dir("unpackaged");
+    assertThat(evaluateRootModule().hasError()).isFalse();
+
+    Path fragment = scratch.file("unpackaged/local.MODULE.bazel");
+    differencer.invalidate(
+        ImmutableList.of(FileStateValue.key(RootedPath.toRootedPath(root, fragment))));
+    assertThat(evaluateRootModule().getError().toString()).contains("BUILD file not found");
+  }
+
+  @Test
+  public void tryInclude_doesNotMaskRequiredIncludeOfSameFile() throws Exception {
+    scratch.file("BUILD");
+    String optional = "try_include('//:local.MODULE.bazel')";
+    String required = "include('//:local.MODULE.bazel')";
+
+    Path moduleFile = scratch.overwriteFile("MODULE.bazel", optional, required);
+    String error = evaluateRootModule().getError().toString();
+    assertThat(error).contains("//:local.MODULE.bazel");
+    assertThat(error).contains("MODULE.bazel:2:");
+
+    scratch.overwriteFile("MODULE.bazel", required, optional);
+    differencer.invalidate(
+        ImmutableList.of(FileStateValue.key(RootedPath.toRootedPath(root, moduleFile))));
+    error = evaluateRootModule().getError().toString();
+    assertThat(error).contains("//:local.MODULE.bazel");
+    assertThat(error).contains("MODULE.bazel:1:");
+  }
+
+  @Test
+  public void tryInclude_rejectsDirectory() throws Exception {
+    scratch.overwriteFile("MODULE.bazel", "try_include('//:local.MODULE.bazel')");
+    scratch.file("BUILD");
+    scratch.dir("local.MODULE.bazel");
+
+    assertThat(evaluateRootModule().getError().toString()).contains("not a regular file");
+  }
+
+  @Test
+  public void tryInclude_reportsErrorsInFragment() throws Exception {
+    scratch.overwriteFile("MODULE.bazel", "try_include('//:local.MODULE.bazel')");
+    scratch.file("BUILD");
+    scratch.file("local.MODULE.bazel", "bazel_dep(");
+    reporter.removeHandler(failFastHandler);
+
+    assertThat(evaluateRootModule().getError().toString()).contains("error parsing MODULE.bazel");
+    assertContainsEvent("local.MODULE.bazel");
+  }
+
+  private EvaluationResult<RootModuleFileValue> evaluateRootModule() throws InterruptedException {
+    return evaluator.evaluate(
+        ImmutableList.of(ModuleFileValue.KEY_FOR_ROOT_MODULE), evaluationContext);
+  }
+
+  @Test
   public void testRootModule_include_nestedIncludeSurvivesRestart() throws Exception {
     scratch.overwriteFile(
         rootDirectory.getRelative("MODULE.bazel").getPathString(),
@@ -469,7 +558,8 @@ public class ModuleFileFunctionTest extends FoundationTestCase {
     scratch.overwriteFile(
         rootDirectory.getRelative("prod/prod.MODULE.bazel").getPathString(),
         "bazel_dep(name='bar', version='2.0')",
-        "include('//missing:nested-dev.MODULE.bazel', dev_dependency=True)");
+        "include('//missing:nested-dev.MODULE.bazel', dev_dependency=True)",
+        "try_include('//prod:prod.MODULE.bazel', dev_dependency=True)");
     FakeRegistry registry = registryFactory.newFakeRegistry("/foo");
     ModuleFileFunction.REGISTRIES.set(differencer, ImmutableList.of(registry.getUrl()));
     ModuleFileFunction.IGNORE_DEV_DEPS.set(differencer, true);
@@ -787,6 +877,20 @@ public class ModuleFileFunctionTest extends FoundationTestCase {
   }
 
   @Test
+  public void tryInclude_rejectsRegistryModuleEvenWhenFragmentIsAbsent() throws Exception {
+    ModuleKey key = createModuleKey("foo", "1.0");
+    FakeRegistry registry =
+        registryFactory
+            .newFakeRegistry("/foo")
+            .addModule(
+                key, "module(name='foo', version='1.0')", "try_include('//:local.MODULE.bazel')");
+    ModuleFileFunction.REGISTRIES.set(differencer, ImmutableList.of(registry.getUrl()));
+
+    var result = evaluator.evaluate(ImmutableList.of(ModuleFileValue.key(key)), evaluationContext);
+    assertThat(result.getError().toString()).contains("try_include() directive found");
+  }
+
+  @Test
   public void testRegistryModuleDevIncludeIsIgnored() throws Exception {
     FakeRegistry registry =
         registryFactory
@@ -794,7 +898,8 @@ public class ModuleFileFunctionTest extends FoundationTestCase {
             .addModule(
                 createModuleKey("foo", "1.0"),
                 "module(name='foo',version='1.0')",
-                "include('//missing:dev.MODULE.bazel', dev_dependency=True)");
+                "include('//missing:dev.MODULE.bazel', dev_dependency=True)",
+                "try_include('//missing:dev.MODULE.bazel', dev_dependency=True)");
     ModuleFileFunction.REGISTRIES.set(differencer, ImmutableList.of(registry.getUrl()));
 
     SkyKey skyKey = ModuleFileValue.key(createModuleKey("foo", "1.0"));
