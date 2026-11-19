@@ -520,21 +520,21 @@ public class RunfilesRepoMappingManifestTest extends BuildViewTestCase {
     if (compactRepoMapping) {
       assertThat(getRepoMappingManifestForTarget("//:aaa"))
           .containsExactly(
-              ",aaa," + getRuleClassProvider().getRunfilesPrefix(),
+              ",aaa," + LabelConstants.MAIN_REPO_DIR_NAME,
               ",dep,+deps+dep1",
-              "+deps+*,aaa," + getRuleClassProvider().getRunfilesPrefix(),
+              "+deps+*,aaa," + LabelConstants.MAIN_REPO_DIR_NAME,
               "+deps+*,dep,+deps+dep",
               "+deps+*,dep1,+deps+dep1")
           .inOrder();
     } else {
       assertThat(getRepoMappingManifestForTarget("//:aaa"))
           .containsExactly(
-              ",aaa," + getRuleClassProvider().getRunfilesPrefix(),
+              ",aaa," + LabelConstants.MAIN_REPO_DIR_NAME,
               ",dep,+deps+dep1",
-              "+deps+dep,aaa," + getRuleClassProvider().getRunfilesPrefix(),
+              "+deps+dep,aaa," + LabelConstants.MAIN_REPO_DIR_NAME,
               "+deps+dep,dep,+deps+dep",
               "+deps+dep,dep1,+deps+dep1",
-              "+deps+dep1,aaa," + getRuleClassProvider().getRunfilesPrefix(),
+              "+deps+dep1,aaa," + LabelConstants.MAIN_REPO_DIR_NAME,
               "+deps+dep1,dep,+deps+dep",
               "+deps+dep1,dep1,+deps+dep1")
           .inOrder();

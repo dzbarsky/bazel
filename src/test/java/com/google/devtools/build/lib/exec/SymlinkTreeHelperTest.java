@@ -284,8 +284,7 @@ public final class SymlinkTreeHelperTest {
     Path root = racingFs.getPath("/tree");
     Artifact target = ActionsTestUtil.createArtifact(outputRoot, "target");
     var helper =
-        new SymlinkTreeHelper(
-            racingFs.getPath("/manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME);
+        new SymlinkTreeHelper(racingFs.getPath("/manifest"), root.getChild("MANIFEST"), root);
     helper.createRunfilesSymlinks(Map.of(PathFragment.create("raced/nested/link"), target));
 
     assertThat(root.getRelative("raced/obsolete").exists()).isFalse();
@@ -315,8 +314,7 @@ public final class SymlinkTreeHelperTest {
     Path root = racingFs.getPath("/tree");
     Artifact target = ActionsTestUtil.createArtifact(outputRoot, "target");
     var helper =
-        new SymlinkTreeHelper(
-            racingFs.getPath("/manifest"), root.getChild("MANIFEST"), root, WORKSPACE_NAME);
+        new SymlinkTreeHelper(racingFs.getPath("/manifest"), root.getChild("MANIFEST"), root);
     helper.createRunfilesSymlinks(Map.of(PathFragment.create("link"), target));
 
     assertThat(root.getChild("link").readSymbolicLink()).isEqualTo(target.getPath().asFragment());
