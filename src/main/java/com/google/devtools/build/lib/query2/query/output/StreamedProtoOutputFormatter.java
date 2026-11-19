@@ -15,9 +15,9 @@ package com.google.devtools.build.lib.query2.query.output;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Iterables;
-import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ExecutorUtil;
 import com.google.devtools.build.lib.concurrent.MoreFutures;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.query2.engine.OutputFormatterCallback;
@@ -64,18 +64,19 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
 
   @Override
   public void writeHashedTargets(
-      Iterable<Target> targets,
-      LabelPrinter labelPrinter,
-      Map<Label, ByteString> digests,
-      OutputStream out)
+      Iterable<Target> targets, LabelPrinter labelPrinter, Map<Label, String> hashes, OutputStream out)
       throws IOException, InterruptedException {
     CodedOutputStream codedOut = CodedOutputStream.newInstance(out);
     for (Target target : targets) {
       if (Thread.interrupted()) {
         throw new InterruptedException();
       }
-      codedOut.writeMessageNoTag(
-          toTargetProtoBuffer(target, labelPrinter, "", digests.get(target.getLabel())));
+      Build.Target record = toTargetProtoBuffer(target, labelPrinter);
+      String digest = hashes.get(target.getLabel());
+      if (digest != null) {
+        record = record.toBuilder().setTransitiveHash(ByteString.fromHex(digest)).build();
+      }
+      codedOut.writeMessageNoTag(record);
     }
     codedOut.flush();
   }

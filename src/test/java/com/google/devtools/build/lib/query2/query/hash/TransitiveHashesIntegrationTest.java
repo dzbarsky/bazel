@@ -27,7 +27,6 @@ import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
 import com.google.devtools.build.skyframe.EvaluationContext;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionName;
-import com.google.protobuf.ByteString;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -215,18 +214,18 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
             content, unused));
   }
 
-  private ImmutableMap<Label, ByteString> extHashes() throws Exception {
+  private ImmutableMap<Label, String> extHashes() throws Exception {
     return hashes(Label.parseCanonical("//ext_user:uses_ext"));
   }
 
-  private ImmutableMap<Label, ByteString> hashes() throws Exception {
+  private ImmutableMap<Label, String> hashes() throws Exception {
     return hashes(
         Label.parseCanonical("//app:lib"),
         Label.parseCanonical("//app:gen"),
         Label.parseCanonical("//app:unrelated"));
   }
 
-  private ImmutableMap<Label, ByteString> hashes(Label... roots) throws Exception {
+  private ImmutableMap<Label, String> hashes(Label... roots) throws Exception {
     TransitiveHashes.Result result = compute(roots);
     assertThat(result.errors()).isEmpty();
     return result.hashes();
@@ -241,7 +240,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
         message -> {});
   }
 
-  private ImmutableMap<Label, ByteString> hashesAfterEdit(String path, String content)
+  private ImmutableMap<Label, String> hashesAfterEdit(String path, String content)
       throws Exception {
     scratch.overwriteFile(path, content);
     invalidatePackages();
@@ -249,7 +248,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   }
 
   private static ImmutableList<String> changed(
-      ImmutableMap<Label, ByteString> before, ImmutableMap<Label, ByteString> after) {
+      ImmutableMap<Label, String> before, ImmutableMap<Label, String> after) {
     return before.keySet().stream()
         .filter(label -> !before.get(label).equals(after.get(label)))
         .map(Label::toString)
@@ -259,7 +258,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
 
   @Test
   public void registeredToolchain_affectsTargetsUsingItsType() throws Exception {
-    ImmutableMap<Label, ByteString> before = hashes();
+    ImmutableMap<Label, String> before = hashes();
 
     // Without a configuration, every registered toolchain counts, not just the one resolution
     // would pick.
@@ -269,7 +268,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
 
   @Test
   public void registeringToolchains_affectsTargetsUsingTheType() throws Exception {
-    ImmutableMap<Label, ByteString> before = hashes();
+    ImmutableMap<Label, String> before = hashes();
 
     writeModuleFile(/* content= */ "a", /* unused= */ "1", /* toolchains= */ "//tc:tc_a");
 
@@ -278,7 +277,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
 
   @Test
   public void externalRepoContentChange_affectsDependents() throws Exception {
-    ImmutableMap<Label, ByteString> before = extHashes();
+    ImmutableMap<Label, String> before = extHashes();
 
     writeModuleFile(/* content= */ "changed", /* unused= */ "1");
 
@@ -287,7 +286,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
 
   @Test
   public void externalRepoRefetchedWithSameContents_doesNotAffectDependents() throws Exception {
-    ImmutableMap<Label, ByteString> before = extHashes();
+    ImmutableMap<Label, String> before = extHashes();
 
     // The repo definition changes, so the repo is refetched, but its files are identical.
     writeModuleFile(/* content= */ "a", /* unused= */ "2");
@@ -339,7 +338,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   public void externalFileChange_onlyAffectsTargetsThatUseTheFile() throws Exception {
     Label allFiles = Label.parseCanonical("//ext_user:uses_ext");
     Label onlyB = Label.parseCanonical("//ext_user:only_b");
-    ImmutableMap<Label, ByteString> before = hashes(allFiles, onlyB);
+    ImmutableMap<Label, String> before = hashes(allFiles, onlyB);
 
     writeModuleFile(/* content= */ "changed a", /* unused= */ "1");
 
@@ -349,7 +348,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   @Test
   public void externalToolchainImplementation_isHashedByRepoDefinitionWithoutFetchingIt()
       throws Exception {
-    ImmutableMap<Label, ByteString> before = hashes();
+    ImmutableMap<Label, String> before = hashes();
 
     // @ext//:impl implements //tc:tc_ext. Its repo's definition counts, so a change reaches the
     // targets that use the toolchain type.
@@ -378,7 +377,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   @Test
   public void externalToolchainImplementation_isHashedByFilesItsRepoDefinitionPointsTo()
       throws Exception {
-    ImmutableMap<Label, ByteString> before = hashes();
+    ImmutableMap<Label, String> before = hashes();
 
     // The definition of @ext points to //tc:patch.txt, like a patch applied to a toolchain repo.
     assertThat(changed(before, hashesAfterEdit("tc/patch.txt", "changed patch")))
@@ -388,7 +387,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   @Test
   public void externalToolchainImplementation_isHashedByFilesItsRepoRuleDefaultsPointTo()
       throws Exception {
-    ImmutableMap<Label, ByteString> before = hashes();
+    ImmutableMap<Label, String> before = hashes();
 
     // The default value of a label attribute of @ext's repo rule points to //tc:template.txt.
     assertThat(changed(before, hashesAfterEdit("tc/template.txt", "changed template")))
@@ -397,7 +396,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
 
   @Test
   public void externalRepoSymlinkIntoWorkspace_isHashedByTargetContents() throws Exception {
-    ImmutableMap<Label, ByteString> before = extHashes();
+    ImmutableMap<Label, String> before = extHashes();
 
     // @ext symlinks to //tc:linked.txt with an absolute path, which stays the same when the file
     // changes.
@@ -410,7 +409,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   @Test
   public void aspectToolchain_affectsTargetsTheAspectAppliesThrough() throws Exception {
     Label user = Label.parseCanonical("//app:aspect_user");
-    ImmutableMap<Label, ByteString> before = hashes(user);
+    ImmutableMap<Label, String> before = hashes(user);
 
     scratch.overwriteFile("tc/c.txt", "changed c");
     invalidatePackages();
@@ -429,7 +428,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
         )
         """);
 
-    ImmutableMap<Label, ByteString> before = hashes(Label.parseCanonical("//missing_dep:fg"));
+    ImmutableMap<Label, String> before = hashes(Label.parseCanonical("//missing_dep:fg"));
     scratch.file("does/not/BUILD", "filegroup(name = 'exist')");
     invalidatePackages();
 
@@ -447,11 +446,11 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
 
   @Test
   public void sourceFileExecutableBit_affectsHash() throws Exception {
-    ImmutableMap<Label, ByteString> before = hashes();
+    ImmutableMap<Label, String> before = hashes();
 
     scratch.resolve("app/other.txt").setExecutable(true);
     invalidatePackages();
-    ImmutableMap<Label, ByteString> executable = hashes();
+    ImmutableMap<Label, String> executable = hashes();
     scratch.resolve("app/other.txt").setExecutable(false);
     invalidatePackages();
 

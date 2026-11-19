@@ -58,6 +58,5 @@ java_library(
         "//third_party/java/guava:hash",
         "//third_party/java/guava:io",
         "//third_party/java/jsr305_annotations",
-        "//third_party/java/protobuf:protobuf_lite",
     ],
 )

@@ -18,6 +18,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.io.BaseEncoding;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.BuildFileNotFoundException;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading;
@@ -26,7 +27,6 @@ import com.google.devtools.build.skyframe.ErrorInfo;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-import com.google.protobuf.ByteString;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -68,8 +68,7 @@ public final class TransitiveHashes {
    *     dependencies whose hashes may be wrong. A dependency that does not exist is not an error:
    *     it is hashed as missing, so creating it changes the hashes of its dependents.
    */
-  public record Result(
-      ImmutableMap<Label, ByteString> hashes, ImmutableMap<Label, ErrorInfo> errors) {}
+  public record Result(ImmutableMap<Label, String> hashes, ImmutableMap<Label, ErrorInfo> errors) {}
 
   /** Evaluates Skyframe keys with keep-going semantics. */
   @FunctionalInterface
@@ -140,12 +139,11 @@ public final class TransitiveHashes {
 
     progress.accept(String.format("Hashing: combining hashes of %d targets", graph.size()));
     combineStates(graph, Comparator.naturalOrder(), Label::getUnambiguousCanonicalForm, failed);
-    ImmutableMap.Builder<Label, ByteString> rootHashes =
-        ImmutableMap.builderWithExpectedSize(roots.size());
+    ImmutableMap.Builder<Label, String> rootHashes = ImmutableMap.builderWithExpectedSize(roots.size());
     for (Label root : rootSet) {
       State<Label> state = graph.get(root);
       if (state != null && state.hash != null) {
-        rootHashes.put(root, ByteString.copyFrom(state.hash));
+        rootHashes.put(root, BaseEncoding.base16().lowerCase().encode(state.hash));
       }
     }
     return new Result(rootHashes.buildOrThrow(), ImmutableMap.copyOf(errors));

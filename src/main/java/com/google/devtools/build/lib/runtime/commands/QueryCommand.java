@@ -62,7 +62,6 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.ClosedByInterruptException;
-import java.util.HexFormat;
 import java.util.Set;
 import javax.annotation.Nullable;
 
@@ -288,16 +287,15 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
       binary = new CountingOutputStream(out);
       out = binary;
     }
+    String lineTerminator = queryOptions.getLineTerminator();
     if (catalog != null) {
       catalog.writeHashedTargets(targets, labelPrinter, result.hashes(), out);
     } else {
-      String lineTerminator = queryOptions.getLineTerminator();
       for (Target target : targets) {
         Label label = target.getLabel();
-        var hash = result.hashes().get(label);
+        String hash = result.hashes().get(label);
         if (hash != null) {
-          String hex = HexFormat.of().formatHex(hash.toByteArray());
-          out.write((labelPrinter.toString(label) + " " + hex + lineTerminator).getBytes(UTF_8));
+          out.write((labelPrinter.toString(label) + " " + hash + lineTerminator).getBytes(UTF_8));
         }
       }
     }
