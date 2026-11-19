@@ -146,7 +146,7 @@ jobs:
             bazelisk_arch: amd64
             artifact_os: darwin
             artifact_arch: x86_64
-          - runner: macos-15
+          - runner: macos-26
             bazelisk_os: darwin
             bazelisk_arch: arm64
             artifact_os: darwin
@@ -258,6 +258,9 @@ jobs:
           mkdir -p artifacts
           cp bazel-bin/src/bazel "artifacts/${asset_name}"
           chmod +x "artifacts/${asset_name}"
+          if [[ "${ARTIFACT_OS}-${ARTIFACT_ARCH}" == darwin-arm64 ]]; then
+            xcrun vtool -show-build "artifacts/${asset_name}" | grep -Eq '^[[:space:]]*minos 11\.0(\.0)?$'
+          fi
           "artifacts/${asset_name}" --batch --ignore_all_rc_files version | tee bazel-version.txt
           grep -Fq "Build label: ${RELEASE_TAG}" bazel-version.txt
           if command -v sha256sum > /dev/null; then
