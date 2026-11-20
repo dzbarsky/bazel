@@ -112,6 +112,16 @@ public final class TransitiveHashes {
       Consumer<String> progress,
       boolean reportFailureImpact)
       throws InterruptedException {
+    return compute(roots, evaluator, progress, reportFailureImpact, false);
+  }
+
+  public static Result compute(
+      Collection<Label> roots,
+      Evaluator evaluator,
+      Consumer<String> progress,
+      boolean reportFailureImpact,
+      boolean pinnedHttpFileMetadata)
+      throws InterruptedException {
     long discoveryStart = System.nanoTime();
     Map<Label, State<Label>> graph = HashMap.newHashMap(roots.size());
     Set<Label> failed = new HashSet<>();
@@ -126,7 +136,8 @@ public final class TransitiveHashes {
       ImmutableSet.Builder<SkyKey> keyBuilder =
           ImmutableSet.builderWithExpectedSize(frontier.size());
       for (Label label : frontier) {
-        keyBuilder.add(DirectTargetHashFunction.key(label));
+        keyBuilder.add(
+            DirectTargetHashFunction.unconfiguredKey(label, pinnedHttpFileMetadata));
       }
       ImmutableSet<SkyKey> keys = keyBuilder.build();
       EvaluationResult<SkyValue> result = evaluator.evaluate(keys);

@@ -4218,4 +4218,44 @@ BUILD_FILE
   bazel build //:by_root_alias //:by_downloaded_name //:by_repo_name >& $TEST_log || fail "Expected build to succeed"
 }
 
+function test_pinned_http_file_query_matches_fetched_hash() {
+  # The synthetic repository path requires a case-sensitive filesystem.
+  if ! is_linux; then
+    return
+  fi
+
+  local payload="pinned-query-payload.txt"
+  local headers="${TEST_TMPDIR}/pinned-query-headers.json"
+  printf 'pinned query download fixture\n' > "$payload"
+  local pin
+  pin="$(sha256sum "$payload" | cut -d ' ' -f 1)"
+  serve_file_header_dump "$payload" "$headers"
+  # Reset the request witness after the helper's readiness probe.
+  rm -f "$headers"
+
+  cat >> MODULE.bazel <<EOF_MODULE
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+http_file(
+    name = "pinned_data",
+    url = "http://127.0.0.1:$nc_port/pinned-query-payload.txt",
+    downloaded_file_path = "nested/data.txt",
+    sha256 = "$pin",
+)
+EOF_MODULE
+  cat > BUILD <<'EOF_BUILD'
+filegroup(name = "consumer", srcs = ["@pinned_data//:pinned_data", "@pinned_data//:data.txt"])
+EOF_BUILD
+
+  local -a flags=(--experimental_generate_hashes --output=streamed_proto --noproto:locations)
+  bazel --digest_function=sha256 query "${flags[@]}" --experimental_query_pinned_http_file_metadata \
+    //:consumer > pinned.pb 2> "$TEST_log" || fail "Pinned query failed"
+  expect_log 'Streamed 1 query hash records (0 unknown,'
+  [[ ! -e "$headers" ]] || fail "Hash-only query fetched http_file payload; check the pinned recipe digest"
+
+  bazel --digest_function=sha256 query "${flags[@]}" //:consumer > fetched.pb 2> "$TEST_log" \
+    || fail "Ordinary query failed to hash the downloaded file"
+  [[ -s "$headers" ]] || fail "Ordinary query did not fetch the http_file payload"
+  cmp pinned.pb fetched.pb || fail "Hash-only query output differs from the downloaded-file query"
+}
+
 run_suite "local repository tests"
