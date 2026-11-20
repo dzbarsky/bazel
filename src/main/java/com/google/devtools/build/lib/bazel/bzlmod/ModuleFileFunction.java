@@ -151,6 +151,7 @@ public class ModuleFileFunction implements SkyFunction {
 
   private static class State implements SkyKeyComputeState {
     CompiledModuleFile compiledModuleFile;
+    @Nullable CompiledModuleFile mergedModuleFile;
     ModuleFileMetadata moduleFileMetadata;
     // The following fields are used while evaluating the root module file or the module file of a
     // module subject to an override. We try to compile the root module file itself first, and then
@@ -238,6 +239,7 @@ public class ModuleFileFunction implements SkyFunction {
       moduleThreadContext =
           execModuleFile(
               state.compiledModuleFile,
+              /* mergedModuleFile= */ null,
               /* includeLabelToParsedModuleFile= */ null,
               moduleKey,
               // Dev dependencies should always be ignored if the current module isn't the root
@@ -309,36 +311,20 @@ public class ModuleFileFunction implements SkyFunction {
     }
     var state = env.getState(State::new);
     if (state.compiledModuleFile == null) {
-      RootedPath moduleFilePath = getModuleFilePath(workspaceRoot);
-      FileValue moduleFileValue = (FileValue) env.getValue(FileValue.key(moduleFilePath));
-      if (moduleFileValue == null) {
+      state.compiledModuleFile = compileRootModuleFile(workspaceRoot, starlarkSemantics, env);
+      if (state.compiledModuleFile == null) {
         return null;
       }
-      byte[] moduleFileContents;
-      if (moduleFileValue.exists()) {
-        moduleFileContents = readModuleFile(moduleFilePath.asPath());
-      } else {
-        moduleFileContents = BZLMOD_REMINDER.getBytes(UTF_8);
-        createModuleFile(moduleFilePath.asPath(), moduleFileContents);
-        env.getListener()
-            .handle(
-                Event.warn(
-                    "--enable_bzlmod is set, but no MODULE.bazel file was found at the workspace"
-                        + " root. Bazel will create an empty MODULE.bazel file. Please consider"
-                        + " migrating your external dependencies from WORKSPACE to MODULE.bazel."
-                        + " For more details, please refer to"
-                        + " https://github.com/bazelbuild/bazel/issues/18958."));
-      }
-      try {
-        state.compiledModuleFile =
-            CompiledModuleFile.parseAndCompile(
-                ModuleFile.create(moduleFileContents, moduleFilePath.asPath().toString()),
-                ModuleKey.ROOT,
-                starlarkSemantics,
-                starlarkEnv,
-                env.getListener());
-      } catch (ExternalDepsException e) {
-        throw new ModuleFileFunctionException(e, Transience.PERSISTENT);
+    }
+    var locator = PrecomputedValue.PATH_PACKAGE_LOCATOR.get(env);
+    if (locator == null) {
+      return null;
+    }
+    if (locator.getMergedRepository() != null && state.mergedModuleFile == null) {
+      state.mergedModuleFile =
+          compileRootModuleFile(locator.getMergedRepository(), starlarkSemantics, env);
+      if (state.mergedModuleFile == null) {
+        return null;
       }
     }
     var moduleThreadContext =
@@ -351,6 +337,42 @@ public class ModuleFileFunction implements SkyFunction {
         ImmutableMap.copyOf(state.includeLabelToCompiledModuleFile),
         MODULE_OVERRIDES.get(env),
         env.getListener());
+  }
+
+  @Nullable
+  private CompiledModuleFile compileRootModuleFile(
+      Path root, StarlarkSemantics starlarkSemantics, Environment env)
+      throws ModuleFileFunctionException, InterruptedException {
+    RootedPath path = getModuleFilePath(root);
+    FileValue value = (FileValue) env.getValue(FileValue.key(path));
+    if (value == null) {
+      return null;
+    }
+    byte[] contents;
+    if (!value.exists() && root.equals(workspaceRoot)) {
+      contents = BZLMOD_REMINDER.getBytes(UTF_8);
+      createModuleFile(path.asPath(), contents);
+      env.getListener()
+          .handle(
+              Event.warn(
+                  "--enable_bzlmod is set, but no MODULE.bazel file was found at the workspace"
+                      + " root. Bazel will create an empty MODULE.bazel file. Please consider"
+                      + " migrating your external dependencies from WORKSPACE to MODULE.bazel."
+                      + " For more details, please refer to"
+                      + " https://github.com/bazelbuild/bazel/issues/18958."));
+    } else {
+      contents = readModuleFile(path.asPath());
+    }
+    try {
+      return CompiledModuleFile.parseAndCompile(
+          ModuleFile.create(contents, path.asPath().toString()),
+          ModuleKey.ROOT,
+          starlarkSemantics,
+          starlarkEnv,
+          env.getListener());
+    } catch (ExternalDepsException e) {
+      throw new ModuleFileFunctionException(e, Transience.PERSISTENT);
+    }
   }
 
   /** env.getState(State::new).compiledModuleFile must be set before calling this method. */
@@ -366,8 +388,12 @@ public class ModuleFileFunction implements SkyFunction {
     boolean isRoot = moduleKey.equals(ModuleKey.ROOT);
     boolean ignoreDevDeps = isRoot ? IGNORE_DEV_DEPS.get(env) : true;
     if (state.horizon == null) {
-      state.horizon =
-          activeIncludeStatements(state.compiledModuleFile.includeStatements(), ignoreDevDeps);
+      var statements = ImmutableList.<IncludeStatement>builder();
+      if (state.mergedModuleFile != null) {
+        statements.addAll(state.mergedModuleFile.includeStatements());
+      }
+      statements.addAll(state.compiledModuleFile.includeStatements());
+      state.horizon = activeIncludeStatements(statements.build(), ignoreDevDeps);
     }
     while (!state.horizon.isEmpty()) {
       var newHorizon =
@@ -386,6 +412,7 @@ public class ModuleFileFunction implements SkyFunction {
     }
     return execModuleFile(
         state.compiledModuleFile,
+        state.mergedModuleFile,
         ImmutableMap.copyOf(state.includeLabelToCompiledModuleFile),
         moduleKey,
         ignoreDevDeps,
@@ -670,6 +697,9 @@ public class ModuleFileFunction implements SkyFunction {
 
     // Check that overrides don't contain the root module itself.
     ModuleOverride rootOverride = overrides.get(module.getName());
+    if (rootOverride == null && !module.getMergedModuleName().isEmpty()) {
+      rootOverride = overrides.get(module.getMergedModuleName());
+    }
     if (rootOverride != null) {
       throw errorf(Code.BAD_MODULE, "invalid override for the root module found: %s", rootOverride);
     }
@@ -703,6 +733,7 @@ public class ModuleFileFunction implements SkyFunction {
 
   private static ModuleThreadContext execModuleFile(
       CompiledModuleFile compiledRootModuleFile,
+      @Nullable CompiledModuleFile mergedModuleFile,
       @Nullable ImmutableMap<String, CompiledModuleFile> includeLabelToParsedModuleFile,
       ModuleKey moduleKey,
       boolean ignoreDevDeps,
@@ -742,6 +773,7 @@ public class ModuleFileFunction implements SkyFunction {
             }
           });
 
+      context.setMergedModuleFile(mergedModuleFile);
       compiledRootModuleFile.runOnThread(thread);
       injectRepos(injectedRepositories, context, thread);
       injectModules(injectedModules, builtinModules, context, thread);

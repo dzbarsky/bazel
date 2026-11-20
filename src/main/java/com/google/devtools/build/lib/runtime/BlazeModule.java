@@ -37,6 +37,7 @@ import com.google.devtools.build.lib.packages.Package.Builder.PackageSettings;
 import com.google.devtools.build.lib.packages.PackageLoadingListener;
 import com.google.devtools.build.lib.packages.PackageOverheadEstimator;
 import com.google.devtools.build.lib.packages.PackageValidator;
+import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
@@ -213,6 +214,16 @@ public abstract class BlazeModule implements OptionsSupplier {
    * @throws AbruptExitException modules can throw this exception to abort the command
    */
   public void beforeCommand(CommandEnvironment env) throws AbruptExitException {}
+
+  /**
+   * Prepares on-disk package roots before Skyframe checks for changes to its inputs. Called with
+   * the output base locked and a working reporter, only for commands that sync package loading.
+   */
+  public PathPackageLocator preparePackageLocator(
+      CommandEnvironment env, PathPackageLocator locator)
+      throws AbruptExitException, InterruptedException {
+    return locator;
+  }
 
   /**
    * Returns additional listeners to the console output stream. Called at the beginning of each

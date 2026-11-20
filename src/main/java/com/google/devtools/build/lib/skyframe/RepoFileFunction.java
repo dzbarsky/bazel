@@ -71,7 +71,14 @@ public class RepoFileFunction implements SkyFunction {
     // main repo or an external repo.
     Root repoRoot;
     if (repoName.isMain()) {
-      repoRoot = workspaceRoot;
+      var locator = PrecomputedValue.PATH_PACKAGE_LOCATOR.get(env);
+      if (locator == null) {
+        return null;
+      }
+      repoRoot =
+          locator.getMergedRepository() == null
+              ? workspaceRoot
+              : locator.getPathEntries().getFirst();
     } else {
       RepositoryDirectoryValue repoDirValue =
           (RepositoryDirectoryValue) env.getValue(RepositoryDirectoryValue.key(repoName));

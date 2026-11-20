@@ -91,6 +91,7 @@ jobs:
             //src/test/java/com/google/devtools/build/lib/remote:RemoteTests
             //src/test/java/com/google/devtools/build/lib/remote/disk:disk
             //src/test/py/bazel:bazel_lockfile_test
+            //src/test/py/bazel:merged_git_repository_test
             //src/test/py/bazel:remote_repo_contents_cache_test
             //src/test/py/bazel:remote_repo_contents_cache_rewinding_test
           )
