@@ -205,7 +205,8 @@ final class Discovery {
      * the dependency module.
      */
     ModuleKey applyOverrides(ModuleKey depKey) {
-      if (root.module().getName().equals(depKey.name())) {
+      if (root.module().getName().equals(depKey.name())
+          || root.module().getMergedModuleName().equals(depKey.name())) {
         return ModuleKey.ROOT;
       }
       return new ModuleKey(

@@ -224,6 +224,23 @@ java_library(
 )
 
 java_library(
+    name = "merged_git_repository",
+    srcs = ["MergedGitRepository.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
+        "//src/main/java/com/google/devtools/build/lib/events",
+        "//src/main/java/com/google/devtools/build/lib/shell",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
+        "//src/main/java/net/starlark/java/syntax",
+        "//third_party/java/guava:collect",
+        "//third_party/java/guava:hash",
+        "//third_party/java/jsr305_annotations",
+    ],
+)
+
+java_library(
     name = "repository_options",
     srcs = ["RepositoryOptions.java"],
     deps = [

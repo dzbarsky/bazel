@@ -174,12 +174,19 @@ public class ModuleFileGlobals {
     if (!name.isEmpty()) {
       validateModuleName(name);
     }
+    String usage =
+        repoName.isEmpty() ? "as the current module name" : "as the module's own repo name";
     if (repoName.isEmpty()) {
       repoName = name;
-      context.addRepoNameUsage(name, "as the current module name", thread.getCallStack());
     } else {
       RepositoryName.validateUserProvidedRepoName(repoName);
-      context.addRepoNameUsage(repoName, "as the module's own repo name", thread.getCallStack());
+    }
+    var builder = context.getModuleBuilder();
+    if (!context.inMergedModule()) {
+      context.addRepoNameUsage(repoName, usage, thread.getCallStack());
+    } else if (!repoName.isEmpty() && !repoName.equals(builder.getRepoNameOrName())) {
+      context.addRepoNameUsage(repoName, "as the merged module's repo name", thread.getCallStack());
+      builder.setMergedRepoName(repoName);
     }
     Version parsedVersion;
     if (version.isEmpty()) {
@@ -194,13 +201,61 @@ public class ModuleFileGlobals {
         throw new EvalException("Invalid version in module()", e);
       }
     }
-    context
-        .getModuleBuilder()
-        .setName(name)
-        .setVersion(parsedVersion)
-        .addBazelCompatibilityValues(
-            checkAllCompatibilityVersions(bazelCompatibility, "bazel_compatibility"))
-        .setRepoName(repoName);
+    builder.addBazelCompatibilityValues(
+        checkAllCompatibilityVersions(bazelCompatibility, "bazel_compatibility"));
+    if (context.inMergedModule()) {
+      builder.setMergedModuleName(name);
+    } else {
+      builder.setName(name).setVersion(parsedVersion).setRepoName(repoName);
+    }
+  }
+
+  @StarlarkMethod(
+      name = "merged_git_repository",
+      doc =
+          "Experimental. Merge a pinned Git tree into the main repository and evaluate its "
+              + "MODULE.bazel in the root module's context. Its apparent repository name denotes "
+              + "the main repository. Call once in the root MODULE.bazel after the optional "
+              + "module() and before other directives. Arguments must be literals. Requires "
+              + "--experimental_merged_git_repository.",
+      parameters = {
+        @Param(
+            name = "remote",
+            named = true,
+            positional = false,
+            doc = "Git URL or local Git repository path relative to the workspace."),
+        @Param(
+            name = "commit",
+            named = true,
+            positional = false,
+            defaultValue = "''",
+            doc = "Full commit ID. Specify either commit or commit_file."),
+        @Param(
+            name = "commit_file",
+            named = true,
+            positional = false,
+            defaultValue = "''",
+            doc = "Workspace-relative path to a file containing the full commit ID."),
+        @Param(
+            name = "prefer_imported",
+            named = true,
+            positional = false,
+            defaultValue = "[]",
+            allowedTypes = {@ParamType(type = Sequence.class, generic1 = String.class)},
+            doc =
+                "Paths to take entirely from the pinned tree. Elsewhere, directories merge "
+                    + "recursively and local entries win collisions."),
+      },
+      useStarlarkThread = true)
+  public void mergedGitRepository(
+      String remote,
+      String commit,
+      String commitFile,
+      Sequence<?> preferImported,
+      StarlarkThread thread)
+      throws EvalException, InterruptedException {
+    // Literal arguments were resolved before package loading so includes can use either tree.
+    ModuleThreadContext.fromOrFail(thread, "merged_git_repository()").mergeRepository(thread);
   }
 
   private static ImmutableList<String> checkAllAbsolutePatterns(Iterable<?> iterable, String where)
@@ -507,7 +562,10 @@ public class ModuleFileGlobals {
     RepositoryName ownRepoName = RepositoryName.createUnvalidated(ownName);
     ImmutableMap<String, RepositoryName> repoMapping = ImmutableMap.of();
     if (module.getKey().equals(ModuleKey.ROOT)) {
-      repoMapping = ImmutableMap.of("", ownRepoName);
+      repoMapping =
+          module.getMergedRepoName().isEmpty()
+              ? ImmutableMap.of("", ownRepoName)
+              : ImmutableMap.of("", ownRepoName, module.getMergedRepoName(), ownRepoName);
     }
     Label label;
     try {
@@ -537,6 +595,7 @@ public class ModuleFileGlobals {
             ImmutableMap.<String, RepositoryName>builder()
                 .put("", RepositoryName.MAIN)
                 .put(module.getRepoNameOrName(), RepositoryName.MAIN)
+                .put(module.getMergedRepoName(), RepositoryName.MAIN)
                 .buildKeepingLast(),
             RepositoryName.MAIN);
     Label label;

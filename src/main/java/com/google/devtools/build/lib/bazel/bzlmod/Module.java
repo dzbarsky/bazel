@@ -59,6 +59,9 @@ public abstract class Module extends ModuleBase {
     if (!getRepoName().isEmpty()) {
       mapping.put(getRepoName(), owner);
     }
+    if (!getMergedRepoName().isEmpty()) {
+      mapping.put(getMergedRepoName(), owner);
+    }
     for (Map.Entry<String, ModuleKey> dep : getDeps().entrySet()) {
       // Special note: if `dep` is actually the root module, its ModuleKey would be ROOT whose
       // canonicalRepoName is the empty string. This perfectly maps to the main repo ("@").
@@ -76,7 +79,7 @@ public abstract class Module extends ModuleBase {
 
   /** Returns a new, empty {@link Builder}. */
   public static Builder builder() {
-    return new AutoValue_Module.Builder();
+    return new AutoValue_Module.Builder().setMergedRepoName("");
   }
 
   /** Builder type for {@link Module}. */
@@ -89,6 +92,8 @@ public abstract class Module extends ModuleBase {
     public abstract Builder setKey(ModuleKey value);
 
     public abstract Builder setRepoName(String value);
+
+    public abstract Builder setMergedRepoName(String value);
 
     public abstract Builder setExecutionPlatformsToRegister(ImmutableList<String> value);
 
