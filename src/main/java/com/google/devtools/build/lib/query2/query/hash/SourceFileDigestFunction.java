@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.query2.query.hash;
 
 import com.google.devtools.build.lib.actions.FileValue;
+import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.vfs.DigestUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.RootedPath;
@@ -110,6 +111,27 @@ public final class SourceFileDigestFunction implements SkyFunction {
     }
   }
 
+  private record ReadFailure(@Nullable byte[] digest, IOException error) implements SkyValue {}
+
+  @Nullable
+  static Value forQuery(@Nullable SkyValue value) throws IOException {
+    if (value instanceof ReadFailure failure) {
+      throw failure.error();
+    }
+    return (Value) value;
+  }
+
+  /** The digest alone is usable even if probing executable access failed. */
+  public static byte[] contentDigest(SkyValue value) throws IOException {
+    if (value instanceof ReadFailure failure) {
+      if (failure.digest() == null) {
+        throw failure.error();
+      }
+      return failure.digest();
+    }
+    return ((Value) value).getDigest();
+  }
+
   @Nullable
   @Override
   public SkyValue compute(SkyKey skyKey, Environment env)
@@ -144,7 +166,9 @@ public final class SourceFileDigestFunction implements SkyFunction {
       }
       executable = realPath.isExecutable();
     } catch (IOException e) {
-      throw new SourceFileDigestFunctionException(e);
+      // A transient read failure must be retried on the next command even when FileValue
+      // stayed equal (for example a filesystem or access-control failure recovered).
+      return PrecomputedValue.BUILD_ID.get(env) == null ? null : new ReadFailure(digest, e);
     }
     return new Value(digest, executable);
   }

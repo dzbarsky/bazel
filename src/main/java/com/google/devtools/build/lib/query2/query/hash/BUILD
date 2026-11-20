@@ -12,14 +12,29 @@ filegroup(
 )
 
 java_library(
+    name = "source_file_digest",
+    srcs = ["SourceFileDigestFunction.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:precomputed_value",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/main/java/com/google/devtools/build/skyframe",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//third_party/java/jsr305_annotations",
+    ],
+)
+
+java_library(
     name = "hash",
-    srcs = glob(["*.java"]),
+    srcs = glob(["*.java"], exclude = ["SourceFileDigestFunction.java"]),
     visibility = [
         "//src/main/java/com/google/devtools/build/lib:build_lib",
         "//src/test/java/com/google/devtools/build/lib/query2/cquery:__pkg__",
         "//src/test/java/com/google/devtools/build/lib/query2/query/hash:__pkg__",
     ],
+    exports = [":source_file_digest"],
     deps = [
+        ":source_file_digest",
         "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
         "//src/main/java/com/google/devtools/build/lib/analysis:blaze_directories",
         "//src/main/java/com/google/devtools/build/lib/analysis/config:toolchain_type_requirement",

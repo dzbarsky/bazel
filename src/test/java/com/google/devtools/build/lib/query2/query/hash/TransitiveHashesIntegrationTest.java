@@ -45,7 +45,6 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
         return ImmutableMap.<SkyFunctionName, SkyFunction>builder()
             .putAll(super.getSkyFunctions(directories))
             .put(DirectTargetHashFunction.NAME, new DirectTargetHashFunction(directories))
-            .put(SourceFileDigestFunction.NAME, new SourceFileDigestFunction())
             .put(RepoContentDigestFunction.NAME, new RepoContentDigestFunction(directories))
             .put(RegisteredToolchainsByTypeFunction.NAME, new RegisteredToolchainsByTypeFunction())
             .buildOrThrow();
