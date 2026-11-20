@@ -71,12 +71,13 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
       if (Thread.interrupted()) {
         throw new InterruptedException();
       }
-      Build.Target record = toTargetProtoBuffer(target, labelPrinter);
+      Build.Target.Builder record =
+          toTargetProtoBuilder(target, labelPrinter, /* extraDataForAttrHash= */ "");
       String digest = hashes.get(target.getLabel());
       if (digest != null) {
-        record = record.toBuilder().setTransitiveHash(ByteString.fromHex(digest)).build();
+        record.setTransitiveHash(ByteString.fromHex(digest));
       }
-      codedOut.writeMessageNoTag(record);
+      codedOut.writeMessageNoTag(record.build());
     }
     codedOut.flush();
   }
