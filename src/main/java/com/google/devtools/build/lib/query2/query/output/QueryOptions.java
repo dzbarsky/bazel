@@ -22,6 +22,7 @@ import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionMetadataTag;
 import com.google.devtools.common.options.OptionsClass;
 import com.google.devtools.common.options.TriState;
+import java.util.List;
 import java.util.Set;
 
 /** Command-line options for the Blaze query language, revision 2. */
@@ -45,6 +46,19 @@ public abstract class QueryOptions extends CommonQueryOptions {
               + " build, graph, streamed_jsonproto, label, label_kind, location, maxrank, minrank,"
               + " package, proto, streamed_proto, xml.")
   public abstract String getOutputFormat();
+
+  @Option(
+      name = "experimental_query_exclude_root_directory",
+      defaultValue = "null",
+      allowMultiple = true,
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "Skips a workspace-relative subdirectory during query root enumeration. Its targets"
+              + " remain available as dependencies. Requires a single recursive main-repository"
+              + " pattern and no query universe. May be repeated.")
+  public abstract List<String> getQueryExcludeRootDirectories();
 
   @Option(
       name = "experimental_generate_hashes",
