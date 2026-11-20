@@ -412,6 +412,15 @@ public abstract class RepositoryOptions extends OptionsBase {
   public abstract boolean getIgnoreDevDependency();
 
   @Option(
+      name = "experimental_merged_git_repository",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.BZLMOD,
+      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help = "Enable merged_git_repository() in the root MODULE.bazel file.")
+  public abstract boolean getExperimentalMergedGitRepository();
+
+  @Option(
       name = "check_direct_dependencies",
       defaultValue = "warning",
       converter = CheckDirectDepsMode.Converter.class,

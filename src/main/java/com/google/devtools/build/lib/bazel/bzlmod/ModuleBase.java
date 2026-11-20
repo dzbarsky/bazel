@@ -57,6 +57,9 @@ abstract class ModuleBase {
    */
   public abstract String getRepoName();
 
+  /** Additional apparent name of the root inherited from a merged module, or empty. */
+  public abstract String getMergedRepoName();
+
   /**
    * Target patterns identifying execution platforms to register when this module is selected. Note
    * that these are what was written in module files verbatim, and don't contain canonical repo

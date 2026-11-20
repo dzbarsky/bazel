@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
-
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -49,9 +48,6 @@ import javax.annotation.Nullable;
  * that traverse directories recursively, looking for packages.
  */
 public final class ProcessPackageDirectory {
-  private static final String SENTINEL_FILE_NAME_FOR_NOT_TRAVERSING_SYMLINKS =
-      "DONT_FOLLOW_SYMLINKS_WHEN_TRAVERSING_THIS_DIRECTORY_VIA_A_RECURSIVE_TARGET_PATTERN";
-
   /** Produces a {@link SkyKey} for the recursive traversal into the specified subdirectory. */
   public interface SkyKeyTransformer {
     SkyKey makeSkyKey(
@@ -325,7 +321,7 @@ public final class ProcessPackageDirectory {
       //
       // This admittedly ugly feature is used to support workspaces with directories with weird
       // symlink structures that aren't intended to be consumed by Blaze.
-      if (dirent.getName().equals(SENTINEL_FILE_NAME_FOR_NOT_TRAVERSING_SYMLINKS)) {
+      if (dirent.getName().equals(LabelConstants.DONT_FOLLOW_SYMLINKS_FILE)) {
         return false;
       }
     }
