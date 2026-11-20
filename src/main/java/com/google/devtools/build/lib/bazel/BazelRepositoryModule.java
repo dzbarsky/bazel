@@ -60,6 +60,7 @@ import com.google.devtools.build.lib.bazel.bzlmod.YankedVersionsUtil;
 import com.google.devtools.build.lib.bazel.commands.FetchCommand;
 import com.google.devtools.build.lib.bazel.commands.ModCommand;
 import com.google.devtools.build.lib.bazel.commands.VendorCommand;
+import com.google.devtools.build.lib.bazel.repository.MergedGitRepository;
 import com.google.devtools.build.lib.bazel.repository.RepoDefinitionFunction;
 import com.google.devtools.build.lib.bazel.repository.RepoMetadataRequirements;
 import com.google.devtools.build.lib.bazel.repository.RepositoryFetchFunction;
@@ -79,6 +80,7 @@ import com.google.devtools.build.lib.clock.Clock;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.pkgcache.PackageOptions;
+import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
@@ -140,6 +142,7 @@ public class BazelRepositoryModule extends BlazeModule {
   private final MutableSupplier<ImmutableMap<String, String>> nonstrictRepoEnvSupplier =
       new MutableSupplier<>();
   private boolean fetchDisabled = false;
+  private final MergedGitRepository mergedGitRepository = new MergedGitRepository();
   private ImmutableMap<String, PathFragment> overrides = ImmutableMap.of();
   private ImmutableMap<String, PathFragment> injections = ImmutableMap.of();
   private ImmutableMap<String, ModuleOverride> moduleOverrides = ImmutableMap.of();
@@ -178,6 +181,61 @@ public class BazelRepositoryModule extends BlazeModule {
   @VisibleForTesting
   public BazelRepositoryModule(ImmutableMap<String, NonRegistryOverride> builtinModules) {
     this.builtinModules = builtinModules;
+  }
+
+  @Override
+  public PathPackageLocator preparePackageLocator(
+      CommandEnvironment env, PathPackageLocator locator)
+      throws AbruptExitException, InterruptedException {
+    RepositoryOptions options = env.getOptions().getOptions(RepositoryOptions.class);
+    Path sourceRoot = env.getDirectories().getWorkspace();
+    if (sourceRoot == null || options == null) {
+      return locator;
+    }
+    try {
+      var prepared =
+          options.getExperimentalMergedGitRepository()
+              ? mergedGitRepository.prepare(
+                  sourceRoot,
+                  env.getOutputBase(),
+                  env.getNonstrictRepoEnv(),
+                  !fetchDisabled && !options.getDisableDownload(),
+                  env.getReporter())
+              : null;
+      if (prepared != null) {
+        var roots = locator.getPathEntries();
+        if (roots.size() != 1 || !roots.getFirst().asPath().equals(sourceRoot)) {
+          throw new IOException("merged_git_repository cannot be combined with --package_path");
+        }
+        sourceRoot = prepared.root();
+        locator = locator.withMergedRepository(sourceRoot, prepared.snapshot());
+      }
+    } catch (IOException e) {
+      throw new AbruptExitException(
+          detailedExitCode(
+              "Error preparing main repository: " + e.getMessage(),
+              Code.REPOSITORY_MAPPING_IO_EXCEPTION),
+          e);
+    }
+
+    // The vendor directory and local and remote contents caches store portable relative
+    // symlinks to the main repository via this well-known path.
+    Path externalRoot = env.getOutputBase().getRelative(LabelConstants.EXTERNAL_PATH_PREFIX);
+    if (vendorDirectory.isPresent()
+        || repositoryCache.getRepoContentsCache().getPath() != null
+        || externalRoot.getFileSystem() instanceof RemoteExternalOverlayFileSystem) {
+      try {
+        FileSystemUtils.ensureSymbolicLink(
+            externalRoot.getChild(RepositoryUtils.WORKSPACE_SYMLINK_NAME), sourceRoot);
+      } catch (IOException e) {
+        throw new AbruptExitException(
+            detailedExitCode(
+                "Failed to create symlink to workspace under external directory: " + e.getMessage(),
+                Code.SYMLINKING_FAILED),
+            e);
+      }
+    }
+    return locator;
   }
 
   private static DetailedExitCode detailedExitCode(String message, ExternalRepository.Code code) {
@@ -589,26 +647,6 @@ public class BazelRepositoryModule extends BlazeModule {
         vendorDirectory =
             Optional.ofNullable(repoOptions.getVendorDirectory())
                 .map(vendorDirectory -> env.getWorkspace().getRelative(vendorDirectory));
-        // Both vendoring and the local and remote repo contents cache rely on certain symlinks at
-        // predictable locations to allow symlinks in external repos to be portable (in particular,
-        // relative).
-        if (vendorDirectory.isPresent()
-            || repoContentsCachePath != null
-            || externalRoot.getFileSystem() instanceof RemoteExternalOverlayFileSystem) {
-          try {
-            FileSystemUtils.ensureSymbolicLink(
-                externalRoot.getChild(RepositoryUtils.WORKSPACE_SYMLINK_NAME), env.getWorkspace());
-          } catch (IOException e) {
-            env.getReporter().handle(Event.error(e.getMessage()));
-            env.getBlazeModuleEnvironment()
-                .exit(
-                    new AbruptExitException(
-                        detailedExitCode(
-                            "Failed to create symlink to workspace under external directory: "
-                                + e.getMessage(),
-                            Code.SYMLINKING_FAILED)));
-          }
-        }
         if (vendorDirectory.isPresent()) {
           try {
             // TODO: The same vendor directory may be used concurrently with multiple output bases,

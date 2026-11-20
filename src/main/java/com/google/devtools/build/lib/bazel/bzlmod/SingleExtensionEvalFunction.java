@@ -108,6 +108,11 @@ public class SingleExtensionEvalFunction implements SkyFunction {
     if (usagesValue == null) {
       return null;
     }
+    var locator = PrecomputedValue.PATH_PACKAGE_LOCATOR.get(env);
+    if (locator == null) {
+      return null;
+    }
+    BlazeDirectories sourceDirectories = locator.getSourceDirectories(directories);
     RunnableExtension extension;
     try {
       if (extensionId.isInnate()) {
@@ -119,7 +124,7 @@ public class SingleExtensionEvalFunction implements SkyFunction {
                 usagesValue,
                 starlarkSemantics,
                 env,
-                directories,
+                sourceDirectories,
                 repoEnvSupplier.get(),
                 nonstrictRepoEnvSupplier.get(),
                 timeoutScaling,
@@ -189,6 +194,7 @@ public class SingleExtensionEvalFunction implements SkyFunction {
           SingleExtensionValue singleExtensionValue =
               tryGettingValueFromLockFile(
                   env,
+                  sourceDirectories,
                   extensionId,
                   extension,
                   usagesValue,
@@ -326,6 +332,7 @@ public class SingleExtensionEvalFunction implements SkyFunction {
   @Nullable
   private SingleExtensionValue tryGettingValueFromLockFile(
       Environment env,
+      BlazeDirectories sourceDirectories,
       ModuleExtensionId extensionId,
       RunnableExtension extension,
       SingleExtensionUsagesValue usagesValue,
@@ -357,7 +364,7 @@ public class SingleExtensionEvalFunction implements SkyFunction {
         diffRecorder.record("the usages of the extension '" + extensionId + "' have changed");
       }
       Optional<String> reason =
-          didRecordedInputsChange(env, directories, lockedExtension.getRecordedInputs());
+          didRecordedInputsChange(env, sourceDirectories, lockedExtension.getRecordedInputs());
       if (reason.isPresent()) {
         diffRecorder.record(
             "an input to the extension '" + extensionId + "' changed: " + reason.get());

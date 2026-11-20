@@ -229,8 +229,14 @@ public final class RepositoryFetchFunction implements SkyFunction {
       Path repoRoot,
       RepoDefinition repoDefinition)
       throws InterruptedException, RepositoryFunctionException {
+    PathPackageLocator locator = PrecomputedValue.PATH_PACKAGE_LOCATOR.get(env);
+    if (locator == null) {
+      return null;
+    }
+    var sourceDirectories = locator.getSourceDirectories(directories);
     var digestWriter =
-        DigestWriter.create(env, directories, repositoryName, repoDefinition, starlarkSemantics);
+        DigestWriter.create(
+            env, sourceDirectories, repositoryName, repoDefinition, starlarkSemantics);
     if (digestWriter == null) {
       return null;
     }
@@ -340,7 +346,7 @@ public final class RepositoryFetchFunction implements SkyFunction {
           replantSymlinksResult =
               RepositoryUtils.replantSymlinks(
                   repoRoot,
-                  directories.getWorkspace(),
+                  sourceDirectories.getWorkspace(),
                   externalRepoRoot,
                   PathFragment.EMPTY_FRAGMENT,
                   // The local repo contents cache can't handle any cross-repo symlinks and while
@@ -659,7 +665,7 @@ public final class RepositoryFetchFunction implements SkyFunction {
                 starlarkSemantics,
                 repositoryRemoteExecutor,
                 syscallCache,
-                directories)) {
+                packageLocator.getSourceDirectories(directories))) {
       StarlarkThread thread =
           StarlarkThread.create(
               mu,

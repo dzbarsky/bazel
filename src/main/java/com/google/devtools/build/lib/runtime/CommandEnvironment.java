@@ -126,7 +126,7 @@ public class CommandEnvironment {
   private final Command command;
   private final OptionsParsingResult options;
   private final InvocationPolicy invocationPolicy;
-  private final PathPackageLocator packageLocator;
+  private PathPackageLocator packageLocator;
   private final Path workingDirectory;
   private final PathFragment relativeWorkingDirectory;
   private final SyscallCache syscallCache;
@@ -860,6 +860,9 @@ public class CommandEnvironment {
     if (hasSyncedPackageLoading) {
       throw new IllegalStateException(
           "We should never call this method more than once over the course of a single command");
+    }
+    for (BlazeModule module : runtime.getBlazeModules()) {
+      packageLocator = module.preparePackageLocator(this, packageLocator);
     }
     hasSyncedPackageLoading = true;
     workspaceInfoFromDiff =

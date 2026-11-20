@@ -333,6 +333,14 @@ py_test(
 )
 
 py_test(
+    name = "merged_git_repository_test",
+    size = "medium",
+    srcs = ["bzlmod/merged_git_repository_test.py"],
+    tags = ["no_windows"],
+    deps = [":test_base"],
+)
+
+py_test(
     name = "bazel_overrides_test",
     size = "large",
     srcs = ["bzlmod/bazel_overrides_test.py"],

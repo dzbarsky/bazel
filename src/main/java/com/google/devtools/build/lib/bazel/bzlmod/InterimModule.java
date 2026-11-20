@@ -45,6 +45,9 @@ import net.starlark.java.eval.StarlarkList;
 @AutoValue
 public abstract class InterimModule extends ModuleBase {
 
+  /** Additional module name that resolves to the root during discovery, or empty. */
+  public abstract String getMergedModuleName();
+
   /** List of bazel compatible versions that would run/fail this module */
   public abstract ImmutableList<String> getBazelCompatibility();
 
@@ -88,6 +91,8 @@ public abstract class InterimModule extends ModuleBase {
         && getVersion().equals(that.getVersion())
         && getKey().equals(that.getKey())
         && getRepoName().equals(that.getRepoName())
+        && getMergedRepoName().equals(that.getMergedRepoName())
+        && getMergedModuleName().equals(that.getMergedModuleName())
         && getExecutionPlatformsToRegister().equals(that.getExecutionPlatformsToRegister())
         && getToolchainsToRegister().equals(that.getToolchainsToRegister())
         && getExtensionUsages().equals(that.getExtensionUsages())
@@ -108,6 +113,8 @@ public abstract class InterimModule extends ModuleBase {
   public static Builder builder() {
     return new AutoValue_InterimModule.Builder()
         .setName("")
+        .setMergedRepoName("")
+        .setMergedModuleName("")
         .setVersion(Version.EMPTY)
         .setKey(ModuleKey.ROOT);
   }
@@ -137,6 +144,12 @@ public abstract class InterimModule extends ModuleBase {
 
     /** Optional; defaults to {@link #setName}. */
     public abstract Builder setRepoName(String value);
+
+    abstract Builder setMergedRepoName(String value);
+
+    abstract Builder setMergedModuleName(String value);
+
+    abstract String getMergedRepoName();
 
     abstract ImmutableList.Builder<String> bazelCompatibilityBuilder();
 
@@ -234,6 +247,7 @@ public abstract class InterimModule extends ModuleBase {
         .setVersion(interim.getVersion())
         .setKey(interim.getKey())
         .setRepoName(interim.getRepoName())
+        .setMergedRepoName(interim.getMergedRepoName())
         .setExecutionPlatformsToRegister(interim.getExecutionPlatformsToRegister())
         .setToolchainsToRegister(interim.getToolchainsToRegister())
         .setDeps(interim.getDeps())

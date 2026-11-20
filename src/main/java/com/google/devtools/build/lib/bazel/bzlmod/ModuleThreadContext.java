@@ -312,7 +312,8 @@ public class ModuleThreadContext implements StarlarkThreadContext {
                     overridingRepoName)
                 .withCallStack(context.repoNameUsages.get(importedAs).stack);
           }
-          if (overridingRepoName.equals(context.module.getRepoNameOrName())) {
+          if (overridingRepoName.equals(context.module.getRepoNameOrName())
+              || overridingRepoName.equals(context.module.getMergedRepoName())) {
             throw Starlark.errorf(
                     "Cannot import repo '%s' from module extension '%s' because it is overridden"
                         + " with the root module at %s. Please refer to @%s directly.",
@@ -335,6 +336,36 @@ public class ModuleThreadContext implements StarlarkThreadContext {
                           v.overridingRepoName, v.mustExist, v.location()))));
 
       return builder.build();
+    }
+  }
+
+  @Nullable private CompiledModuleFile mergedModuleFile;
+  private boolean inMergedModule;
+
+  void setMergedModuleFile(@Nullable CompiledModuleFile file) {
+    mergedModuleFile = file;
+  }
+
+  boolean inMergedModule() {
+    return inMergedModule;
+  }
+
+  void mergeRepository(StarlarkThread thread) throws EvalException, InterruptedException {
+    if (mergedModuleFile == null || hadNonModuleCall || !includeStack.isEmpty()) {
+      throw Starlark.errorf(
+          "merged_git_repository() must be called once directly in the root MODULE.bazel,"
+              + " before other directives except module(), with"
+              + " --experimental_merged_git_repository enabled");
+    }
+    CompiledModuleFile imported = mergedModuleFile;
+    mergedModuleFile = null;
+    inMergedModule = true;
+    moduleCalled = false;
+    try {
+      imported.runOnThread(thread);
+    } finally {
+      inMergedModule = false;
+      hadNonModuleCall = true;
     }
   }
 

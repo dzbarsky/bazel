@@ -57,13 +57,45 @@ public final class PathPackageLocator {
   @Nullable private final transient Path outputBase;
 
   private final ImmutableList<BuildFileName> buildFilesByPriority;
+  @Nullable private final Path mergedRepository;
 
   @VisibleForTesting
   public PathPackageLocator(
       @Nullable Path outputBase, List<Root> pathEntries, List<BuildFileName> buildFilesByPriority) {
+    this(outputBase, pathEntries, buildFilesByPriority, null);
+  }
+
+  private PathPackageLocator(
+      @Nullable Path outputBase,
+      List<Root> pathEntries,
+      List<BuildFileName> buildFilesByPriority,
+      @Nullable Path mergedRepository) {
     this.outputBase = outputBase;
     this.pathEntries = ImmutableList.copyOf(pathEntries);
     this.buildFilesByPriority = ImmutableList.copyOf(buildFilesByPriority);
+    this.mergedRepository = mergedRepository;
+  }
+
+  /** Installs a combined tree as the sole package root of the main repository. */
+  public PathPackageLocator withMergedRepository(Path root, Path snapshot) {
+    return new PathPackageLocator(
+        outputBase, ImmutableList.of(Root.fromPath(root)), buildFilesByPriority, snapshot);
+  }
+
+  /** The immutable repository contributing to the source root, if any. */
+  @Nullable
+  public Path getMergedRepository() {
+    return mergedRepository;
+  }
+
+  /** Directories for repository rules, extensions and their recorded inputs. */
+  public BlazeDirectories getSourceDirectories(BlazeDirectories original) {
+    return mergedRepository == null
+        ? original
+        : new BlazeDirectories(
+            original.getServerDirectories(),
+            pathEntries.getFirst().asPath(),
+            original.getProductName());
   }
 
   /**
@@ -315,7 +347,7 @@ public final class PathPackageLocator {
 
   @Override
   public int hashCode() {
-    return Objects.hash(pathEntries, outputBase);
+    return Objects.hash(pathEntries, outputBase, mergedRepository);
   }
 
   @Override
@@ -327,7 +359,8 @@ public final class PathPackageLocator {
       return false;
     }
     return Objects.equals(pathEntries, pathPackageLocator.pathEntries)
-        && Objects.equals(outputBase, pathPackageLocator.outputBase);
+        && Objects.equals(outputBase, pathPackageLocator.outputBase)
+        && Objects.equals(mergedRepository, pathPackageLocator.mergedRepository);
   }
 
   @Nullable

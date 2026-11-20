@@ -105,6 +105,7 @@ final class RepoDefinitionInputs {
             ImmutableMap.<String, RepositoryName>builder()
                 .put("", RepositoryName.MAIN)
                 .put(root.module().getRepoName(), RepositoryName.MAIN)
+                .put(root.module().getMergedRepoName(), RepositoryName.MAIN)
                 .buildKeepingLast(),
             RepositoryName.MAIN);
     var overrides = ImmutableMap.<RepositoryName, ResolvedRepo.NonRegistry>builder();
