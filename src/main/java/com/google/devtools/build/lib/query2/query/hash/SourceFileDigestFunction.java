@@ -88,6 +88,10 @@ public final class SourceFileDigestFunction implements SkyFunction {
       this.executable = executable;
     }
 
+    static Value pinned(byte[] digest, boolean executable) {
+      return new Value(digest, executable);
+    }
+
     public byte[] getDigest() {
       return digest;
     }

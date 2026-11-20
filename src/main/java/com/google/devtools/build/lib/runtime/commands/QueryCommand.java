@@ -309,7 +309,13 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
               }
             },
             message -> env.getReporter().handle(Event.progress(message)),
-            queryOptions.getQueryHashFailureImpact());
+            queryOptions.getQueryHashFailureImpact(),
+            queryOptions.getPinnedHttpFileMetadata()
+                && env.getOptions()
+                    .getOptions(PackageOptions.class)
+                    .getDeletedPackagesOrEmptySet()
+                    .stream()
+                    .allMatch(pkg -> pkg.getRepository().isMain()));
     CountingOutputStream binary = null;
     if (catalog instanceof StreamedProtoOutputFormatter) {
       binary = new CountingOutputStream(out);

@@ -108,6 +108,34 @@ public final class DirectTargetHashFunction implements SkyFunction {
     return Key.create(label);
   }
 
+  static SkyKey unconfiguredKey(Label label, boolean pinnedHttpFileMetadata) {
+    if (pinnedHttpFileMetadata
+        && !label.getRepository().isMain()
+        && PinnedHttpFileQueryFunction.containsPackage(label.getPackageFragment())) {
+      return PinnedHttpFileKey.interner.intern(new PinnedHttpFileKey(label));
+    }
+    return key(label);
+  }
+
+  private static final class PinnedHttpFileKey
+      extends AbstractSkyKey.WithCachedHashCode<Label> {
+    private static final SkyKeyInterner<PinnedHttpFileKey> interner = SkyKey.newInterner();
+
+    private PinnedHttpFileKey(Label label) {
+      super(label);
+    }
+
+    @Override
+    public SkyFunctionName functionName() {
+      return NAME;
+    }
+
+    @Override
+    public SkyKeyInterner<PinnedHttpFileKey> getSkyKeyInterner() {
+      return interner;
+    }
+  }
+
   /** Cquery supplies configured edges separately, so it only needs the digest. */
   public static SkyKey configuredKey(Label label) {
     return ConfiguredKey.interner.intern(new ConfiguredKey(label));
@@ -219,21 +247,36 @@ public final class DirectTargetHashFunction implements SkyFunction {
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws DirectTargetHashFunctionException, InterruptedException {
     Label label = (Label) skyKey.argument();
-    Target target;
-    try {
-      Object loaded = TargetLoadingUtil.loadTarget(env, label);
-      if (!(loaded instanceof TargetAndErrorIfAny targetAndErrorIfAny)) {
+    Target target = null;
+    SourceFileDigestFunction.Value pinnedSourceDigest = null;
+    if (skyKey instanceof PinnedHttpFileKey) {
+      var recipe = (PinnedHttpFileQueryFunction.Value)
+          env.getValue(PinnedHttpFileQueryFunction.key(label.getRepository()));
+      if (recipe == null) {
         return null;
       }
-      if (targetAndErrorIfAny.getErrorLoadingTarget() != null) {
-        throw targetAndErrorIfAny.getErrorLoadingTarget();
+      target = recipe.targets().get(label);
+      if (target instanceof InputFile) {
+        pinnedSourceDigest = recipe.sourceDigest();
       }
-      target = targetAndErrorIfAny.getTarget();
-    } catch (NoSuchThingException e) {
-      throw new DirectTargetHashFunctionException(e);
+    }
+    if (target == null) {
+      try {
+        Object loaded = TargetLoadingUtil.loadTarget(env, label);
+        if (!(loaded instanceof TargetAndErrorIfAny targetAndErrorIfAny)) {
+          return null;
+        }
+        if (targetAndErrorIfAny.getErrorLoadingTarget() != null) {
+          throw targetAndErrorIfAny.getErrorLoadingTarget();
+        }
+        target = targetAndErrorIfAny.getTarget();
+      } catch (NoSuchThingException e) {
+        throw new DirectTargetHashFunctionException(e);
+      }
     }
 
-    var deps = skyKey instanceof Key ? collectQueryDependencies(target) : null;
+    var deps = (skyKey instanceof Key || skyKey instanceof PinnedHttpFileKey)
+        ? collectQueryDependencies(target) : null;
     Map<Label, byte[]> toolchainImplementationDigests = Map.of();
     if (target instanceof Rule rule && rule.getRuleClass().equals("toolchain")) {
       AggregatingAttributeMapper attributes = AggregatingAttributeMapper.of(rule);
@@ -268,8 +311,8 @@ public final class DirectTargetHashFunction implements SkyFunction {
     // function reads the FileValue digest (already held in memory for R2C2 files) and falls
     // back to a cached content read on ordinary filesystems.
     RootedPath inputPath = null;
-    SourceFileDigestFunction.Value fileDigest = null;
-    if (target instanceof InputFile inputFile) {
+    SourceFileDigestFunction.Value fileDigest = pinnedSourceDigest;
+    if (fileDigest == null && target instanceof InputFile inputFile) {
       inputPath =
           RootedPath.toRootedPath(inputFile.getPackageMetadata().sourceRoot(), inputFile.getPath());
       try {

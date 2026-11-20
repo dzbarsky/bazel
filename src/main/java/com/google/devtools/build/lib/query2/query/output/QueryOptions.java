@@ -69,6 +69,18 @@ public abstract class QueryOptions extends CommonQueryOptions {
   public abstract boolean getGenerateHashes();
 
   @Option(
+      name = "experimental_query_pinned_http_file_metadata",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT, OptionEffectTag.LOADING_AND_ANALYSIS},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "Use declared SHA-256 and generated metadata for trusted built-in http_file "
+              + "dependencies during native query hashing. A pin can provide a hash when "
+              + "its source is unavailable. Normal builds still fetch and verify the bytes.")
+  public abstract boolean getPinnedHttpFileMetadata();
+
+  @Option(
       name = "experimental_query_hash_failure_impact",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.QUERY,
