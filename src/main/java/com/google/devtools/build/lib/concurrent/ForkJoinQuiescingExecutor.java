@@ -24,9 +24,15 @@ import java.util.concurrent.ForkJoinPool;
 // maintaining AQV.remainingTasks.
 public class ForkJoinQuiescingExecutor extends AbstractQueueVisitor {
 
-  private ForkJoinQuiescingExecutor(ForkJoinPool forkJoinPool, ErrorClassifier errorClassifier) {
-    super(
-        forkJoinPool, ExecutorOwnership.PRIVATE, ExceptionHandlingMode.FAIL_FAST, errorClassifier);
+  private ForkJoinQuiescingExecutor(
+      ForkJoinPool forkJoinPool, ExecutorOwnership ownership, ErrorClassifier errorClassifier) {
+    super(forkJoinPool, ownership, ExceptionHandlingMode.FAIL_FAST, errorClassifier);
+  }
+
+  /** Creates one visitor without taking ownership of its worker pool. */
+  public static ForkJoinQuiescingExecutor createShared(
+      ForkJoinPool pool, ErrorClassifier errorClassifier) {
+    return new ForkJoinQuiescingExecutor(pool, ExecutorOwnership.SHARED, errorClassifier);
   }
 
   /** Builder for {@link ForkJoinQuiescingExecutor}. */
@@ -64,7 +70,8 @@ public class ForkJoinQuiescingExecutor extends AbstractQueueVisitor {
      */
     public ForkJoinQuiescingExecutor build() {
       Preconditions.checkNotNull(forkJoinPool, "fork join pool must be supplied");
-      return new ForkJoinQuiescingExecutor(forkJoinPool, errorClassifier);
+      return new ForkJoinQuiescingExecutor(
+          forkJoinPool, ExecutorOwnership.PRIVATE, errorClassifier);
     }
   }
 
