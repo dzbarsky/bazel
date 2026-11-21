@@ -29,11 +29,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.devtools.build.lib.actions.ActionInputHelper;
 import com.google.devtools.build.lib.actions.ActionInputPrefetcher;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
+import com.google.devtools.build.lib.actions.FileContentsProxy;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.concurrent.TaskDeduplicator;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
@@ -77,6 +79,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import javax.annotation.Nullable;
@@ -89,11 +93,18 @@ import javax.annotation.Nullable;
  * memory in the {@link RemoteExternalFileSystem}.
  */
 public final class RemoteExternalOverlayFileSystem extends FileSystem implements LazyMaterializer {
+  private static final int BLOBS_PER_BATCH = 32;
+  private static final int MAX_BATCHED_BLOB_BYTES = 32 * 1024;
+  private static final int CONCURRENT_BATCHES = 32;
+
+  private record RepositoryBlob(PathFragment path, FileArtifactValue metadata, Digest digest) {}
+
   private final PathFragment externalDirectory;
   private final int externalDirectorySegmentCount;
   private final FileSystem nativeFs;
   private final RemoteExternalFileSystem externalFs;
   private final TaskDeduplicator<String, Void, Void> materializations = new TaskDeduplicator<>();
+  private final Semaphore batchSlots = new Semaphore(CONCURRENT_BATCHES, /* fair= */ true);
   // The names of the repos whose contents have been fully materialized to nativeFs.
   private final Set<String> materializedRepos = ConcurrentHashMap.newKeySet();
   // As long as a repo name appears as a key in this map, the repo contents are available in
@@ -276,9 +287,7 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem implements
     injectRepoContents(repo, remoteContents, filesToPrefetch::add, symlinksToPrefetch::add);
     addSymlinkTargetsToPrefetch(symlinksToPrefetch, filesToPrefetch);
     try {
-      // TODO: This prefetches a large number of small files. Investigate whether BatchReadBlobs
-      // would be more efficient.
-      prefetch(filesToPrefetch);
+      prefetchInjectedRepo(repoDir, filesToPrefetch);
     } catch (BulkTransferException e) {
       if (e.allCausedByCacheNotFoundException()) {
         // The cache has lost the prefetched files, which should be treated just like a cache miss.
@@ -614,6 +623,102 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem implements
         cause,
         FailureDetails.Filesystem.Code.REMOTE_FILE_EVICTED,
         SkyFunctionException.Transience.TRANSIENT);
+  }
+
+  private void prefetchInjectedRepo(PathFragment repoDir, Set<PathFragment> paths)
+      throws IOException, InterruptedException {
+    if (paths.size() < BLOBS_PER_BATCH || !cache.canBatchRepositoryBlobs()) {
+      prefetch(paths);
+      return;
+    }
+    var small = new ArrayList<RepositoryBlob>();
+    var remaining = new ArrayList<PathFragment>();
+    for (var path : paths) {
+      if (!path.startsWith(repoDir)) {
+        remaining.add(path);
+        continue;
+      }
+      var metadata = externalFs.getMetadata(path);
+      long size = metadata.getSize();
+      if (size > 0 && size <= MAX_BATCHED_BLOB_BYTES) {
+        small.add(
+            new RepositoryBlob(path, metadata, DigestUtil.buildDigest(metadata.getDigest(), size)));
+      } else {
+        remaining.add(path);
+      }
+    }
+    if (small.size() < BLOBS_PER_BATCH) {
+      prefetch(paths);
+      return;
+    }
+
+    inputPrefetcher.invalidateDownloads(paths);
+    var context = externalFs.makeRemoteContext(repoDir.relativeTo(externalDirectory));
+    var next = new AtomicInteger();
+    int batches = (small.size() - 1) / BLOBS_PER_BATCH + 1;
+    // Join the workers even on cancellation. A subsequent fetch can replace the same native
+    // directory as soon as this method returns.
+    try (var executor =
+        MoreExecutors.listeningDecorator(Executors.newVirtualThreadPerTaskExecutor())) {
+      var transfers = new ArrayList<ListenableFuture<Void>>();
+      for (int worker = 0; worker < Math.min(batches, CONCURRENT_BATCHES); worker++) {
+        transfers.add(
+            executor.submit(
+                () -> {
+                  var fallback = new ArrayList<PathFragment>();
+                  for (int from = next.getAndAdd(BLOBS_PER_BATCH);
+                      from < small.size();
+                      from = next.getAndAdd(BLOBS_PER_BATCH)) {
+                    var batch = small.subList(from, Math.min(from + BLOBS_PER_BATCH, small.size()));
+                    materializeRepositoryBlobBatch(context, batch, fallback);
+                  }
+                  if (!fallback.isEmpty()) {
+                    prefetch(fallback);
+                  }
+                  return null;
+                }));
+      }
+      if (!remaining.isEmpty()) {
+        transfers.add(
+            executor.submit(
+                () -> {
+                  prefetch(remaining);
+                  return null;
+                }));
+      }
+      try {
+        waitForBulkTransfer(transfers);
+      } finally {
+        executor.shutdownNow();
+      }
+    }
+  }
+
+  private void materializeRepositoryBlobBatch(
+      RemoteActionExecutionContext context, List<RepositoryBlob> batch, List<PathFragment> fallback)
+      throws IOException, InterruptedException {
+    var digests = batch.stream().map(RepositoryBlob::digest).collect(ImmutableSet.toImmutableSet());
+    batchSlots.acquire();
+    try {
+      var contents = getFromFuture(cache.downloadRepositoryBlobBatch(context, digests), true);
+      for (var blob : batch) {
+        var bytes = contents.get(blob.digest());
+        if (bytes == null) {
+          fallback.add(blob.path());
+          continue;
+        }
+        // The repository marker is published after every prefetch has finished.
+        var file = nativeFs.getPath(blob.path());
+        file.getParentDirectory().createDirectoryAndParents();
+        try (var out = file.getOutputStream()) {
+          bytes.writeTo(out);
+        }
+        file.chmod(getMaterializationPermissions(blob.path(), 0444));
+        blob.metadata().setContentsProxy(FileContentsProxy.create(file.stat()));
+      }
+    } finally {
+      batchSlots.release();
+    }
   }
 
   private void prefetch(Iterable<PathFragment> paths) throws IOException, InterruptedException {

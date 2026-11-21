@@ -535,6 +535,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/remote/zstd",
         "//third_party/google/bytestream:bytestream_grpc",
         "//third_party/google/bytestream:bytestream_java_proto",
+        "//third_party/google/rpc:status_java_proto",
         "//third_party/java/flogger",
         "//third_party/java/grpc:core",
         "//third_party/java/grpc:stub",
@@ -989,6 +990,7 @@ java_library(
         "//third_party/java/guava:collect",
         "//third_party/java/guava:concurrent",
         "//third_party/java/jsr305_annotations",
+        "//third_party/java/protobuf:protobuf_lite",
         "@remoteapis//:build_bazel_remote_execution_v2_remote_execution_java_proto",
     ],
 )
