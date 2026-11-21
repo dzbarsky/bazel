@@ -15,6 +15,8 @@
 package com.google.devtools.build.lib.remote.downloader;
 
 import static com.google.devtools.build.lib.remote.util.Futures.getFromFuture;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 import build.bazel.remote.asset.v1.FetchBlobRequest;
 import build.bazel.remote.asset.v1.FetchBlobResponse;
@@ -40,6 +42,8 @@ import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.remote.ReferenceCountedChannel;
 import com.google.devtools.build.lib.remote.RemoteRetrier;
+import com.google.devtools.build.lib.remote.Retrier.Backoff;
+import com.google.devtools.build.lib.remote.Retrier.RetryableCallable;
 import com.google.devtools.build.lib.remote.common.OutputDigestMismatchException;
 import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
@@ -51,6 +55,7 @@ import com.google.protobuf.util.Timestamps;
 import com.google.rpc.Code;
 import io.grpc.CallCredentials;
 import io.grpc.Channel;
+import io.grpc.Deadline;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
 import java.io.IOException;
@@ -194,13 +199,7 @@ public class GrpcRemoteDownloader implements AutoCloseable, Downloader {
       FetchBlobResponse response;
       try (var span =
           Profiler.instance().profile(ProfilerTask.REMOTE_NETWORK, "Remote Asset FetchBlob")) {
-        response =
-            retrier.execute(
-                () ->
-                    channel.withChannelBlocking(
-                        channel ->
-                            fetchBlockingStub(remoteActionExecutionContext, channel)
-                                .fetchBlob(request)));
+        response = fetchBlob(remoteActionExecutionContext, request);
       }
       if (!response.getUri().isEmpty()) {
         eventUri = response.getUri();
@@ -331,6 +330,47 @@ public class GrpcRemoteDownloader implements AutoCloseable, Downloader {
     }
 
     return requestBuilder.build();
+  }
+
+  private FetchBlobResponse fetchBlob(
+      RemoteActionExecutionContext context, FetchBlobRequest request)
+      throws IOException, InterruptedException {
+    Duration timeout = options.getRemoteDownloaderFetchTimeout();
+    Deadline deadline =
+        timeout.isZero() ? null : Deadline.after(NANOSECONDS.convert(timeout), NANOSECONDS);
+    RetryableCallable<FetchBlobResponse, IOException> fetch =
+        () ->
+            channel.withChannelBlocking(
+                channel -> {
+                  var stub = fetchBlockingStub(context, channel);
+                  return (deadline == null ? stub : stub.withDeadline(deadline)).fetchBlob(request);
+                },
+                deadline);
+    if (deadline == null) {
+      return retrier.execute(fetch);
+    }
+
+    Backoff backoff = retrier.newBackoff();
+    return retrier.execute(
+        fetch,
+        new Backoff() {
+          private int retryAttempts;
+
+          @Override
+          public long nextDelayMillis(Exception error) {
+            long delay = backoff.nextDelayMillis(error);
+            if (delay < 0 || MILLISECONDS.toNanos(delay) >= deadline.timeRemaining(NANOSECONDS)) {
+              return -1;
+            }
+            retryAttempts++;
+            return delay;
+          }
+
+          @Override
+          public int getRetryAttempts() {
+            return retryAttempts;
+          }
+        });
   }
 
   private FetchBlockingStub fetchBlockingStub(
