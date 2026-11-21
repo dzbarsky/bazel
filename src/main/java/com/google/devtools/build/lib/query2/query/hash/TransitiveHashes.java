@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.packages.BuildFileNotFoundException;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
@@ -62,6 +63,9 @@ import javax.annotation.Nullable;
  */
 public final class TransitiveHashes {
   private static final HexFormat HEX_FORMAT = HexFormat.of();
+  private static final int MIN_ROOTS_FOR_BATCHING = 1024;
+  private static final int MIN_ROOTS_PER_BATCHED_PACKAGE = 8;
+  private static final int MAX_ROOTS_PER_BATCHED_PACKAGE = 1024;
 
   /**
    * The hashes of the requested targets, and the errors that make hashes missing or unreliable.
@@ -112,6 +116,18 @@ public final class TransitiveHashes {
       Consumer<String> progress,
       boolean reportFailureImpact)
       throws InterruptedException {
+    return compute(
+        roots, evaluator, progress, reportFailureImpact, /* batchDirectRuleHashes= */ false);
+  }
+
+  /** Computes hashes, optionally grouping direct rule hashes in large root sets by package. */
+  public static Result compute(
+      Collection<Label> roots,
+      Evaluator evaluator,
+      Consumer<String> progress,
+      boolean reportFailureImpact,
+      boolean batchDirectRuleHashes)
+      throws InterruptedException {
     long discoveryStart = System.nanoTime();
     Map<Label, State<Label>> graph = HashMap.newHashMap(roots.size());
     Set<Label> failed = new HashSet<>();
@@ -122,29 +138,40 @@ public final class TransitiveHashes {
     // Breadth-first so that each Skyframe evaluation covers a whole level of the graph.
     int level = 0;
     RegisteredToolchains registeredToolchains = new RegisteredToolchains(evaluator);
+    Map<PackageIdentifier, DirectTargetHashFunction.PackageHashes> packageHashes =
+        batchDirectRuleHashes && rootSet.size() >= MIN_ROOTS_FOR_BATCHING
+            ? evaluateRootPackages(rootSet, evaluator)
+            : Map.of();
     while (!frontier.isEmpty()) {
       ImmutableSet.Builder<SkyKey> keyBuilder =
           ImmutableSet.builderWithExpectedSize(frontier.size());
       for (Label label : frontier) {
-        keyBuilder.add(DirectTargetHashFunction.key(label));
+        if (getPackageHash(packageHashes, label) == null) {
+          keyBuilder.add(DirectTargetHashFunction.key(label));
+        }
       }
       ImmutableSet<SkyKey> keys = keyBuilder.build();
-      EvaluationResult<SkyValue> result = evaluator.evaluate(keys);
+      var result =
+          keys.isEmpty() ? EvaluationResult.<SkyValue>builder().build() : evaluator.evaluate(keys);
       List<Label> next = new ArrayList<>();
-      for (SkyKey key : keys) {
-        Label label = (Label) key.argument();
-        DirectTargetHashFunction.Value value = (DirectTargetHashFunction.Value) result.get(key);
+      var keyIterator = keys.iterator();
+      for (Label label : frontier) {
+        DirectTargetHashFunction.Value value = getPackageHash(packageHashes, label);
         if (value == null) {
-          ErrorInfo error = result.getError(key);
-          // Keep the PR's missing-leaf marker only for a proven absent dependency.
-          // Fetch failures, I/O errors, and partially loaded packages may still contain the label.
-          if (rootSet.contains(label) || !isKnownAbsent(error)) {
-            failed.add(label);
-            if (error != null) {
-              errors.put(label, error);
+          SkyKey key = keyIterator.next();
+          value = (DirectTargetHashFunction.Value) result.get(key);
+          if (value == null) {
+            ErrorInfo error = result.getError(key);
+            // A missing dependency is hashed as absent only when Skyframe reports it as such.
+            // Fetch failures, I/O errors, and partially loaded packages may still contain the label.
+            if (rootSet.contains(label) || !isKnownAbsent(error)) {
+              failed.add(label);
+              if (error != null) {
+                errors.put(label, error);
+              }
             }
+            continue;
           }
-          continue;
         }
         if (value.isToolchainType()) {
           value = registeredToolchains.addToolchains(label, value, errors);
@@ -153,13 +180,15 @@ public final class TransitiveHashes {
             continue;
           }
         }
-        graph.put(label, new State<>(label, new Node<>(value.getDirectHash(), value.getDeps()), false));
+        graph.put(
+            label, new State<>(label, new Node<>(value.getDirectHash(), value.getDeps()), false));
         for (Label dep : value.getDeps()) {
           if (!rootSet.contains(dep) && discovered.add(dep)) {
             next.add(dep);
           }
         }
       }
+      packageHashes = Map.of();
       frontier = next;
       progress.accept(
           String.format(
@@ -203,6 +232,47 @@ public final class TransitiveHashes {
             TimeUnit.NANOSECONDS.toMillis(combineStart - discoveryStart),
             TimeUnit.NANOSECONDS.toMillis(assembleStart - combineStart),
             TimeUnit.NANOSECONDS.toMillis(end - assembleStart)));
+  }
+
+  private static Map<PackageIdentifier, DirectTargetHashFunction.PackageHashes>
+      evaluateRootPackages(ImmutableSet<Label> roots, Evaluator evaluator)
+          throws InterruptedException {
+    Map<PackageIdentifier, Integer> counts = new HashMap<>();
+    for (Label label : roots) {
+      if (label.getRepository().isMain() && !label.getName().contains("/")) {
+        counts.merge(label.getPackageIdentifier(), 1, Integer::sum);
+      }
+    }
+    var builder = ImmutableSet.<SkyKey>builder();
+    for (var entry : counts.entrySet()) {
+      if (entry.getValue() >= MIN_ROOTS_PER_BATCHED_PACKAGE
+          && entry.getValue() <= MAX_ROOTS_PER_BATCHED_PACKAGE) {
+        builder.add(DirectTargetHashFunction.packageKey(entry.getKey()));
+      }
+    }
+    var keys = builder.build();
+    if (keys.isEmpty()) {
+      return Map.of();
+    }
+    var values = evaluator.evaluate(keys);
+    Map<PackageIdentifier, DirectTargetHashFunction.PackageHashes> packages = new HashMap<>();
+    for (SkyKey key : keys) {
+      if (values.get(key) instanceof DirectTargetHashFunction.PackageHashes hashes
+          && !hashes.rules().isEmpty()) {
+        packages.put((PackageIdentifier) key.argument(), hashes);
+      }
+    }
+    return packages;
+  }
+
+  @Nullable
+  private static DirectTargetHashFunction.Value getPackageHash(
+      Map<PackageIdentifier, DirectTargetHashFunction.PackageHashes> packages, Label label) {
+    if (packages.isEmpty()) {
+      return null;
+    }
+    var hashes = packages.get(label.getPackageIdentifier());
+    return hashes == null ? null : hashes.rules().get(label.getName());
   }
 
   private static final class FailureImpactCollector {
