@@ -155,13 +155,21 @@ public class DownloadCache {
     }
 
     targetPath.getParentDirectory().createDirectoryAndParents();
-    if (useHardlinks && mayHardlink) {
-      FileSystemUtils.createHardLink(targetPath, cacheValue);
-    } else {
-      FileSystemUtils.copyFile(cacheValue, targetPath);
-    }
+    copyOrLink(cacheValue, targetPath, mayHardlink);
 
     return targetPath;
+  }
+
+  private void copyOrLink(Path source, Path target, boolean mayHardlink) throws IOException {
+    if (useHardlinks && mayHardlink) {
+      try {
+        source.createHardLink(target);
+        return;
+      } catch (IOException | UnsupportedOperationException ignored) {
+        // Hardlinks may be unavailable, including when the cache is on another filesystem.
+      }
+    }
+    FileSystemUtils.copyFile(source, target);
   }
 
   /**
@@ -249,6 +257,8 @@ public class DownloadCache {
     cacheEntry.createDirectoryAndParents();
     fileWriter.writeTo(tmpName);
     FileSystemUtils.renameToleratingConcurrentCreation(tmpName, cacheValue);
+    // A rename between two hardlinks to the same inode leaves the temporary name in place.
+    var unused = tmpName.delete();
 
     if (!Strings.isNullOrEmpty(canonicalId)) {
       String idHash = hashCanonicalId(keyType, canonicalId);
@@ -267,8 +277,15 @@ public class DownloadCache {
    */
   public void put(String cacheKey, Path sourcePath, KeyType keyType, String canonicalId)
       throws IOException {
+    put(cacheKey, sourcePath, keyType, canonicalId, /* mayHardlink= */ false);
+  }
+
+  /** Stores a file, optionally sharing its inode if the caller will only read or unlink it. */
+  public void put(
+      String cacheKey, Path sourcePath, KeyType keyType, String canonicalId, boolean mayHardlink)
+      throws IOException {
     storeCacheValue(
-        cacheKey, tmpName -> FileSystemUtils.copyFile(sourcePath, tmpName), keyType, canonicalId);
+        cacheKey, tmpName -> copyOrLink(sourcePath, tmpName, mayHardlink), keyType, canonicalId);
   }
 
   /**
