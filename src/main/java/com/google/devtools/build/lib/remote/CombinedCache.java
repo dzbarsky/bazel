@@ -272,12 +272,39 @@ public class CombinedCache extends AbstractReferenceCounted {
         downloadActionResultAsync(context, actionKey, inlineOutErr, inlineOutputFiles));
   }
 
+  CachedActionResult downloadRepoActionResult(
+      RemoteActionExecutionContext context,
+      ActionKey actionKey,
+      Set<String> inlineOutputFiles,
+      boolean deferRepoDirectoryBlobs)
+      throws IOException, InterruptedException {
+    return getFromFuture(
+        downloadActionResultAsync(
+            context,
+            actionKey,
+            /* inlineOutErr= */ true,
+            inlineOutputFiles,
+            deferRepoDirectoryBlobs));
+  }
+
   public ListenableFuture<CachedActionResult> downloadActionResultAsync(
       RemoteActionExecutionContext context,
       ActionKey actionKey,
       boolean inlineOutErr,
       Set<String> inlineOutputFiles) {
+    return downloadActionResultAsync(
+        context, actionKey, inlineOutErr, inlineOutputFiles, /* deferRepoDirectoryBlobs= */ false);
+  }
+
+  private ListenableFuture<CachedActionResult> downloadActionResultAsync(
+      RemoteActionExecutionContext context,
+      ActionKey actionKey,
+      boolean inlineOutErr,
+      Set<String> inlineOutputFiles,
+      boolean deferRepoDirectoryBlobs) {
     var spawnExecutionContext = context.getSpawnExecutionContext();
+    boolean canReadRemote =
+        remoteCacheClient != null && context.getReadCachePolicy().allowRemoteCache();
 
     ListenableFuture<CachedActionResult> future = immediateFuture(null);
 
@@ -287,12 +314,14 @@ public class CombinedCache extends AbstractReferenceCounted {
       }
       future =
           Futures.transform(
-              diskCacheClient.downloadActionResult(actionKey),
+              deferRepoDirectoryBlobs && canReadRemote
+                  ? diskCacheClient.downloadRepoActionResult(actionKey)
+                  : diskCacheClient.downloadActionResult(actionKey),
               CachedActionResult::disk,
               directExecutor());
     }
 
-    if (remoteCacheClient != null && context.getReadCachePolicy().allowRemoteCache()) {
+    if (canReadRemote) {
       future =
           Futures.transformAsync(
               future,

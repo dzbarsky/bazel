@@ -56,7 +56,6 @@ import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext.CachePolicy;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.Blob;
 import com.google.devtools.build.lib.remote.common.RemotePathResolver;
-import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.rules.repository.RepoRecordedInput;
 import com.google.devtools.build.lib.runtime.RemoteRepoContentsCache;
@@ -138,6 +137,7 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
   private final String commandId;
   private final boolean acceptCached;
   private final boolean uploadLocalResults;
+  private final boolean deferRepoDirectoryBlobs;
   private final boolean verboseFailures;
   private final Action baseAction;
   private final Digest commandDigest;
@@ -149,6 +149,7 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
       String commandId,
       boolean acceptCached,
       boolean uploadLocalResults,
+      boolean deferRepoDirectoryBlobs,
       boolean verboseFailures) {
     this.directories = directories;
     this.cache = cache;
@@ -156,6 +157,7 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     this.commandId = commandId;
     this.acceptCached = acceptCached;
     this.uploadLocalResults = uploadLocalResults;
+    this.deferRepoDirectoryBlobs = deferRepoDirectoryBlobs;
     this.verboseFailures = verboseFailures;
     this.baseAction =
         Action.newBuilder()
@@ -587,8 +589,8 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     CombinedCache.CachedActionResult cachedActionResult;
     try (var span = profile(repoName, "Read cache action result")) {
       cachedActionResult =
-          cache.downloadActionResult(
-              context, actionKey, /* inlineOutErr= */ true, ImmutableSet.of(MARKER_FILE_PATH));
+          cache.downloadRepoActionResult(
+              context, actionKey, ImmutableSet.of(MARKER_FILE_PATH), deferRepoDirectoryBlobs);
     }
     if (cachedActionResult == null) {
       return new CacheEntry.Intermediate(ImmutableList.of());

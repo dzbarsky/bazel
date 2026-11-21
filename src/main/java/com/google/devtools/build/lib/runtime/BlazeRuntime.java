@@ -872,7 +872,7 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
         env.getReporter().handle(Event.error(e.getMessage()));
         logger.atWarning().withCause(e).log("While running afterCommand() on %s", module);
         if (e.getExitCode().equals(ExitCode.REMOTE_CACHE_EVICTED)
-            && env.usesCqueryHashStreamReceipt()) {
+            && (env.usesQueryHashStream() || env.usesCqueryHashStreamReceipt())) {
           hashStreamEviction = e.getDetailedExitCode();
         } else {
           moduleExitCode = chooseMoreImportantWithFirstIfTie(moduleExitCode, e.getDetailedExitCode());

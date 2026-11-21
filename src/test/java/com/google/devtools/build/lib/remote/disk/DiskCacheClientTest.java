@@ -464,6 +464,32 @@ public class DiskCacheClientTest {
   }
 
   @Test
+  public void downloadRepoActionResult_refreshesMetadataAndDefersTreeLeaves() throws Exception {
+    Digest leaf = getDigest("contents");
+    Tree tree = getTreeWithFile(leaf);
+    Digest treeDigest = getDigest(tree);
+    ActionKey key = new ActionKey(getDigest("key"));
+    ActionResult result =
+        ActionResult.newBuilder()
+            .addOutputDirectories(OutputDirectory.newBuilder().setTreeDigest(treeDigest))
+            .build();
+    populateAc(key, result);
+    Path treePath = populateCas(treeDigest, tree.toByteArray());
+    Path leafPath = populateCas(leaf, "contents");
+
+    assertThat(getFromFuture(client.downloadRepoActionResult(key))).isEqualTo(result);
+    assertThat(treePath.getLastModifiedTimeNanos()).isNotEqualTo(0);
+    assertThat(leafPath.getLastModifiedTimeNanos()).isEqualTo(0);
+
+    leafPath.delete();
+    assertThat(getFromFuture(client.downloadRepoActionResult(key))).isEqualTo(result);
+    assertThat(getFromFuture(client.downloadActionResult(key))).isNull();
+
+    treePath.delete();
+    assertThat(getFromFuture(client.downloadRepoActionResult(key))).isNull();
+  }
+
+  @Test
   public void downloadActionResult_withReferencedTreeFileMissing_returnsNull() throws Exception {
     Digest fileDigest = getDigest("contents");
     Tree tree = getTreeWithFile(fileDigest);

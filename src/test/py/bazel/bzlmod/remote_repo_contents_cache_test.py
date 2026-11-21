@@ -2466,6 +2466,53 @@ class RemoteRepoContentsCacheTest(
     with open(self.Path('MODULE.bazel')) as f:
       self.assertIn('use_repo(ext, "generated")', f.read())
 
+  def testLostRemoteFile_queryHashes(self):
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'cached = use_repo_rule("//:repo.bzl", "cached")',
+            'cached(name = "cached")',
+            'derived = use_repo_rule("//:repo.bzl", "derived")',
+            'derived(name = "derived", src = "@cached//:input")',
+        ],
+    )
+    self.ScratchFile(
+        'repo.bzl',
+        [
+            'def _cached(ctx):',
+            '  ctx.file("BUILD", "exports_files([\'input\'])")',
+            '  ctx.file("input", "lazy query input")',
+            '  return ctx.repo_metadata(reproducible = True)',
+            'cached = repository_rule(_cached)',
+            'def _derived(ctx):',
+            '  ctx.file("value.bzl", "VALUE = %r" % ctx.read(ctx.attr.src))',
+            '  ctx.file("BUILD", "filegroup(name=\'value\')")',
+            'derived = repository_rule(_derived, attrs = {"src": attr.label()})',
+        ],
+    )
+    args = [
+        'query', '--keep_going', '--experimental_generate_hashes',
+        '--output=streamed_jsonproto', '//...',
+    ]
+    # The lazy read can fail during wildcard enumeration or later when hashing
+    # the transitive dependencies of a successfully enumerated root.
+    for use in [
+        'load("@derived//:value.bzl", "VALUE")',
+        'filegroup(name = "root", srcs = ["@derived//:value"])',
+    ]:
+      self.ScratchFile('BUILD', [use, 'filegroup(name = "unrelated")'])
+      _, expected, _ = self.RunBazel(args)
+      self.assertNotEmpty(expected)
+      self.RunBazel(['clean', '--expunge'])
+      self.RunBazel(['query', '@cached//:input'])
+      self.DeleteCasEntry(b'lazy query input')
+      _, stdout, stderr = self.RunBazel(args)
+      self.assertCountEqual(stdout, expected)
+      self.assertEqual(
+          stderr.count('Found transient remote cache error, retrying the query...'),
+          1,
+      )
+
   def testLostRemoteBuildFile_query(self):
     self.ScratchFile('BUILD.bazel', ['filegroup(name = "local")'])
     self.ScratchFile(
