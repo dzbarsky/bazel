@@ -242,6 +242,12 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
   public Build.Target toTargetProtoBuffer(
       Target target, LabelPrinter labelPrinter, Object extraDataForAttrHash)
       throws InterruptedException {
+    return toTargetProtoBuilder(target, labelPrinter, extraDataForAttrHash).build();
+  }
+
+  protected final Build.Target.Builder toTargetProtoBuilder(
+      Target target, LabelPrinter labelPrinter, Object extraDataForAttrHash)
+      throws InterruptedException {
     Build.Target.Builder targetPb = Build.Target.newBuilder();
 
     if (target instanceof Rule rule) {
@@ -453,7 +459,7 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
       throw new IllegalArgumentException(target.toString());
     }
 
-    return targetPb.build();
+    return targetPb;
   }
 
   protected void addAttributes(
