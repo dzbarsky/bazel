@@ -526,6 +526,7 @@ java_library(
     srcs = ["TestResultAggregator.java"],
     deps = [
         ":test_summary",
+        "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
         "//src/main/java/com/google/devtools/build/lib/analysis:alias_provider",
         "//src/main/java/com/google/devtools/build/lib/analysis:analysis_core",
         "//src/main/java/com/google/devtools/build/lib/analysis:configured_target",
@@ -739,6 +740,7 @@ java_library(
     srcs = ["TestSummary.java"],
     deps = [
         ":build_event_streamer_utils",
+        "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
         "//src/main/java/com/google/devtools/build/lib/analysis:alias_provider",
         "//src/main/java/com/google/devtools/build/lib/analysis:analysis_core",
         "//src/main/java/com/google/devtools/build/lib/analysis:configured_target",

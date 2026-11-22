@@ -34,6 +34,8 @@ import com.google.devtools.build.lib.actions.ArtifactPathResolver;
 import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ExecutionRequirements;
+import com.google.devtools.build.lib.actions.FileArtifactValue;
+import com.google.devtools.build.lib.actions.FileStatusWithMetadata;
 import com.google.devtools.build.lib.actions.ResourceSetOrBuilder;
 import com.google.devtools.build.lib.actions.SimpleSpawn;
 import com.google.devtools.build.lib.actions.Spawn;
@@ -74,6 +76,7 @@ import java.io.OutputStream;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import javax.annotation.Nullable;
 
 /** Runs TestRunnerAction actions. */
 // TODO(bazel-team): add tests for this strategy.
@@ -231,9 +234,12 @@ public class StandaloneTestStrategy extends TestStrategy {
             standaloneTestResult);
 
     TestResultData.Builder dataBuilder = standaloneTestResult.testResultDataBuilder();
+    ImmutableMap.Builder<PathFragment, FileArtifactValue> testLogMetadata = ImmutableMap.builder();
     for (ProcessedAttemptResult failedAttempt : failedAttempts) {
-      TestResultData failedAttemptData =
-          ((StandaloneProcessedAttemptResult) failedAttempt).testResultData();
+      StandaloneProcessedAttemptResult processedAttempt =
+          (StandaloneProcessedAttemptResult) failedAttempt;
+      TestResultData failedAttemptData = processedAttempt.testResultData();
+      testLogMetadata.putAll(processedAttempt.testLogMetadata());
       dataBuilder.addAllFailedLogs(failedAttemptData.getFailedLogsList());
       dataBuilder.addTestTimes(failedAttemptData.getTestTimes(0));
       dataBuilder.addAllTestProcessTimes(failedAttemptData.getTestProcessTimesList());
@@ -247,8 +253,10 @@ public class StandaloneTestStrategy extends TestStrategy {
             action,
             data,
             lastAttempt.testOutputs(),
-            false,
-            standaloneTestResult.primarySystemFailure());
+            /* cached= */ false,
+            /* execRoot= */ null,
+            standaloneTestResult.primarySystemFailure(),
+            testLogMetadata.putAll(lastAttempt.testLogMetadata()).buildOrThrow());
     postTestResult(actionExecutionContext, result);
   }
 
@@ -293,13 +301,31 @@ public class StandaloneTestStrategy extends TestStrategy {
 
     // Add the test log to the output
     TestResultData data = dataBuilder.build();
+    FileArtifactValue testLogMetadata = null;
+    if (data.getRemotelyCached()
+        && renamedTestLog != null
+        && renamedTestLog.statIfFound() instanceof FileStatusWithMetadata status
+        && status.getMetadata().isRemote()) {
+      testLogMetadata = status.getMetadata();
+    }
     actionExecutionContext
         .getEventHandler()
         .post(
             TestAttempt.forExecutedTestResult(
-                action, data, attemptId, testOutputs, result.executionInfo(), isLastAttempt));
+                action,
+                data,
+                attemptId,
+                testOutputs,
+                testLogMetadata,
+                result.executionInfo(),
+                isLastAttempt));
     processTestOutput(actionExecutionContext, data, action.getTestName(), renamedTestLog);
-    return new StandaloneProcessedAttemptResult(data, testOutputs);
+    return new StandaloneProcessedAttemptResult(
+        data,
+        testOutputs,
+        testLogMetadata == null
+            ? ImmutableMap.of()
+            : ImmutableMap.of(renamedTestLog.asFragment(), testLogMetadata));
   }
 
   private static Map<String, String> setupEnvironment(
@@ -558,14 +584,25 @@ public class StandaloneTestStrategy extends TestStrategy {
       Path execRoot,
       TestRunnerAction action,
       TestResultData cachedResult,
-      ImmutableMultimap<String, Path> testOutputs) {
+      ImmutableMultimap<String, Path> testOutputs,
+      @Nullable FileArtifactValue testLogMetadata) {
     return new TestResult(
-        action, cachedResult, testOutputs, /* cached= */ true, execRoot, /* systemFailure= */ null);
+        action,
+        cachedResult,
+        testOutputs,
+        /* cached= */ true,
+        execRoot,
+        /* systemFailure= */ null,
+        testLogMetadata == null
+            ? ImmutableMap.of()
+            : ImmutableMap.of(action.getTestLog().getPath().asFragment(), testLogMetadata));
   }
 
   @VisibleForTesting
   record StandaloneProcessedAttemptResult(
-      TestResultData testResultData, ImmutableMultimap<String, Path> testOutputs)
+      TestResultData testResultData,
+      ImmutableMultimap<String, Path> testOutputs,
+      ImmutableMap<PathFragment, FileArtifactValue> testLogMetadata)
       implements ProcessedAttemptResult {}
 
   private final class StandaloneTestRunnerSpawn implements TestRunnerSpawn {
