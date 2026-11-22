@@ -29,6 +29,7 @@ import build.bazel.remote.execution.v2.CacheCapabilities;
 import build.bazel.remote.execution.v2.ChunkingFunction;
 import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.ServerCapabilities;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.flogger.GoogleLogger;
@@ -551,6 +552,56 @@ public class CombinedCache extends AbstractReferenceCounted {
 
     return Futures.whenAllSucceed(diskCacheFuture, remoteCacheFuture)
         .call(() -> null, directExecutor());
+  }
+
+  boolean canBatchRepositoryBlobs() {
+    return symlinkTemplate == null
+        && remoteCacheClient instanceof GrpcCacheClient grpc
+        && grpc.supportsRepositoryBatchReads();
+  }
+
+  /**
+   * Fetches a bounded group of repository blobs. Omits disk hits and unsupported batch reads so
+   * that regular file prefetch can serve them, including if a disk hit was evicted in the meantime.
+   */
+  ListenableFuture<ImmutableMap<Digest, ByteString>> downloadRepositoryBlobBatch(
+      RemoteActionExecutionContext context, ImmutableSet<Digest> digests) {
+    if (!(remoteCacheClient instanceof GrpcCacheClient grpc)
+        || !context.getReadCachePolicy().allowRemoteCache()
+        || digests.isEmpty()) {
+      return immediateFuture(ImmutableMap.of());
+    }
+
+    ListenableFuture<ImmutableSet<Digest>> missing = immediateFuture(digests);
+    if (diskCacheClient != null && context.getReadCachePolicy().allowDiskCache()) {
+      missing =
+          virtualThreadExecutor.submit(
+              () -> {
+                var result = ImmutableSet.<Digest>builder();
+                for (Digest digest : digests) {
+                  if (diskCacheClient.toPath(digest, Store.CAS).statIfFound() == null) {
+                    result.add(digest);
+                  }
+                }
+                return result.build();
+              });
+    }
+
+    var downloaded =
+        Futures.transformAsync(
+            missing, batch -> grpc.downloadRepositoryBlobBatch(context, batch), directExecutor());
+    if (diskCacheClient == null || !context.getWriteCachePolicy().allowDiskCache()) {
+      return downloaded;
+    }
+    return Futures.transformAsync(
+        downloaded,
+        contents -> {
+          var writes = new ArrayList<ListenableFuture<Void>>(contents.size());
+          contents.forEach(
+              (digest, bytes) -> writes.add(diskCacheClient.uploadBlob(digest, bytes)));
+          return Futures.whenAllSucceed(writes).call(() -> contents, directExecutor());
+        },
+        directExecutor());
   }
 
   // Only for use by tests and the remote executor implementation.
