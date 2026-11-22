@@ -56,7 +56,6 @@ import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext.CachePolicy;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.Blob;
 import com.google.devtools.build.lib.remote.common.RemotePathResolver;
-import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.rules.repository.RepoRecordedInput;
 import com.google.devtools.build.lib.runtime.RemoteRepoContentsCache;
@@ -66,14 +65,21 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunction;
+import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.ExtensionRegistryLite;
+import io.grpc.Status;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import javax.annotation.Nullable;
 
 /**
@@ -111,6 +117,11 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
   private static final UUID GUID = UUID.fromString("5ab0ac92-9cd5-4d8a-ae69-efde245bef88");
   private static final String MARKER_FILE_PATH = ".recorded_inputs";
   private static final String REPO_DIRECTORY_PATH = "repo_contents";
+  private static final boolean TERMINAL_HINT = Boolean.getBoolean("bazel.repo_cache_terminal_hint");
+  private static final String TERMINAL_HINT_TYPE = "type.googleapis.com/bazel.r2c2.MarkerDigest.v1";
+  private static final int MAX_HINT_MARKER_BYTES = 64 * 1024;
+  private static final int MIN_HINT_BATCHES = 3;
+  private static final long HINT_RPC_WAIT_MILLIS = 500;
   private static final Splitter SPLIT_ON_SPACE = Splitter.on(' ');
   private static final Splitter SPLIT_ON_NEWLINE = Splitter.on('\n').omitEmptyStrings();
 
@@ -201,7 +212,11 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     try {
       // TODO: Consider uploading asynchronously.
       var finalHash =
-          uploadIntermediateActionResults(context, predeclaredInputHash, recordedInputValues);
+          uploadIntermediateActionResults(
+              context,
+              predeclaredInputHash,
+              recordedInputValues,
+              TERMINAL_HINT ? markerFileContent : null);
       var action = buildAction(finalHash);
       var actionKey = new ActionKey(cache.digestUtil().compute(action));
       var remotePathResolver =
@@ -410,7 +425,8 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
   private String uploadIntermediateActionResults(
       RemoteActionExecutionContext context,
       String predeclaredInputHash,
-      List<RepoRecordedInput.WithValue> recordedInputValues)
+      List<RepoRecordedInput.WithValue> recordedInputValues,
+      @Nullable String markerFileContent)
       throws IOException, InterruptedException {
     // The command is shared by all action results and small enough that FindMissingBlobs is not
     // worthwhile. The REAPI spec requires the command to be uploaded before an action result that
@@ -423,15 +439,21 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     String rollingHash = predeclaredInputHash;
     var batches = RepoRecordedInput.WithValue.splitIntoBatches(recordedInputValues);
     var futures = new ArrayList<ListenableFuture<Void>>(batches.size());
+    Digest hint =
+        markerFileContent != null
+                && markerFileContent.length() <= MAX_HINT_MARKER_BYTES
+                && batches.size() >= MIN_HINT_BATCHES
+            ? cache.digestUtil().compute(markerFileContent.getBytes(ISO_8859_1))
+            : null;
     for (var batch : batches) {
       futures.add(
           addToActionResult(
               context,
               buildAction(rollingHash),
-              Collections2.transform(batch, RepoRecordedInput.WithValue::input)));
-      for (var recordedInputValue : batch) {
-        rollingHash = rollForwardHash(rollingHash, recordedInputValue);
-      }
+              Collections2.transform(batch, RepoRecordedInput.WithValue::input),
+              hint));
+      hint = null;
+      rollingHash = rollForwardHash(rollingHash, batch);
     }
     waitForBulkTransfer(futures);
     return rollingHash;
@@ -448,7 +470,8 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
   private ListenableFuture<Void> addToActionResult(
       RemoteActionExecutionContext context,
       Action action,
-      Collection<RepoRecordedInput> newInputs) {
+      Collection<RepoRecordedInput> newInputs,
+      @Nullable Digest markerHint) {
     var actionKey = cache.digestUtil().computeActionKey(action);
     var currentInputsFuture =
         Futures.transformAsync(
@@ -469,9 +492,9 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
           // and newlines to separate different batches.
           var newInputString =
               newInputs.stream().map(RepoRecordedInput::toString).collect(joining(" "));
-          if (SPLIT_ON_NEWLINE
-              .splitToStream(currentInputsString)
-              .anyMatch(newInputString::equals)) {
+          boolean alreadyPresent =
+              SPLIT_ON_NEWLINE.splitToStream(currentInputsString).anyMatch(newInputString::equals);
+          if (alreadyPresent && markerHint == null) {
             // The current batch of inputs is already present, no need to update the action result.
             return immediateFuture(null);
           }
@@ -484,7 +507,8 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
           // update action results atomically. However, since different batches of inputs are
           // already rare and them being added concurrently even more so, the temporary loss of a
           // cache entry is an acceptable trade-off for simplicity.
-          var newInputsString = newInputString + '\n' + currentInputsString;
+          var newInputsString =
+              alreadyPresent ? currentInputsString : newInputString + '\n' + currentInputsString;
           var stdoutBytes = getInternalStringBytes(newInputsString);
           var stdoutDigest = cache.digestUtil().compute(stdoutBytes);
           var actionResult =
@@ -501,9 +525,34 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
                       (Blob) ByteString.copyFrom(stdoutBytes)::newInput,
                       /* force= */ false))
               .callAsync(
-                  () -> cache.uploadActionResult(context, actionKey, actionResult),
+                  () -> uploadIntermediateResult(context, actionKey, actionResult, markerHint),
                   directExecutor());
         },
+        directExecutor());
+  }
+
+  private ListenableFuture<Void> uploadIntermediateResult(
+      RemoteActionExecutionContext context,
+      ActionKey actionKey,
+      ActionResult actionResult,
+      @Nullable Digest markerHint) {
+    if (markerHint == null) {
+      return cache.uploadActionResult(context, actionKey, actionResult);
+    }
+    var withHint = actionResult.toBuilder();
+    withHint
+        .getExecutionMetadataBuilder()
+        .addAuxiliaryMetadata(
+            Any.newBuilder().setTypeUrl(TERMINAL_HINT_TYPE).setValue(markerHint.toByteString()));
+    return Futures.catchingAsync(
+        cache.uploadActionResult(context, actionKey, withHint.build()),
+        Exception.class,
+        failure ->
+            switch (Status.fromThrowable(failure).getCode()) {
+              case INVALID_ARGUMENT, UNIMPLEMENTED ->
+                  cache.uploadActionResult(context, actionKey, actionResult);
+              default -> Futures.immediateFailedFuture(failure);
+            },
         directExecutor());
   }
 
@@ -551,7 +600,8 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     while (!currentHashes.isEmpty()) {
       var nextHashes = ImmutableList.<String>builder();
       for (var hash : currentHashes) {
-        switch (fetchCacheEntry(env, context, repoName, hash)) {
+        switch (fetchCacheEntry(
+            env, context, repoName, hash, TERMINAL_HINT && hash.equals(predeclaredInputHash))) {
           case CacheEntry.Final finalEntry -> {
             return finalEntry;
           }
@@ -572,37 +622,150 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     return null;
   }
 
+  @Nullable
+  private ActionResult readCacheActionResult(
+      RemoteActionExecutionContext context,
+      RepositoryName repoName,
+      String inputHash,
+      boolean advisory)
+      throws IOException, InterruptedException {
+    var actionKey = cache.digestUtil().computeActionKey(buildAction(inputHash));
+    try (var span = profile(repoName, "Read cache action result")) {
+      var result =
+          advisory
+              ? awaitHint(
+                  cache.downloadActionResultAsync(
+                      context, actionKey, /* inlineOutErr= */ false, ImmutableSet.of()))
+              : cache.downloadActionResult(
+                  context, actionKey, /* inlineOutErr= */ true, ImmutableSet.of(MARKER_FILE_PATH));
+      return result == null ? null : result.actionResult();
+    }
+  }
+
+  private static boolean isFinalActionResult(ActionResult actionResult) {
+    return actionResult.getExitCode() == 0
+        && actionResult.getOutputFilesCount() == 1
+        && actionResult.getOutputDirectoriesCount() == 1
+        && actionResult.getOutputSymlinksCount() == 0;
+  }
+
+  private static boolean eligibleMarkerHint(Digest digest) {
+    return digest.getSizeBytes() > 0
+        && digest.getSizeBytes() <= MAX_HINT_MARKER_BYTES
+        && digest.getHash().matches("[a-f0-9]{32,128}");
+  }
+
+  @Nullable
+  private static <T> T awaitHint(ListenableFuture<T> request) throws InterruptedException {
+    try {
+      return request.get(HINT_RPC_WAIT_MILLIS, TimeUnit.MILLISECONDS);
+    } catch (TimeoutException e) {
+      request.cancel(true);
+      return null;
+    } catch (InterruptedException e) {
+      request.cancel(true);
+      throw e;
+    } catch (CancellationException e) {
+      return null;
+    } catch (ExecutionException e) {
+      if (e.getCause() instanceof InterruptedException interrupted) {
+        throw interrupted;
+      }
+      if (e.getCause() instanceof Error error) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Check a previously observed marker in the normal guarded order before following its terminal
+   * key. A later batch may depend on an external repository no longer needed by the rule.
+   */
+  @Nullable
+  private CacheEntry.Final fetchHintedTerminal(
+      SkyFunction.Environment env,
+      RemoteActionExecutionContext context,
+      RepositoryName repoName,
+      String initialHash,
+      ActionResult root)
+      throws IOException, InterruptedException {
+    var metadata = root.getExecutionMetadata().getAuxiliaryMetadataList();
+    if (metadata.size() != 1
+        || !TERMINAL_HINT_TYPE.equals(metadata.getFirst().getTypeUrl())
+        || metadata.getFirst().getValue().size() > 256) {
+      return null;
+    }
+    try (var span = profile(repoName, "Resolve terminal cache hint")) {
+      Digest marker;
+      try {
+        marker = Digest.parseFrom(metadata.getFirst().getValue());
+      } catch (IOException e) {
+        return null;
+      }
+      if (!eligibleMarkerHint(marker)) {
+        return null;
+      }
+      byte[] bytes =
+          awaitHint(cache.downloadBlob(context, MARKER_FILE_PATH, /* execPath= */ null, marker));
+      if (bytes == null || !cache.digestUtil().compute(bytes).equals(marker)) {
+        return null;
+      }
+      Optional<ImmutableList<RepoRecordedInput.WithValue>> recorded;
+      try {
+        recorded = DigestWriter.readMarkerFile(new String(bytes, ISO_8859_1), initialHash);
+      } catch (IllegalArgumentException e) {
+        return null;
+      }
+      if (recorded.isEmpty()) {
+        return null;
+      }
+      var batches = RepoRecordedInput.WithValue.splitIntoBatches(recorded.get());
+      if (batches.size() < MIN_HINT_BATCHES) {
+        return null;
+      }
+      var terminalHash = initialHash;
+      for (var batch : batches) {
+        if (RepoRecordedInput.isAnyValueOutdated(env, directories, batch).isPresent()
+            || env.valuesMissing()) {
+          return null;
+        }
+        terminalHash = rollForwardHash(terminalHash, batch);
+      }
+      var terminal = readCacheActionResult(context, repoName, terminalHash, /* advisory= */ true);
+      if (terminal == null || !isFinalActionResult(terminal)) {
+        return null;
+      }
+      var terminalMarker = terminal.getOutputFiles(0);
+      if (!MARKER_FILE_PATH.equals(terminalMarker.getPath())
+          || !terminalMarker.getDigest().equals(marker)) {
+        return null;
+      }
+      return new CacheEntry.Final(
+          terminal.getOutputDirectories(0),
+          terminalMarker.toBuilder().setContents(ByteString.copyFrom(bytes)).build());
+    }
+  }
+
   // Returns null if and only if values are missing.
   @Nullable
   private CacheEntry fetchCacheEntry(
       SkyFunction.Environment env,
       RemoteActionExecutionContext context,
       RepositoryName repoName,
-      String inputHash)
+      String inputHash,
+      boolean tryHint)
       throws IOException, InterruptedException {
-    var actionKey = new ActionKey(cache.digestUtil().compute(buildAction(inputHash)));
-    // The marker file is read right after and thus requested to be inlined. If the action result
-    // is an intermediate node, the full result will be contained in the stdout, which should thus
-    // also be inlined.
-    CombinedCache.CachedActionResult cachedActionResult;
-    try (var span = profile(repoName, "Read cache action result")) {
-      cachedActionResult =
-          cache.downloadActionResult(
-              context, actionKey, /* inlineOutErr= */ true, ImmutableSet.of(MARKER_FILE_PATH));
-    }
-    if (cachedActionResult == null) {
+    var actionResult = readCacheActionResult(context, repoName, inputHash, /* advisory= */ false);
+    if (actionResult == null) {
       return new CacheEntry.Intermediate(ImmutableList.of());
     }
-    var actionResult = cachedActionResult.actionResult();
-
     if (actionResult.getExitCode() != 0) {
       return new CacheEntry.Invalid(
           "Unexpected exit code in action result for remotely cached repo %s:\n%s"
               .formatted(context.getRequestMetadata().getActionId(), actionResult));
     }
-    if (actionResult.getOutputFilesCount() == 1
-        && actionResult.getOutputDirectoriesCount() == 1
-        && actionResult.getOutputSymlinksCount() == 0) {
+    if (isFinalActionResult(actionResult)) {
       return new CacheEntry.Final(
           actionResult.getOutputDirectories(0), actionResult.getOutputFiles(0));
     }
@@ -613,6 +776,15 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
       return new CacheEntry.Invalid(
           "Unexpected intermediate action result for remotely cached repo %s:\n%s"
               .formatted(context.getRequestMetadata().getActionId(), actionResult));
+    }
+    if (tryHint) {
+      var hintedTerminal = fetchHintedTerminal(env, context, repoName, inputHash, actionResult);
+      if (hintedTerminal != null) {
+        return hintedTerminal;
+      }
+      if (env.valuesMissing()) {
+        return null;
+      }
     }
     String recordedInputs;
     try (var span = profile(repoName, "Read cache recorded input batch")) {
@@ -659,6 +831,13 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
       }
       return new CacheEntry.Intermediate(nextHashes.build());
     }
+  }
+
+  private String rollForwardHash(String hash, List<RepoRecordedInput.WithValue> inputs) {
+    for (var input : inputs) {
+      hash = rollForwardHash(hash, input);
+    }
+    return hash;
   }
 
   private String rollForwardHash(String hash, RepoRecordedInput.WithValue inputWithValue) {
