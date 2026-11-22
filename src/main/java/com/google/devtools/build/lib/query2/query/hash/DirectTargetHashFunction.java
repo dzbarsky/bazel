@@ -360,7 +360,7 @@ public final class DirectTargetHashFunction implements SkyFunction {
     TreeSet<Label> deps = new TreeSet<>();
     LabelVisitationUtils.visitTarget(
         target,
-        DependencyFilter.NO_NODEP_ATTRIBUTES,
+        DependencyFilter.NO_NODEP_ATTRIBUTES_EXCEPT_VISIBILITY,
         (fromTarget, attribute, toLabel) -> deps.add(toLabel));
     if (target instanceof Rule rule) {
       // LabelVisitationUtils only visits the toolchain types of the default exec group.

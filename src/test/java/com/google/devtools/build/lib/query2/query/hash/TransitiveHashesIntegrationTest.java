@@ -257,6 +257,29 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   }
 
   @Test
+  public void packageGroupIncludes_affectTargetsUsingItForVisibility() throws Exception {
+    scratch.file("acl/BUILD", "package_group(name = 'members', packages = ['//consumer'])");
+    scratch.file(
+        "data/BUILD",
+        "package_group(name = 'readers', includes = ['//acl:members'])",
+        "filegroup(name = 'restricted', visibility = [':readers'])",
+        "filegroup(name = 'unrelated', visibility = ['//consumer:__pkg__'])");
+    scratch.file("consumer/BUILD", "filegroup(name = 'consumer', srcs = ['//data:restricted'])");
+    Label[] roots = {
+      Label.parseCanonical("//consumer:consumer"),
+      Label.parseCanonical("//data:restricted"),
+      Label.parseCanonical("//data:unrelated"),
+    };
+    ImmutableMap<Label, String> before = hashes(roots);
+
+    scratch.overwriteFile("acl/BUILD", "package_group(name = 'members', packages = [])");
+    invalidatePackages();
+
+    assertThat(changed(before, hashes(roots)))
+        .containsExactly("//consumer:consumer", "//data:restricted");
+  }
+
+  @Test
   public void registeredToolchain_affectsTargetsUsingItsType() throws Exception {
     ImmutableMap<Label, String> before = hashes();
 
