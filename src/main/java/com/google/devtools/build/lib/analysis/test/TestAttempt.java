@@ -20,6 +20,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent.LocalFile.LocalFileType;
 import com.google.devtools.build.lib.buildeventstream.BuildEventContext;
 import com.google.devtools.build.lib.buildeventstream.BuildEventIdUtil;
@@ -29,6 +30,7 @@ import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.Tes
 import com.google.devtools.build.lib.buildeventstream.BuildEventWithOrderConstraint;
 import com.google.devtools.build.lib.buildeventstream.GenericBuildEvent;
 import com.google.devtools.build.lib.buildeventstream.PathConverter;
+import com.google.devtools.build.lib.buildeventstream.TestFileNameConstants;
 import com.google.devtools.build.lib.runtime.BuildEventStreamerUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
@@ -38,6 +40,7 @@ import com.google.protobuf.util.Timestamps;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import javax.annotation.Nullable;
 
 /** This event is raised whenever an individual test attempt is completed. */
 public class TestAttempt implements BuildEventWithOrderConstraint {
@@ -49,6 +52,7 @@ public class TestAttempt implements BuildEventWithOrderConstraint {
   private final int attempt;
   private final boolean lastAttempt;
   private final ImmutableMultimap<String, Path> files;
+  @Nullable private final FileArtifactValue testLogMetadata;
   private final List<String> testWarnings;
   private final long durationMillis;
   private final long startTimeMillis;
@@ -71,6 +75,7 @@ public class TestAttempt implements BuildEventWithOrderConstraint {
       long startTimeMillis,
       long durationMillis,
       ImmutableMultimap<String, Path> files,
+      @Nullable FileArtifactValue testLogMetadata,
       List<String> testWarnings,
       boolean lastAttempt) {
     this.testAction = testAction;
@@ -82,6 +87,7 @@ public class TestAttempt implements BuildEventWithOrderConstraint {
     this.startTimeMillis = startTimeMillis;
     this.durationMillis = durationMillis;
     this.files = Preconditions.checkNotNull(files);
+    this.testLogMetadata = testLogMetadata;
     this.testWarnings = Preconditions.checkNotNull(testWarnings);
     this.lastAttempt = lastAttempt;
   }
@@ -95,6 +101,7 @@ public class TestAttempt implements BuildEventWithOrderConstraint {
       TestResultData attemptData,
       int attempt,
       ImmutableMultimap<String, Path> files,
+      @Nullable FileArtifactValue testLogMetadata,
       BuildEventStreamProtos.TestResult.ExecutionInfo executionInfo,
       boolean lastAttempt) {
     return new TestAttempt(
@@ -107,6 +114,7 @@ public class TestAttempt implements BuildEventWithOrderConstraint {
         attemptData.getStartTimeMillisEpoch(),
         attemptData.getRunDurationMillis(),
         files,
+        testLogMetadata,
         attemptData.getWarningList(),
         lastAttempt);
   }
@@ -120,6 +128,7 @@ public class TestAttempt implements BuildEventWithOrderConstraint {
       TestResultData attemptData,
       int attempt,
       ImmutableMultimap<String, Path> files,
+      @Nullable FileArtifactValue testLogMetadata,
       BuildEventStreamProtos.TestResult.ExecutionInfo executionInfo,
       boolean lastAttempt) {
     return new TestAttempt(
@@ -132,6 +141,7 @@ public class TestAttempt implements BuildEventWithOrderConstraint {
         attemptData.getStartTimeMillisEpoch(),
         attemptData.getRunDurationMillis(),
         files,
+        testLogMetadata,
         attemptData.getWarningList(),
         lastAttempt);
   }
@@ -155,6 +165,7 @@ public class TestAttempt implements BuildEventWithOrderConstraint {
         attemptData.getStartTimeMillisEpoch(),
         attemptData.getRunDurationMillis(),
         /* files= */ ImmutableMultimap.of(),
+        /* testLogMetadata= */ null,
         attemptData.getWarningList(),
         /* lastAttempt= */ true);
   }
@@ -230,8 +241,11 @@ public class TestAttempt implements BuildEventWithOrderConstraint {
     ImmutableList.Builder<LocalFile> localFiles = ImmutableList.builder();
     for (Map.Entry<String, Path> file : files.entries()) {
       if (file.getValue() != null) {
-        // TODO(b/199940216): Can we populate metadata for these files?
-        localFiles.add(new LocalFile(file.getValue(), localFileType, /* artifactMetadata= */ null));
+        localFiles.add(
+            new LocalFile(
+                file.getValue(),
+                localFileType,
+                TestFileNameConstants.TEST_LOG.equals(file.getKey()) ? testLogMetadata : null));
       }
     }
     return localFiles.build();

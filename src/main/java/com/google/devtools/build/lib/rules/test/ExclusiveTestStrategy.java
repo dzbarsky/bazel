@@ -17,12 +17,14 @@ import com.google.common.collect.ImmutableMultimap;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.analysis.test.TestActionContext;
 import com.google.devtools.build.lib.analysis.test.TestResult;
 import com.google.devtools.build.lib.analysis.test.TestRunnerAction;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.view.test.TestStatus.TestResultData;
 import java.io.IOException;
+import javax.annotation.Nullable;
 
 /**
  * Test strategy wrapper called 'exclusive'. It should delegate to a test strategy for local
@@ -60,9 +62,10 @@ public class ExclusiveTestStrategy implements TestActionContext {
       Path execRoot,
       TestRunnerAction action,
       TestResultData cachedResult,
-      ImmutableMultimap<String, Path> testOutputs)
+      ImmutableMultimap<String, Path> testOutputs,
+      @Nullable FileArtifactValue testLogMetadata)
       throws IOException {
-    return parent.newCachedTestResult(execRoot, action, cachedResult, testOutputs);
+    return parent.newCachedTestResult(execRoot, action, cachedResult, testOutputs, testLogMetadata);
   }
 
   @Override

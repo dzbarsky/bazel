@@ -933,6 +933,13 @@ public final class SkyframeActionExecutor {
                 }
 
                 @Override
+                @Nullable
+                public FileArtifactValue getOutputMetadata(Artifact output)
+                    throws IOException, InterruptedException {
+                  return outputMetadataStore.getOutputMetadata(output);
+                }
+
+                @Override
                 public <T extends ActionContext> T getContext(Class<? extends T> type) {
                   return executorEngine.getContext(type);
                 }

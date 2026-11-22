@@ -41,6 +41,7 @@ import com.google.devtools.build.lib.actions.CommandAction;
 import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.InputMetadataProvider;
 import com.google.devtools.build.lib.actions.NotifyOnActionCacheHit;
 import com.google.devtools.build.lib.actions.PathMapper;
@@ -670,7 +671,7 @@ public class TestRunnerAction extends AbstractAction
   }
 
   @Override
-  public boolean actionCacheHit(ActionCachedContext executor) {
+  public boolean actionCacheHit(ActionCachedContext executor) throws InterruptedException {
     maybeReadCacheStatus();
     if (cachedTestResultData.isEmpty()) {
       executor.getEventHandler().handle(Event.warn(getErrorMessageOnCachedTestResultError()));
@@ -679,13 +680,30 @@ public class TestRunnerAction extends AbstractAction
     try {
       ImmutableMultimap<String, Path> testOutputs =
           getTestOutputsMapping(executor.getPathResolver(), executor.getExecRoot());
+      FileArtifactValue testLogMetadata = executor.getOutputMetadata(testLog);
+      if (testLogMetadata != null && !testLogMetadata.isRemote()) {
+        testLogMetadata = null;
+      }
+      if (testLogMetadata != null && !testOutputs.containsKey(TestFileNameConstants.TEST_LOG)) {
+        // On a local action cache hit, remote metadata is restored into the metadata store,
+        // but the log need not appear in the filesystem used by getTestOutputsMapping.
+        testOutputs =
+            ImmutableMultimap.<String, Path>builder()
+                .putAll(testOutputs)
+                .put(TestFileNameConstants.TEST_LOG, testLog.getPath())
+                .build();
+      }
       executor
           .getEventHandler()
           .post(
               executor
                   .getContext(TestActionContext.class)
                   .newCachedTestResult(
-                      executor.getExecRoot(), this, cachedTestResultData.get(), testOutputs));
+                      executor.getExecRoot(),
+                      this,
+                      cachedTestResultData.get(),
+                      testOutputs,
+                      testLogMetadata));
     } catch (IOException e) {
       logger.atInfo().log("%s", getErrorMessageOnNewCachedTestResultError(e.getMessage()));
       executor
