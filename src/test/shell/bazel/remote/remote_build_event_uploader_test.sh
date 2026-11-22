@@ -437,6 +437,61 @@ EOF
   expect_bes_file_uploaded command.profile.gz
 }
 
+function test_upload_remote_cached_test_log_without_downloading() {
+  add_rules_shell "MODULE.bazel"
+  mkdir -p a
+  cat > a/BUILD <<'EOF'
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+sh_test(name = "test", srcs = ["test.sh"])
+EOF
+  cat > a/test.sh <<'EOF'
+#!/bin/sh
+echo 'cached test log'
+echo '<testsuites/>' > "$XML_OUTPUT_FILE"
+EOF
+  chmod +x a/test.sh
+
+  local -a flags=(
+    --remote_executor=grpc://localhost:${worker_port}
+    --remote_download_outputs=minimal
+    --remote_build_event_upload=minimal
+    --build_event_json_file="$BEP_JSON"
+  )
+
+  local expected_log="$TEST_TMPDIR/expected-test.log"
+  bazel test "${flags[@]}" //a:test >& "$TEST_log" || fail "Failed to populate the cache"
+  cp bazel-testlogs/a/test/test.log "$expected_log" || fail "Failed to save original test log"
+  bazel clean >& "$TEST_log" || fail "Failed to clean local outputs"
+
+  bazel test "${flags[@]}" //a:test >& "$TEST_log" || fail "Expected remote cache hit"
+  assert_not_exists bazel-testlogs/a/test/test.log
+  expect_not_log 'Uploading BEP referenced local file .*test\.log'
+  assert_contains '"cachedRemotely":true' "$BEP_JSON"
+  expect_bep_test_log_in_result_and_summary "$expected_log"
+
+  bazel shutdown >& "$TEST_log" || fail "Failed to stop Bazel"
+  bazel test "${flags[@]}" //a:test >& "$TEST_log" || fail "Expected local action cache hit"
+  assert_not_exists bazel-testlogs/a/test/test.log
+  expect_not_log 'Uploading BEP referenced local file .*test\.log'
+  assert_contains '"cachedLocally":true' "$BEP_JSON"
+  expect_bep_test_log_in_result_and_summary "$expected_log"
+}
+
+function expect_bep_test_log_in_result_and_summary() {
+  local expected_log=$1
+  local log_uri_pattern='"name":"test.log","uri":"(bytestream://localhost:'"${worker_port}"'/blobs/([a-f0-9]+)/[0-9]+)"'
+  if [[ $(cat "$BEP_JSON") =~ $log_uri_pattern ]]; then
+    local log_uri=${BASH_REMATCH[1]}
+    local digest=${BASH_REMATCH[2]}
+    cmp "$expected_log" "$cas_path/cas/${digest:0:2}/$digest" \
+      || fail "The uploaded test log differs from the original"
+    assert_contains '"passed":\[{"uri":"'"$log_uri"'"}\]' "$BEP_JSON"
+  else
+    cat "$BEP_JSON" >> "$TEST_log"
+    fail "Test result does not link to the cached test log"
+  fi
+}
+
 function test_upload_all_upload_testlogs() {
   add_rules_shell "MODULE.bazel"
   mkdir -p a
