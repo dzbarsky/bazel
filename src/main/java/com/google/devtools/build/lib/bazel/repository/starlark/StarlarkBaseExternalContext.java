@@ -74,6 +74,7 @@ import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.ForOverride;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
@@ -167,6 +168,7 @@ public abstract class StarlarkBaseExternalContext implements AutoCloseable, Star
   private final boolean allowWatchingPathsOutsideWorkspace;
   private final ExecutorService executorService;
 
+  @Nullable private Path lastFileParent;
   private boolean wasSuccessful = false;
 
   protected StarlarkBaseExternalContext(
@@ -1521,9 +1523,7 @@ Strip the given number of leading components from file paths on extraction. Only
     env.getListener().post(w);
     try {
       checkInOutputDirectory("write", p);
-      makeDirectories(p.getPath());
-      p.getPath().delete();
-      try (OutputStream stream = p.getPath().getOutputStream()) {
+      try (OutputStream stream = openFileForReplacement(p.getPath())) {
         stream.write(StringUnsafe.getInternalStringBytes(content));
       }
       if (executable) {
@@ -1535,6 +1535,27 @@ Strip the given number of leading components from file paths on extraction. Only
       throw new RepositoryFunctionException(
           Starlark.errorf("Could not create %s: %s", p, e.getMessage()), Transience.PERSISTENT);
     }
+  }
+
+  private OutputStream openFileForReplacement(Path path) throws IOException {
+    Path parent = path.getParentDirectory();
+    if (parent != null && parent.equals(lastFileParent)) {
+      try {
+        return replaceFile(path);
+      } catch (FileNotFoundException e) {
+        // Another repository operation may have removed the shared parent.
+      }
+    }
+    if (parent != null) {
+      parent.createDirectoryAndParents();
+    }
+    lastFileParent = parent;
+    return replaceFile(path);
+  }
+
+  private static OutputStream replaceFile(Path path) throws IOException {
+    path.delete();
+    return path.getOutputStream();
   }
 
   @StarlarkMethod(
