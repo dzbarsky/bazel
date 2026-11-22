@@ -219,6 +219,10 @@ public class ProtoOutputFormatter extends AbstractUnorderedFormatter {
         options.getProtoRuleClasses() ? new RuleClassInfoFormatter() : null;
   }
 
+  final boolean includesRuleClassInfo() {
+    return ruleClassInfoFormatter != null;
+  }
+
   @Override
   public OutputFormatterCallback<Target> createPostFactoStreamCallback(
       OutputStream out, QueryOptions options, LabelPrinter labelPrinter) {
