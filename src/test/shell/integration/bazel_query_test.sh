@@ -1808,6 +1808,41 @@ EOF
   cmp snapshot-default.pb snapshot-impact.pb || fail "Failure impact changed the catalog"
 }
 
+function test_generate_hashes_limits_constant_registration_alias_to_its_type() {
+  mkdir -p registered_alias_hashes
+  cat > registered_alias_hashes/gated.bzl <<'EOF'
+def _gated(ctx):
+    fail("toolchain implementation is unavailable")
+
+gated = repository_rule(implementation = _gated)
+EOF
+  cat >> MODULE.bazel <<'EOF'
+gated = use_repo_rule("//registered_alias_hashes:gated.bzl", "gated")
+gated(name = "gated_toolchain_impl")
+register_toolchains("//registered_alias_hashes:registered_alias")
+EOF
+  cat > registered_alias_hashes/BUILD.bazel <<'EOF'
+toolchain_type(name = "unrelated_type")
+toolchain_type(name = "declared_type")
+toolchain(
+    name = "registration",
+    toolchain_type = ":declared_type",
+    toolchain = "@gated_toolchain_impl//:toolchain",
+)
+alias(name = "inner_alias", actual = ":registration")
+alias(name = "registered_alias", actual = ":inner_alias")
+EOF
+  local package="//registered_alias_hashes"
+  if ! bazel query --experimental_generate_hashes "$package:unrelated_type" > output 2> "$TEST_log"; then
+    fail "Unrelated type could not be hashed"
+  fi
+  grep -Eq '^//registered_alias_hashes:unrelated_type [0-9a-f]{64}$' output || fail "Missing unrelated type hash"
+  if bazel query --experimental_generate_hashes --keep_going "$package:declared_type" > output 2> "$TEST_log"; then
+    fail "Missing toolchain implementation was ignored"
+  fi
+  expect_log "toolchain implementation is unavailable"
+}
+
 function test_generate_hashes_source_directory_children() {
   mkdir -p directory_hashes/tree
   cat > directory_hashes/BUILD.bazel <<'EOF'
