@@ -19,6 +19,7 @@ import com.google.devtools.build.lib.actions.ActionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
 import com.google.devtools.build.lib.util.DetailedExitCode;
@@ -113,7 +114,8 @@ public interface TestActionContext extends ActionContext {
       Path execRoot,
       TestRunnerAction action,
       TestResultData cached,
-      ImmutableMultimap<String, Path> testOutputs)
+      ImmutableMultimap<String, Path> testOutputs,
+      @Nullable FileArtifactValue testLogMetadata)
       throws IOException;
 
   /** Returns the attempt group associaed with the given shard. */

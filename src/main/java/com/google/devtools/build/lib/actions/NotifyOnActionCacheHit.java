@@ -16,6 +16,8 @@ package com.google.devtools.build.lib.actions;
 
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.vfs.Path;
+import java.io.IOException;
+import javax.annotation.Nullable;
 
 /**
  * An action which must know when it is skipped due to an action cache hit.
@@ -38,6 +40,10 @@ public interface NotifyOnActionCacheHit extends Action {
     /** Returns the {@link ArtifactPathResolver} for this action. */
     ArtifactPathResolver getPathResolver();
 
+    /** Returns the available metadata for an output of the cached action. */
+    @Nullable
+    FileArtifactValue getOutputMetadata(Artifact output) throws IOException, InterruptedException;
+
     /**
      * Looks up and returns an action context implementation of the given interface type.
      */
@@ -50,5 +56,5 @@ public interface NotifyOnActionCacheHit extends Action {
    *
    * @param context the action context for a cache hit
    */
-  boolean actionCacheHit(ActionCachedContext context);
+  boolean actionCacheHit(ActionCachedContext context) throws InterruptedException;
 }

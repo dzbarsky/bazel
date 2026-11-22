@@ -18,8 +18,10 @@ import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
@@ -28,6 +30,7 @@ import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
 import com.google.devtools.build.lib.view.test.TestStatus.TestResultData;
 import java.util.List;
@@ -44,6 +47,7 @@ public class TestResult implements ExtendedEventHandler.Postable {
   private final TestRunnerAction testAction;
   private final TestResultData data;
   private final ImmutableMultimap<String, Path> testOutputs;
+  private final ImmutableMap<PathFragment, FileArtifactValue> testLogMetadata;
   private final boolean cached;
   @Nullable protected final Path execRoot;
   @Nullable private final DetailedExitCode systemFailure;
@@ -66,9 +70,21 @@ public class TestResult implements ExtendedEventHandler.Postable {
       boolean cached,
       @Nullable Path execRoot,
       @Nullable DetailedExitCode systemFailure) {
+    this(testAction, data, testOutputs, cached, execRoot, systemFailure, ImmutableMap.of());
+  }
+
+  public TestResult(
+      TestRunnerAction testAction,
+      TestResultData data,
+      ImmutableMultimap<String, Path> testOutputs,
+      boolean cached,
+      @Nullable Path execRoot,
+      @Nullable DetailedExitCode systemFailure,
+      ImmutableMap<PathFragment, FileArtifactValue> testLogMetadata) {
     this.testAction = checkNotNull(testAction);
     this.data = checkNotNull(data);
     this.testOutputs = checkNotNull(testOutputs);
+    this.testLogMetadata = testLogMetadata;
     this.cached = cached;
     this.execRoot = execRoot;
     this.systemFailure = systemFailure;
@@ -106,6 +122,12 @@ public class TestResult implements ExtendedEventHandler.Postable {
     return testLogPath;
   }
 
+  /** Returns the remote metadata for a test log, when available. */
+  @Nullable
+  public FileArtifactValue getTestLogMetadata(Path path) {
+    return testLogMetadata.get(path.asFragment());
+  }
+
   /** Returns whether the result was loaded from local action cache. */
   public final boolean isCached() {
     return cached;
@@ -123,6 +145,7 @@ public class TestResult implements ExtendedEventHandler.Postable {
             data,
             1,
             testOutputs,
+            testLogMetadata.isEmpty() ? null : getTestLogMetadata(getTestLogPath()),
             BuildEventStreamProtos.TestResult.ExecutionInfo.getDefaultInstance(),
             /* lastAttempt= */ true));
   }

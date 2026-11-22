@@ -239,10 +239,14 @@ final class TestResultAggregator {
     }
 
     if (result.getData().hasPassedLog()) {
-      summary.addPassedLog(result.getTestLogPath().getRelative(result.getData().getPassedLog()));
+      Path log = result.getTestLogPath().getRelative(result.getData().getPassedLog());
+      summary.addPassedLog(log);
+      summary.addTestLogMetadata(log, result.getTestLogMetadata(log));
     }
     for (String path : result.getData().getFailedLogsList()) {
-      summary.addFailedLog(result.getTestLogPath().getRelative(path));
+      Path log = result.getTestLogPath().getRelative(path);
+      summary.addFailedLog(log);
+      summary.addTestLogMetadata(log, result.getTestLogMetadata(log));
     }
 
     summary

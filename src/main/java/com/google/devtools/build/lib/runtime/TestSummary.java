@@ -20,6 +20,7 @@ import com.google.common.base.MoreObjects;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ComparisonChain;
 import com.google.common.collect.ImmutableList;
+import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.analysis.AliasProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
@@ -48,6 +49,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -87,6 +89,7 @@ public class TestSummary implements Comparable<TestSummary>, BuildEventWithOrder
       addCoverageFiles(existingSummary.coverageFiles);
       addPassedLogs(existingSummary.passedLogs);
       addFailedLogs(existingSummary.failedLogs);
+      summary.testLogMetadata.putAll(existingSummary.testLogMetadata);
       summary.totalTestCases += existingSummary.totalTestCases;
       summary.totalUnknownTestCases += existingSummary.totalUnknownTestCases;
 
@@ -176,6 +179,13 @@ public class TestSummary implements Comparable<TestSummary>, BuildEventWithOrder
       checkMutation(failedLog);
       summary.failedLogs.add(failedLog);
       return this;
+    }
+
+    void addTestLogMetadata(Path path, @Nullable FileArtifactValue metadata) {
+      checkMutation(path);
+      if (metadata != null) {
+        summary.testLogMetadata.put(path, metadata);
+      }
     }
 
     @CanIgnoreReturnValue
@@ -400,6 +410,7 @@ public class TestSummary implements Comparable<TestSummary>, BuildEventWithOrder
   private final List<TestCase> skippedTestCases = new ArrayList<>();
   private List<Path> passedLogs = new ArrayList<>();
   private List<Path> failedLogs = new ArrayList<>();
+  private final Map<Path, FileArtifactValue> testLogMetadata = new HashMap<>();
   private List<String> warnings = new ArrayList<>();
   private List<Path> coverageFiles = new ArrayList<>();
   private List<Long> testTimes = new ArrayList<>();
@@ -632,14 +643,13 @@ public class TestSummary implements Comparable<TestSummary>, BuildEventWithOrder
   @Override
   public ImmutableList<LocalFile> referencedLocalFiles() {
     ImmutableList.Builder<LocalFile> localFiles = ImmutableList.builder();
-    // TODO(b/199940216): Can we populate metadata for these files?
     for (Path path : getFailedLogs()) {
       localFiles.add(
-          new LocalFile(path, LocalFileType.FAILED_TEST_OUTPUT, /* artifactMetadata= */ null));
+          new LocalFile(path, LocalFileType.FAILED_TEST_OUTPUT, testLogMetadata.get(path)));
     }
     for (Path path : getPassedLogs()) {
       localFiles.add(
-          new LocalFile(path, LocalFileType.SUCCESSFUL_TEST_OUTPUT, /* artifactMetadata= */ null));
+          new LocalFile(path, LocalFileType.SUCCESSFUL_TEST_OUTPUT, testLogMetadata.get(path)));
     }
     return localFiles.build();
   }
