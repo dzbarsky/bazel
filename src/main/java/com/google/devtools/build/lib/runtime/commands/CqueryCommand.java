@@ -208,8 +208,8 @@ public final class CqueryCommand implements BlazeCommand {
       }
       try {
         expr =
-              QueryExpressionResolver.resolve(
-                  QueryParser.parse(query, ParserOptions.DEFAULT), functions);
+            QueryExpressionResolver.resolve(
+                QueryParser.parse(query, ParserOptions.DEFAULT), functions);
       } catch (QuerySyntaxException e) {
         String message =
             String.format(
