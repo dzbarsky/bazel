@@ -173,8 +173,8 @@ public abstract class RepositoryOptions extends OptionsBase {
       documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
       effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
       help =
-          "If set, the repository cache will hardlink the file in case of a"
-              + " cache hit, rather than copying. This is intended to save disk space.")
+          "Allow hardlinks between the repository download cache and temporary archives used by"
+              + " repository extraction to avoid copying the archive.")
   public abstract boolean getUseHardlinks();
 
   @Option(

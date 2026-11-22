@@ -408,7 +408,11 @@ public class DownloadManager {
 
       if (isCachingByProvidedChecksum) {
         downloadCache.put(
-            checksum.get().toString(), destination, checksum.get().getKeyType(), canonicalId);
+            checksum.get().toString(),
+            destination,
+            checksum.get().getKeyType(),
+            canonicalId,
+            mayHardlink);
       } else if (downloadCache.isEnabled()) {
         var unused = downloadCache.put(destination, KeyType.SHA256, canonicalId);
       }
