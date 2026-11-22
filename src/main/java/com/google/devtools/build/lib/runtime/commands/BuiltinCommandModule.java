@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.runtime.commands;
 
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.query2.query.hash.DirectTargetHashFunction;
+import com.google.devtools.build.lib.query2.query.hash.PinnedHttpFileQueryFunction;
 import com.google.devtools.build.lib.query2.query.hash.RegisteredToolchainsByTypeFunction;
 import com.google.devtools.build.lib.query2.query.hash.RepoContentDigestFunction;
 import com.google.devtools.build.lib.query2.query.hash.SourceFileDigestFunction;
@@ -64,6 +65,9 @@ public class BuiltinCommandModule extends BlazeModule {
     // Used by query --generate_hashes.
     builder
         .addSkyFunction(DirectTargetHashFunction.NAME, new DirectTargetHashFunction(directories))
+        .addSkyFunction(
+            PinnedHttpFileQueryFunction.NAME,
+            new PinnedHttpFileQueryFunction(directories, runtime.getPackageFactory()))
         .addSkyFunction(SourceFileDigestFunction.NAME, new SourceFileDigestFunction())
         .addSkyFunction(RepoContentDigestFunction.NAME, new RepoContentDigestFunction(directories))
         .addSkyFunction(
