@@ -33,6 +33,7 @@ import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.LabelValidator;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.query2.query.hash.SourceFileDigestFunction;
 import com.google.devtools.build.lib.skyframe.DirectoryListingValue;
 import com.google.devtools.build.lib.skyframe.DirectoryTreeDigestValue;
 import com.google.devtools.build.lib.skyframe.EnvironmentVariableValue;
@@ -196,11 +197,75 @@ public abstract sealed class RepoRecordedInput {
   public static Optional<String> isAnyValueOutdated(
       Environment env, BlazeDirectories directories, List<WithValue> recordedInputValues)
       throws InterruptedException {
+    return isAnyValueOutdated(env, directories, recordedInputValues, false);
+  }
+
+  public static Optional<String> isAnyValueOutdated(
+      Environment env,
+      BlazeDirectories directories,
+      List<WithValue> recordedInputValues,
+      boolean memoizeContents)
+      throws InterruptedException {
     prefetch(env, directories, Collections2.transform(recordedInputValues, WithValue::input));
     if (env.valuesMissing()) {
       return UNDECIDED;
     }
-    for (var recordedInput : recordedInputValues) {
+    // Check one file first. When it matches, grow the speculative window within this
+    // repository-ordering batch. A changed prefix then avoids scheduling the whole suffix.
+    int window = 1;
+    for (int i = 0; i < recordedInputValues.size(); ) {
+      if (memoizeContents) {
+        var keys = new ArrayList<SkyKey>();
+        while (i + keys.size() < recordedInputValues.size() && keys.size() < window) {
+          var next = recordedInputValues.get(i + keys.size()).input();
+          if (!(next instanceof File file) || file.watchExecutable) {
+            break;
+          }
+          var fileKey = file.getSkyKey(directories);
+          var fileValue = (FileValue) env.getValue(fileKey);
+          if (fileValue == null
+              || !fileValue.isFile()
+              || fileValue.isSpecialFile()
+              || fileValue.realFileStateValue().getDigest() != null) {
+            break;
+          }
+          keys.add(SourceFileDigestFunction.key((RootedPath) fileKey.argument()));
+        }
+        if (!keys.isEmpty()) {
+          var values = env.getValuesAndExceptions(keys);
+          Optional<String> first = Optional.empty();
+          for (var key : keys) {
+            var recorded = recordedInputValues.get(i++);
+            var digest = values.get(key);
+            if (digest != null && first.isEmpty()) {
+              try {
+                String actual =
+                    BaseEncoding.base16()
+                        .lowerCase()
+                        .encode(SourceFileDigestFunction.contentDigest(digest));
+                if (!Objects.equals(recorded.value(), actual)) {
+                  first = Optional.of(recorded.input().describeChange(recorded.value(), actual));
+                }
+              } catch (IOException e) {
+                first =
+                    Optional.of(
+                        "failed to stat %s: %s"
+                            .formatted(((File) recorded.input()).path, e.getMessage()));
+              }
+            }
+          }
+          if (env.valuesMissing()) {
+            return UNDECIDED;
+          }
+          if (first.isPresent()) {
+            return first;
+          }
+          window = Math.min(256, Math.max(16, window * 4));
+          continue;
+        }
+      }
+      var recordedInput = recordedInputValues.get(i++);
+      window = 1;
       Optional<String> reason =
           recordedInput.input().isOutdated(env, directories, recordedInput.value());
       if (reason.isPresent()) {

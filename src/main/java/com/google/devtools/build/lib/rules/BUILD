@@ -168,6 +168,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/analysis:blaze_directories",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/cmdline:LabelValidator",
+        "//src/main/java/com/google/devtools/build/lib/query2/query/hash:source_file_digest",
         "//src/main/java/com/google/devtools/build/lib/skyframe:directory_listing_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:directory_tree_digest_value",
         "//src/main/java/com/google/devtools/build/lib/skyframe:environment_variable_value",
