@@ -24,11 +24,12 @@ The local remote names used here are `origin` for `bazelbuild/bazel` and
    Do not import 9.4 version stamps or changes that only repair a 9.4 BUILD
    label. Verify omitted fixes using ancestor checks, stable patch IDs, or the
    actual code and tests when APIs differ.
-4. The last 9.4 commit fully accounted for on 2026-11-01 is
-   `c58684a6114ad6c67d229a7cc69471269eb2e021`. The previous 46 commits since
-   `936b87fb56f12c7be262c4a5bbe853f4fc9bbd45` are already upstream, already
-   on fork master, or 9.4-only release and BUILD adaptations. Update this
-   baseline when further 9.4 commits are inspected.
+4. The last 9.4 commit accounted for on 2026-11-22 is
+   `ac2f7c134d55e8bb30ccfaf3e45c2b6e8a8b733a`. Since the previous audit at
+   `c58684a6114`, upstream supplied the JAVA_HOME fix (`535d6331d6f`) and
+   the rolling JDK update (`30789d19b83`). Fork master already uses macos-26
+   for the ARM64 prebuilt. The remaining commit stamped the 9.4 release.
+   Update this baseline after checking subsequent 9.4 commits.
    Preserve #31767 (`a2cbc1f4b4`, shared discovered inputs) on fork master.
    Upstream reverted it in `bcb0ceca09`; the earlier upstream landing by
    itself is not evidence the feature remains upstream.
