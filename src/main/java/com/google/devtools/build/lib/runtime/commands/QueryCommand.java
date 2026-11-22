@@ -23,6 +23,8 @@ import com.google.common.hash.HashFunction;
 import com.google.common.io.CountingOutputStream;
 import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.concurrent.ForkJoinQuiescingExecutor;
+import com.google.devtools.build.lib.concurrent.NamedForkJoinPool;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.packages.Target;
@@ -60,6 +62,7 @@ import com.google.devtools.build.lib.util.Either;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.InterruptedFailureDetails;
 import com.google.devtools.build.skyframe.EvaluationContext;
+import com.google.devtools.build.skyframe.ParallelEvaluatorErrorClassifier;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -297,19 +300,39 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
             .setEventHandler(env.getReporter())
             .build();
     Stopwatch skyframeTime = Stopwatch.createUnstarted();
-    TransitiveHashes.Result result =
-        TransitiveHashes.compute(
-            labels,
-            keys -> {
-              skyframeTime.start();
-              try {
-                return env.getSkyframeExecutor().prepareAndGet(keys, evaluationContext);
-              } finally {
-                skyframeTime.stop();
-              }
-            },
-            message -> env.getReporter().handle(Event.progress(message)),
-            queryOptions.getQueryHashFailureImpact());
+    TransitiveHashes.Result result;
+    // Keep the evaluator and its quiescence state local to each wave.
+    var pool =
+        NamedForkJoinPool.newNamedPool(
+            "skyframe-evaluator-memoizing", evaluationContext.getParallelism());
+    try {
+      result =
+          TransitiveHashes.compute(
+              labels,
+              keys -> {
+                var visitor =
+                    ForkJoinQuiescingExecutor.createShared(
+                        pool, ParallelEvaluatorErrorClassifier.instance());
+                skyframeTime.start();
+                try {
+                  return env.getSkyframeExecutor()
+                      .prepareAndGet(
+                          keys, evaluationContext.builder().setExecutor(visitor).build());
+                } finally {
+                  skyframeTime.stop();
+                }
+              },
+              message -> env.getReporter().handle(Event.progress(message)),
+              queryOptions.getQueryHashFailureImpact());
+    } catch (RuntimeException | Error e) {
+      // A broken executor can have tasks that cannot be joined.
+      pool.shutdownNow();
+      throw e;
+    } finally {
+      if (!pool.isShutdown()) {
+        pool.close();
+      }
+    }
     CountingOutputStream binary = null;
     if (catalog instanceof StreamedProtoOutputFormatter) {
       binary = new CountingOutputStream(out);
