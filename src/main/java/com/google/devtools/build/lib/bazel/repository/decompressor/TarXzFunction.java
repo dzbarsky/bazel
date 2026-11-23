@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.bazel.repository.decompressor;
 
 import com.google.devtools.build.lib.bazel.repository.decompressor.DecompressorValue.Decompressor;
 import java.io.BufferedInputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import org.tukaani.xz.XZInputStream;
@@ -27,6 +28,18 @@ class TarXzFunction extends CompressedTarFunction {
   public static final Decompressor INSTANCE = new TarXzFunction();
 
   private TarXzFunction() {}
+
+  @Override
+  protected InputStream getDecompressorStream(InputStream compressedInputStream)
+      throws IOException {
+    if (compressedInputStream instanceof FileInputStream source) {
+      InputStream parallel = ParallelXzInputStream.tryOpen(source, 64L << 20);
+      if (parallel != null) {
+        return parallel;
+      }
+    }
+    return super.getDecompressorStream(compressedInputStream);
+  }
 
   @Override
   protected InputStream getDecompressorStream(BufferedInputStream compressedInputStream)
