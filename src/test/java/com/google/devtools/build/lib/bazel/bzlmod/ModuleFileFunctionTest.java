@@ -2819,7 +2819,7 @@ public class ModuleFileFunctionTest extends FoundationTestCase {
     ModuleFileValue initialValue = initialResult.get(fooKey);
     assertThat(initialValue.module().getRegistryUrl()).isEqualTo(primaryUrl);
     BazelLockFileModule.updateLockfile(
-        rootDirectory,
+        rootDirectory.getRelative(LabelConstants.MODULE_LOCKFILE_NAME),
         BazelLockFileValue.builder()
             .setRegistryFileHashes(initialValue.registryFileHashes())
             .build());
