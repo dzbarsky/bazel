@@ -112,13 +112,21 @@ public final class StarlarkPath implements StarlarkValue {
                 <a href="repository_ctx.html#watch"><code>repository_ctx.watch()</code></a> \
                 docs for more information).
                 """),
+        @Param(
+            name = "watch_types",
+            defaultValue = "False",
+            positional = false,
+            named = true,
+            doc =
+                "When watching, also detect changes to the type of an entry. Symlinks are"
+                    + " watched as symlinks without resolving their targets."),
       })
-  public ImmutableList<StarlarkPath> readdir(String watch)
+  public ImmutableList<StarlarkPath> readdirForStarlark(String watch, boolean watchTypes)
       throws EvalException, RepositoryFunctionException, InterruptedException {
     if (!isDir()) {
       throw Starlark.errorf("can't readdir(), not a directory: %s", path);
     }
-    ctx.maybeWatchDirents(path, ShouldWatch.fromString(watch));
+    ctx.maybeWatchDirents(path, ShouldWatch.fromString(watch), watchTypes);
     try {
       ImmutableList.Builder<StarlarkPath> builder = ImmutableList.builder();
       for (Path p : path.getDirectoryEntries()) {
@@ -128,6 +136,11 @@ public final class StarlarkPath implements StarlarkValue {
     } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
     }
+  }
+
+  public ImmutableList<StarlarkPath> readdir(String watch)
+      throws EvalException, RepositoryFunctionException, InterruptedException {
+    return readdirForStarlark(watch, /* watchTypes= */ false);
   }
 
   @StarlarkMethod(

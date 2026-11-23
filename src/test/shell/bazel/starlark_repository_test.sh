@@ -3003,6 +3003,45 @@ EOF
   expect_not_log "I see:"
 }
 
+function test_path_readdir_watch_types() {
+  local outside_dir
+  outside_dir=$(mktemp -d "${TEST_TMPDIR}/testXXXXXX")
+  touch "${outside_dir}/entry"
+
+  cat > "$(setup_module_dot_bazel)" <<EOF
+r = use_repo_rule("//:r.bzl", "r")
+r(name = "typed", watch = "yes")
+r(name = "unwatched", watch = "no")
+EOF
+  touch BUILD
+  cat > r.bzl <<EOF
+def _r(rctx):
+    entries = rctx.path("${outside_dir}").readdir(
+        watch = rctx.attr.watch,
+        watch_types = True,
+    )
+    print("Read with watch=" + rctx.attr.watch + ": " + ",".join(sorted([p.basename for p in entries])))
+    rctx.file("BUILD.bazel", "filegroup(name = 'r')")
+
+r = repository_rule(implementation = _r, attrs = {"watch": attr.string()})
+EOF
+
+  local query='set(@typed//:r @unwatched//:r)'
+  bazel query "$query" >& "$TEST_log" || fail "expected bazel to succeed"
+  expect_log "Read with watch=yes: entry"
+  expect_log "Read with watch=no: entry"
+
+  echo changed > "${outside_dir}/entry"
+  bazel query "$query" >& "$TEST_log" || fail "expected bazel to succeed"
+  expect_not_log "Read with watch="
+
+  rm "${outside_dir}/entry"
+  mkdir "${outside_dir}/entry"
+  bazel query "$query" >& "$TEST_log" || fail "expected bazel to succeed"
+  expect_log "Read with watch=yes: entry"
+  expect_not_log "Read with watch=no:"
+}
+
 function test_watch_tree() {
   local outside_dir=$(mktemp -d "${TEST_TMPDIR}/testXXXXXX")
   touch ${outside_dir}/foo

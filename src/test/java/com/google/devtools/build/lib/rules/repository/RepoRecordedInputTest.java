@@ -98,6 +98,7 @@ public class RepoRecordedInputTest extends BuildViewTestCase {
               new RepoRecordedInput.File(path),
               new RepoRecordedInput.File(path, true),
               new RepoRecordedInput.Dirents(path),
+              new RepoRecordedInput.Dirents(path, /* watchTypes= */ true),
               new RepoRecordedInput.DirTree(path, ImmutableList.of()),
               new RepoRecordedInput.DirTree(
                   path, ImmutableList.of("excluded directory/**", "file,with,commas")))) {
