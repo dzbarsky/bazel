@@ -297,6 +297,62 @@ public class ParallelEvaluatorTest {
   }
 
   @Test
+  public void interruptedEvaluationClosesSuspendedWorker() throws Exception {
+    SkyKey key = skyKey("worker");
+    var state = new WorkerSkyKeyComputeState<StringValue>();
+    SettableFuture<Void> future = SettableFuture.create();
+    CountDownLatch workerYielded = new CountDownLatch(1);
+    AtomicBoolean workerInterrupted = new AtomicBoolean();
+    tester
+        .getOrCreate(key)
+        .setBuilder(
+            (unused, env) -> {
+              try {
+                return env.getState(() -> state)
+                    .startOrContinueWork(
+                        env,
+                        "worker",
+                        workerEnv -> {
+                          try {
+                            WorkerSkyKeyComputeState.yieldForFuture(workerEnv, future);
+                            throw new AssertionError("Suspended worker resumed");
+                          } catch (InterruptedException e) {
+                            workerInterrupted.set(true);
+                            throw e;
+                          }
+                        });
+              } catch (ExecutionException e) {
+                throw new IllegalStateException(e);
+              }
+            });
+    graph =
+        NotifyingHelper.makeNotifyingTransformer(
+                (observedKey, type, order, context) -> {
+                  if (key.equals(observedKey) && type == EventType.ADD_EXTERNAL_DEP) {
+                    workerYielded.countDown();
+                  }
+                })
+            .transform(new InMemoryGraphImpl());
+    TestThread evalThread =
+        new TestThread(
+            () ->
+                assertThrows(
+                    InterruptedException.class, () -> eval(/* keepGoing= */ false, key)));
+    evalThread.start();
+    try {
+      try {
+        assertThat(workerYielded.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+      } finally {
+        evalThread.interrupt();
+        evalThread.joinAndAssertState(TestUtils.WAIT_TIMEOUT_MILLISECONDS);
+      }
+      assertThat(workerInterrupted.get()).isTrue();
+    } finally {
+      state.close();
+    }
+  }
+
+  @Test
   public void enqueueBadFuture() throws Exception {
     SkyKey parentKey = skyKey("parentKey");
     CountDownLatch doneLatch = new CountDownLatch(1);
