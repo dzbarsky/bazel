@@ -82,15 +82,17 @@ public final class CacheFileDigestsModuleTest {
   @Test
   public void zeroSizeDisablesPreviousCacheBeforeLoading() throws Exception {
     FileSystemUtils.writeContentAsLatin1(file, "repository input");
-    DigestUtils.configureCache(100);
-    byte[] digest = DigestUtils.manuallyComputeDigest(file, null);
     OptionsParser options = OptionsParser.builder().optionsClasses(ExecutionOptions.class).build();
-    options.parse("--cache_computed_file_digests=0");
     CommandEnvironment env = mock(CommandEnvironment.class);
     when(env.getCommand()).thenReturn(BuildCommand.class.getAnnotation(Command.class));
     when(env.getOptions()).thenReturn(options);
-
     CacheFileDigestsModule module = new CacheFileDigestsModule();
+    options.parse("--cache_computed_file_digests=100");
+    module.beforeCommand(env);
+    byte[] digest = DigestUtils.manuallyComputeDigest(file, null);
+    module.commandComplete();
+
+    options.parse("--cache_computed_file_digests=0");
     module.beforeCommand(env);
     assertThat(DigestUtils.manuallyComputeDigest(file, null)).isEqualTo(digest);
     assertThat(DigestUtils.manuallyComputeDigest(file, null)).isEqualTo(digest);
