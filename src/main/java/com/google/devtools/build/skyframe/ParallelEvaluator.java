@@ -97,11 +97,20 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
 
   private void informProgressReceiverThatValueIsDone(SkyKey key, NodeEntry entry)
       throws InterruptedException {
+    informProgressReceiverThatValueIsDone(key, entry, null);
+  }
+
+  private void informProgressReceiverThatValueIsDone(
+      SkyKey key, NodeEntry entry, @Nullable SkyValue stableValueWithMetadata)
+      throws InterruptedException {
     if (evaluatorContext.getProgressReceiver() == null) {
       return;
     }
     Preconditions.checkState(entry.isDone(), entry);
-    SkyValue value = entry.getValue();
+    SkyValue value =
+        stableValueWithMetadata == null
+            ? entry.getValue()
+            : ValueWithMetadata.justValue(stableValueWithMetadata);
     Version valueVersion = entry.getVersion();
     Preconditions.checkState(
         valueVersion.atMost(evaluatorContext.getGraphVersion()),
@@ -110,7 +119,10 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
         evaluatorContext.getGraphVersion());
 
     ErrorInfo error = null;
-    SkyValue valueMaybeWithMetadata = entry.getValueMaybeWithMetadata();
+    SkyValue valueMaybeWithMetadata =
+        stableValueWithMetadata == null
+            ? entry.getValueMaybeWithMetadata()
+            : stableValueWithMetadata;
     if (valueMaybeWithMetadata != null) {
       replay(ValueWithMetadata.getEvents(valueMaybeWithMetadata));
       error = ValueWithMetadata.getMaybeErrorInfo(valueMaybeWithMetadata);
@@ -239,7 +251,7 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
     // Successful evaluation, barring evaluation-wide exceptions, either because keepGoing or
     // because we actually did succeed.
     // TODO(bazel-team): Maybe report root causes during the build for lower latency.
-    return constructResult(skyKeys, bubbleErrorInfo, catastrophe);
+    return constructResult(skyKeys, bubbleErrorInfo, catastrophe, /* readyBatch= */ null);
   }
 
   /**
@@ -511,7 +523,8 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
   private <T extends SkyValue> EvaluationResult<T> constructResult(
       Iterable<SkyKey> skyKeys,
       @Nullable Map<SkyKey, ValueWithMetadata> bubbleErrorInfo,
-      boolean catastrophe)
+      boolean catastrophe,
+      @Nullable NodeBatch readyBatch)
       throws InterruptedException {
     EvaluationResult.Builder<T> result = EvaluationResult.builder();
     List<SkyKey> cycleRoots = new ArrayList<>();
@@ -524,22 +537,31 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
           catastrophe,
           bubbleErrorInfo);
       haveKeys = true;
-      SkyValue unwrappedValue =
-          maybeGetValueFromError(
-              skyKey, graph.get(null, Reason.PRE_OR_POST_EVALUATION, skyKey), bubbleErrorInfo);
-      ValueWithMetadata valueWithMetadata =
-          unwrappedValue == null ? null : ValueWithMetadata.wrapWithMetadata(unwrappedValue);
+      SkyValue unwrappedValue;
+      if (readyBatch == null) {
+        unwrappedValue =
+            maybeGetValueFromError(
+                skyKey, graph.get(null, Reason.PRE_OR_POST_EVALUATION, skyKey), bubbleErrorInfo);
+      } else {
+        NodeEntry entry = readyBatch.get(skyKey);
+        unwrappedValue = entry.getValueMaybeWithMetadata();
+        informProgressReceiverThatValueIsDone(skyKey, entry, unwrappedValue);
+      }
       // Cycle checking: if there is a cycle, evaluation cannot progress, therefore,
       // the final values will not be in DONE state when the work runs out.
-      if (valueWithMetadata == null) {
+      if (unwrappedValue == null) {
         // Don't look for cycles if the build failed for a known reason.
         if (bubbleErrorInfo == null) {
           cycleRoots.add(skyKey);
         }
         continue;
       }
-      SkyValue value = valueWithMetadata.getValue();
-      ErrorInfo errorInfo = valueWithMetadata.getErrorInfo();
+      SkyValue value = unwrappedValue;
+      ErrorInfo errorInfo = null;
+      if (unwrappedValue instanceof ValueWithMetadata metadata) {
+        value = metadata.getValue();
+        errorInfo = metadata.getErrorInfo();
+      }
       Preconditions.checkState(value != null || errorInfo != null, skyKey);
       if (errorInfo != null && !evaluatorContext.keepGoing(skyKey)) {
         // value will be null here unless the value was already built on a prior keepGoing build.
@@ -662,12 +684,16 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
     // directly without launching the heavy machinery, spawning threads, etc.
     // Inform progressReceiver that these nodes are done to be consistent with the main code path.
     if (doneBeforeEvaluation.cardinality() == skyKeySet.size()) {
+      // This in-memory batch is stable after invalidation and before we launch any workers.
+      if (graph instanceof InMemoryGraphImpl) {
+        return constructResult(skyKeySet, null, /* catastrophe= */ false, batch);
+      }
       for (SkyKey skyKey : skyKeySet) {
         informProgressReceiverThatValueIsDone(skyKey, batch.get(skyKey));
       }
       // Note that the 'catastrophe' parameter doesn't really matter here (it's only used for
       // checking).
-      return constructResult(skyKeySet, null, /*catastrophe=*/ false);
+      return constructResult(skyKeySet, null, /* catastrophe= */ false, /* readyBatch= */ null);
     }
 
     Set<SkyKey> cachedErrorKeys = new HashSet<>();
@@ -689,7 +715,7 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
       if (!cachedErrorKeys.isEmpty()) {
         // Note that the 'catastrophe' parameter doesn't really matter here (it's only used for
         // checking).
-        return constructResult(cachedErrorKeys, null, /*catastrophe=*/ false);
+        return constructResult(cachedErrorKeys, null, /* catastrophe= */ false, /* readyBatch= */ null);
       }
 
     unnecessaryTemporaryStateDropperReceiver.onEvaluationStarted(
