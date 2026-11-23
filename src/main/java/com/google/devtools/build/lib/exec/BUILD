@@ -93,7 +93,10 @@ java_library(
 
 java_library(
     name = "execution_options",
-    srcs = ["ExecutionOptions.java"],
+    srcs = [
+        "CacheFileDigestsOptions.java",
+        "ExecutionOptions.java",
+    ],
     deps = [
         ":regex_filter_assignment_converter",
         "//src/main/java/com/google/devtools/build/lib/actions",

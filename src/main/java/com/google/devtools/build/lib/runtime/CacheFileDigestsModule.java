@@ -17,8 +17,11 @@ package com.google.devtools.build.lib.runtime;
 import com.github.benmanes.caffeine.cache.stats.CacheStats;
 import com.google.common.base.Preconditions;
 import com.google.common.flogger.GoogleLogger;
+import com.google.devtools.build.lib.exec.CacheFileDigestsOptions;
 import com.google.devtools.build.lib.exec.ExecutionOptions;
 import com.google.devtools.build.lib.vfs.DigestUtils;
+import com.google.devtools.common.options.OptionsBase;
+import java.util.List;
 
 /** Enables the caching of file digests in {@link DigestUtils}. */
 public class CacheFileDigestsModule extends BlazeModule {
@@ -33,6 +36,7 @@ public class CacheFileDigestsModule extends BlazeModule {
    * if we don't know anything about the last value yet (i.e. before any command has been run).
    */
   private Integer lastKnownCacheSize;
+  private Runnable restoreQueryCache;
 
   public CacheFileDigestsModule() {}
 
@@ -49,21 +53,36 @@ public class CacheFileDigestsModule extends BlazeModule {
   }
 
   @Override
+  public Iterable<Class<? extends OptionsBase>> getCommandOptions(String commandName) {
+    return commandName.equals("query") ? List.of(CacheFileDigestsOptions.class) : List.of();
+  }
+
+  @Override
   public void beforeCommand(CommandEnvironment env) {
-    ExecutionOptions options = env.getOptions().getOptions(ExecutionOptions.class);
-    if (options == null || !env.getCommand().buildPhase().analyzes()) {
-      return;
-    }
-    // Repository input checks run during loading, before the execution tool is initialized.
-    if (lastKnownCacheSize == null
-        || options.getCacheSizeForComputedFileDigests() != lastKnownCacheSize) {
-      logger.atInfo().log(
-          "Reconfiguring cache with size=%d", options.getCacheSizeForComputedFileDigests());
-      DigestUtils.configureCache(options.getCacheSizeForComputedFileDigests());
-      lastKnownCacheSize = options.getCacheSizeForComputedFileDigests();
+    var parsedOptions = env.getOptions();
+    int size;
+    if (env.getCommand().name().equals("query")) {
+      if (parsedOptions.getOptionValueDescription(CacheFileDigestsOptions.OPTION_NAME) == null) {
+        return;
+      }
+      var options = parsedOptions.getOptions(CacheFileDigestsOptions.class);
+      size = options.getCacheSizeForComputedFileDigests();
+      restoreQueryCache = DigestUtils.configureCacheTemporarily(size);
+    } else {
+      ExecutionOptions options = parsedOptions.getOptions(ExecutionOptions.class);
+      if (options == null || !env.getCommand().buildPhase().analyzes()) {
+        return;
+      }
+      size = options.getCacheSizeForComputedFileDigests();
+      // Repository input checks run during loading, before the execution tool is initialized.
+      if (lastKnownCacheSize == null || size != lastKnownCacheSize) {
+        logger.atInfo().log("Reconfiguring cache with size=%d", size);
+        DigestUtils.configureCache(size);
+        lastKnownCacheSize = size;
+      }
     }
 
-    if (options.getCacheSizeForComputedFileDigests() == 0) {
+    if (size == 0) {
       stats = null;
       logger.atInfo().log("Disabled cache");
     } else {
@@ -74,12 +93,19 @@ public class CacheFileDigestsModule extends BlazeModule {
 
   @Override
   public void commandComplete() {
-    if (stats != null) {
-      CacheStats newStats = DigestUtils.getCacheStats();
-      Preconditions.checkNotNull(newStats, "The cache is enabled so we must get some stats back");
-      logStats("Accumulated cache stats after command", newStats);
-      logStats("Cache stats for finished command", newStats.minus(stats));
-      stats = null; // Silence stats until next command that uses the executor.
+    try {
+      if (stats != null) {
+        CacheStats newStats = DigestUtils.getCacheStats();
+        Preconditions.checkNotNull(newStats, "The cache is enabled so we must get some stats back");
+        logStats("Accumulated cache stats after command", newStats);
+        logStats("Cache stats for finished command", newStats.minus(stats));
+      }
+    } finally {
+      stats = null;
+      if (restoreQueryCache != null) {
+        restoreQueryCache.run();
+        restoreQueryCache = null;
+      }
     }
   }
 }

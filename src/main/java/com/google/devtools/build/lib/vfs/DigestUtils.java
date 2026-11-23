@@ -133,6 +133,16 @@ public class DigestUtils {
   }
 
   /**
+   * Configures a temporary cache and returns an action to restore the previous cache, including its
+   * contents. Callers must serialize overrides and restoration with other cache configuration.
+   */
+  public static Runnable configureCacheTemporarily(long maximumSize) {
+    DigestCache previous = globalCache;
+    configureCache(maximumSize);
+    return () -> globalCache = previous;
+  }
+
+  /**
    * Clears the cache contents without changing its size. No-op if the cache hasn't yet been
    * initialized.
    */
