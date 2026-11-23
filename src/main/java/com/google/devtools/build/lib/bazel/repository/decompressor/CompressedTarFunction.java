@@ -63,6 +63,11 @@ public abstract class CompressedTarFunction implements Decompressor {
   protected abstract InputStream getDecompressorStream(BufferedInputStream compressedInputStream)
       throws IOException;
 
+  protected InputStream getDecompressorStream(InputStream compressedInputStream)
+      throws IOException {
+    return getDecompressorStream(new BufferedInputStream(compressedInputStream, BUFFER_SIZE));
+  }
+
   @Override
   public Path decompress(DecompressorDescriptor descriptor)
       throws InterruptedException, IOException {
@@ -79,7 +84,7 @@ public abstract class CompressedTarFunction implements Decompressor {
 
     try (InputStream compressedInputStream = descriptor.archivePath().getInputStream();
         InputStream decompressorStream =
-            getDecompressorStream(new BufferedInputStream(compressedInputStream, BUFFER_SIZE))) {
+            getDecompressorStream(compressedInputStream)) {
       // USTAR tar headers use an unspecified encoding whereas PAX tar headers always use UTF-8.
       // We can specify the encoding to use for USTAR headers, but the Charset used for PAX headers
       // is fixed to UTF-8. We thus specify a custom Charset for the former so that we can
