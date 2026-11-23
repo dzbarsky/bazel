@@ -159,11 +159,15 @@ public final class TransitiveHashes {
           keys.isEmpty() ? EvaluationResult.<SkyValue>builder().build() : evaluator.evaluate(keys);
       List<Label> next = new ArrayList<>();
       var keyIterator = keys.iterator();
+      var orderedValues = result.orderedValuesFor(keys);
+      int keyPosition = 0;
       for (Label label : frontier) {
         DirectTargetHashFunction.Value value = getPackageHash(packageHashes, label);
         if (value == null) {
           SkyKey key = keyIterator.next();
-          value = (DirectTargetHashFunction.Value) result.get(key);
+          value =
+              (DirectTargetHashFunction.Value)
+                  (orderedValues == null ? result.get(key) : orderedValues.apply(keyPosition++));
           if (value == null) {
             ErrorInfo error = result.getError(key);
             // A missing dependency is hashed as absent only when Skyframe reports it as such.
