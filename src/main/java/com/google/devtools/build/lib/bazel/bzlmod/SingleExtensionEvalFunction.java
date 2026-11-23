@@ -20,6 +20,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
 
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
@@ -42,9 +43,12 @@ import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
+import com.google.devtools.build.skyframe.WorkerSkyKeyComputeState;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import javax.annotation.Nullable;
@@ -96,13 +100,45 @@ public class SingleExtensionEvalFunction implements SkyFunction {
   @Override
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws SingleExtensionEvalFunctionException, InterruptedException {
+    ModuleExtensionId extensionId = (ModuleExtensionId) skyKey.argument();
+    // Both checking the lockfile entry and running the extension happen in a worker thread so that
+    // neither has to start over after a Skyframe restart.
+    // See below (the `catch CancellationException` clause) for why there's a `while` loop here.
+    while (true) {
+      var state = env.getState(WorkerSkyKeyComputeState<SingleExtensionValue>::new);
+      try {
+        return state.startOrContinueWork(
+            env,
+            "module-extension-" + extensionId,
+            (workerEnv) -> computeInternal(workerEnv, extensionId));
+      } catch (ExecutionException e) {
+        Throwables.throwIfInstanceOf(e.getCause(), SingleExtensionEvalFunctionException.class);
+        Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
+        Throwables.throwIfUnchecked(e.getCause());
+        throw new IllegalStateException(
+            "unexpected exception type: " + e.getCause().getClass(), e.getCause());
+      } catch (CancellationException e) {
+        // This can only happen if the state object was invalidated due to memory pressure, in
+        // which case we can simply reattempt eval.
+      }
+    }
+  }
+
+  /**
+   * The actual SkyFunction logic, run in a worker thread. Note that, although the worker thread
+   * never sees Skyframe restarts, {@code env.valuesMissing()} can still be true due to deps in
+   * error. So this function still needs to return {@code null} when appropriate. See Javadoc of
+   * {@link com.google.devtools.build.skyframe.WorkerSkyFunctionEnvironment} for more information.
+   */
+  @Nullable
+  private SingleExtensionValue computeInternal(Environment env, ModuleExtensionId extensionId)
+      throws SingleExtensionEvalFunctionException, InterruptedException {
     StarlarkSemantics starlarkSemantics = PrecomputedValue.STARLARK_SEMANTICS.get(env);
     if (starlarkSemantics == null) {
       return null;
     }
     RequireRepoExtensionMetadataMode requireRepoExtensionMetadataMode =
         requireNonNull(RepoMetadataRequirements.REQUIRE_REPO_EXTENSION_METADATA.get(env));
-    ModuleExtensionId extensionId = (ModuleExtensionId) skyKey.argument();
     SingleExtensionUsagesValue usagesValue =
         (SingleExtensionUsagesValue) env.getValue(SingleExtensionUsagesValue.key(extensionId));
     if (usagesValue == null) {
@@ -186,8 +222,7 @@ public class SingleExtensionEvalFunction implements SkyFunction {
         lockedExtension =
             lockedExtensionMap == null ? null : lockedExtensionMap.get(extension.getEvalFactors());
       }
-      var state = env.getState(RegularRunnableExtension.State::new);
-      if (lockedExtension != null && !state.lockfileOutdated) {
+      if (lockedExtension != null) {
         try (SilentCloseable c =
             Profiler.instance()
                 .profile(ProfilerTask.BZLMOD, () -> "check lockfile for " + extensionId)) {
@@ -205,9 +240,6 @@ public class SingleExtensionEvalFunction implements SkyFunction {
           if (singleExtensionValue != null) {
             return singleExtensionValue;
           }
-          // The running extension may suspend for many new dependencies. Its lockfile entry
-          // was already rejected for this evaluation.
-          state.lockfileOutdated = true;
         } catch (NeedsSkyframeRestartException e) {
           return null;
         }
