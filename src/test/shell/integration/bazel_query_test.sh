@@ -1769,6 +1769,51 @@ PYTHON
   expect_log "Streamed 1 query hash records (0 unknown, $(wc -c < snapshot.pb | tr -d ' ') bytes)"
 }
 
+function test_query_excluded_root_directory_retains_dependencies() {
+  mkdir -p scope/excluded/{used,unused}
+  cat > scope/BUILD.bazel <<'EOF'
+filegroup(name = "root", srcs = ["//scope/excluded/used:leaf"])
+filegroup(name = "other")
+EOF
+  cat > scope/excluded/used/BUILD.bazel <<'EOF'
+filegroup(name = "leaf", srcs = ["input.txt"], visibility = ["//visibility:public"])
+EOF
+  echo original > scope/excluded/used/input.txt
+  echo 'filegroup(name = "unused")' > scope/excluded/unused/BUILD.bazel
+
+  local -a query=(query --keep_going --experimental_generate_hashes --order_output=no)
+  local exclude=--experimental_query_exclude_root_directory=scope/excluded
+  bazel "${query[@]}" '//scope/... except //scope/excluded/...' > baseline 2> "$TEST_log" \
+    || fail "Expected a complete baseline"
+  echo 'fail("unused package should not be loaded")' >> scope/excluded/unused/BUILD.bazel
+  local graphless
+  for graphless in yes no; do
+    bazel "${query[@]}" //scope/... "$exclude" --experimental_graphless_query="$graphless" \
+      > pruned 2> "$TEST_log" || fail "Expected to skip the unused package"
+    diff <(sort baseline) <(sort pruned) || fail "Expected the same roots and hashes"
+  done
+
+  echo edited > scope/excluded/used/input.txt
+  bazel "${query[@]}" //scope/... "$exclude" > edited 2> "$TEST_log" \
+    || fail "Expected to hash a dependency in the excluded directory"
+  [[ "$(grep '^//scope:root ' baseline)" != "$(grep '^//scope:root ' edited)" ]] \
+    || fail "Expected the dependent hash to change"
+  [[ "$(grep '^//scope:other ' baseline)" == "$(grep '^//scope:other ' edited)" ]] \
+    || fail "Expected the other hash to remain stable"
+
+  echo 'fail("referenced package is broken")' >> scope/excluded/used/BUILD.bazel
+  local status=0
+  bazel "${query[@]}" //scope/... "$exclude" --output=streamed_proto \
+    > snapshot.pb 2> "$TEST_log" || status=$?
+  assert_equals 7 "$status"
+  expect_log "referenced package is broken"
+  expect_log "Streamed 2 query hash records (1 unknown"
+
+  bazel "${query[@]}" //scope/excluded/... "$exclude" > invalid 2> "$TEST_log" \
+    && fail "Expected to reject exclusion of the whole pattern"
+  expect_log "must be beneath the recursive pattern's directory"
+}
+
 function test_generate_hashes_report_overlapping_failures() {
   mkdir -p hash_failures
   cat > hash_failures/repos.bzl <<'EOF'

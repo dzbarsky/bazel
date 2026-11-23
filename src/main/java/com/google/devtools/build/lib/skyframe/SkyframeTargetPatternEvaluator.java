@@ -45,6 +45,7 @@ import com.google.devtools.build.lib.server.FailureDetails.TargetPatterns;
 import com.google.devtools.build.lib.skyframe.TargetPatternValue.TargetPatternKey;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.DetailedIOException;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.ErrorInfo;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -62,9 +63,16 @@ import javax.annotation.Nullable;
 /** Skyframe-based target pattern parsing. */
 public final class SkyframeTargetPatternEvaluator implements TargetPatternPreloader {
   private final SkyframeExecutor skyframeExecutor;
+  private final ImmutableSet<PathFragment> excludedRootDirectories;
 
   public SkyframeTargetPatternEvaluator(SkyframeExecutor skyframeExecutor) {
+    this(skyframeExecutor, ImmutableSet.of());
+  }
+
+  public SkyframeTargetPatternEvaluator(
+      SkyframeExecutor skyframeExecutor, ImmutableSet<PathFragment> excludedRootDirectories) {
     this.skyframeExecutor = skyframeExecutor;
+    this.excludedRootDirectories = excludedRootDirectories;
   }
 
   @Override
@@ -187,7 +195,7 @@ public final class SkyframeTargetPatternEvaluator implements TargetPatternPreloa
   }
 
   @Nullable
-  private static PatternLookup createPatternLookup(
+  private PatternLookup createPatternLookup(
       TargetPattern.Parser mainRepoTargetParser,
       ExtendedEventHandler eventHandler,
       String targetPattern,
@@ -197,7 +205,8 @@ public final class SkyframeTargetPatternEvaluator implements TargetPatternPreloa
       TargetPatternKey key =
           TargetPatternValue.key(
               SignedTargetPattern.parse(targetPattern, mainRepoTargetParser),
-              FilteringPolicies.NO_FILTER);
+              FilteringPolicies.NO_FILTER,
+              excludedRootDirectories);
       return isSimple(key.getParsedPattern())
           ? new SimpleLookup(targetPattern, key)
           : new NormalLookup(targetPattern, key);

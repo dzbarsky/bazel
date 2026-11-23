@@ -214,7 +214,8 @@ public final class TargetPatternsHelper {
               // dependency graph structure or ordering
               /* useGraphlessQuery= */ true,
               mainRepoTargetParser,
-              labelPrinter);
+              labelPrinter,
+              /* excludedRootDirectories= */ ImmutableSet.of());
 
       var expr = QueryExpression.parse(queryExpression, queryEnv);
       var callback = QueryUtil.newAggregateAllCallback(queryEnv);

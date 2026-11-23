@@ -16,10 +16,13 @@ package com.google.devtools.build.lib.runtime.commands;
 import static com.google.devtools.build.lib.packages.Rule.ALL_LABELS;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.NoBuildEvent;
 import com.google.devtools.build.lib.analysis.NoBuildRequestFinishedEvent;
+import com.google.devtools.build.lib.cmdline.LabelValidator;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.cmdline.TargetPattern.Parser;
 import com.google.devtools.build.lib.events.Event;
@@ -62,9 +65,11 @@ import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Either;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.InterruptedFailureDetails;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.WalkableGraph;
 import com.google.devtools.common.options.OptionsParsingResult;
 import com.google.devtools.common.options.TriState;
+import java.util.List;
 import java.util.Set;
 import java.util.function.Function;
 import net.starlark.java.eval.StarlarkSemantics;
@@ -175,6 +180,30 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
           Query.Code.GRAPHLESS_PREREQ_UNMET);
     }
 
+    UniverseScope universeScope =
+        env.getSkyframeExecutor()
+            .maybeGetHardcodedUniverseScope()
+            .orElse(getUniverseScope(queryOptions));
+    ImmutableSet<PathFragment> excludedRootDirectories = ImmutableSet.of();
+    List<String> excludedDirectories = queryOptions.getQueryExcludeRootDirectories();
+    if (!excludedDirectories.isEmpty()) {
+      if (!env.getCommandName().equals("query") || !universeScope.isEmpty()) {
+        return reportAndCreateFailureResult(
+            env,
+            "--experimental_query_exclude_root_directory requires query without a universe scope",
+            Query.Code.ILLEGAL_FLAG_COMBINATION);
+      }
+      try {
+        excludedRootDirectories =
+            parseRootExclusions(query, mainRepoTargetParser, excludedDirectories);
+      } catch (TargetParsingException | IllegalArgumentException e) {
+        return reportAndCreateFailureResult(
+            env,
+            "--experimental_query_exclude_root_directory: " + e.getMessage(),
+            Query.Code.ILLEGAL_FLAG_COMBINATION);
+      }
+    }
+
     StarlarkSemantics starlarkSemantics =
         env.getSkyframeExecutor()
             .getEffectiveStarlarkSemantics(env.getOptions().getOptions(BuildLanguageOptions.class));
@@ -191,14 +220,13 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
               env,
               keepGoing,
               !streamResults,
-              env.getSkyframeExecutor()
-                  .maybeGetHardcodedUniverseScope()
-                  .orElse(getUniverseScope(queryOptions)),
+              universeScope,
               threadsOption.getThreads(),
               settings,
               useGraphlessQuery,
               mainRepoTargetParser,
-              labelPrinter)) {
+              labelPrinter,
+              excludedRootDirectories)) {
         result =
             doQuery(
                 query, env, queryOptions, streamResults, formatter, queryEnv, queryRuntimeHelper);
@@ -258,6 +286,30 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
       AbstractBlazeQueryEnvironment<Target> queryEnv,
       QueryRuntimeHelper queryRuntimeHelper);
 
+  private static ImmutableSet<PathFragment> parseRootExclusions(
+      String query, Parser parser, List<String> directories) throws TargetParsingException {
+    TargetPattern pattern = parser.parse(query.strip());
+    if (pattern.getType() != TargetPattern.Type.TARGETS_BELOW_DIRECTORY
+        || !pattern.getRepository().isMain()) {
+      throw new IllegalArgumentException("requires a single recursive main-repository pattern");
+    }
+    PathFragment root = pattern.getDirectory().getPackageFragment();
+    ImmutableSet.Builder<PathFragment> exclusions = ImmutableSet.builder();
+    for (String directory : directories) {
+      if (LabelValidator.validatePackageName(directory) != null) {
+        throw new IllegalArgumentException(
+            "invalid workspace-relative directory '" + directory + "'");
+      }
+      PathFragment path = PathFragment.create(directory);
+      if (path.equals(root) || !path.startsWith(root)) {
+        throw new IllegalArgumentException(
+            "'" + directory + "' must be beneath the recursive pattern's directory");
+      }
+      exclusions.add(path);
+    }
+    return exclusions.build();
+  }
+
   public static AbstractBlazeQueryEnvironment<Target> newQueryEnvironment(
       CommandEnvironment env,
       boolean keepGoing,
@@ -267,7 +319,8 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
       Set<Setting> settings,
       boolean useGraphlessQuery,
       TargetPattern.Parser mainRepoTargetParser,
-      LabelPrinter labelPrinter) {
+      LabelPrinter labelPrinter,
+      ImmutableSet<PathFragment> excludedRootDirectories) {
 
     WalkableGraph walkableGraph = env.getSkyframeExecutor().getWalkableGraph();
 
@@ -291,7 +344,7 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
             env.getSkyframeExecutor(),
             targetProviderForQueryEnvironment,
             env.getPackageManager(),
-            new SkyframeTargetPatternEvaluator(env.getSkyframeExecutor()),
+            new SkyframeTargetPatternEvaluator(env.getSkyframeExecutor(), excludedRootDirectories),
             mainRepoTargetParser,
             env.getRelativeWorkingDirectory(),
             keepGoing,
