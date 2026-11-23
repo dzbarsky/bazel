@@ -31,6 +31,7 @@ import com.google.devtools.build.skyframe.SkyValue;
 import com.google.protobuf.ByteString;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.Deque;
@@ -41,6 +42,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -62,6 +64,7 @@ import javax.annotation.Nullable;
  * type.
  */
 public final class TransitiveHashes {
+  private static final int MIN_PARALLEL_FRONTIER_KEYS = 32_768;
   private static final int MIN_ROOTS_FOR_BATCHING = 1024;
   private static final int MIN_ROOTS_PER_BATCHED_PACKAGE = 8;
   private static final int MAX_ROOTS_PER_BATCHED_PACKAGE = 1024;
@@ -151,14 +154,7 @@ public final class TransitiveHashes {
             ? evaluateRootPackages(rootSet, evaluator)
             : Map.of();
     while (!frontier.isEmpty()) {
-      ImmutableSet.Builder<SkyKey> keyBuilder =
-          ImmutableSet.builderWithExpectedSize(frontier.size());
-      for (State<Label> state : frontier) {
-        if (getPackageHash(packageHashes, state.key) == null) {
-          keyBuilder.add(DirectTargetHashFunction.key(state.key));
-        }
-      }
-      ImmutableSet<SkyKey> keys = keyBuilder.build();
+      ImmutableSet<SkyKey> keys = buildFrontierKeys(frontier, packageHashes);
       var result =
           keys.isEmpty() ? EvaluationResult.<SkyValue>builder().build() : evaluator.evaluate(keys);
       List<State<Label>> next = new ArrayList<>();
@@ -250,6 +246,32 @@ public final class TransitiveHashes {
             TimeUnit.NANOSECONDS.toMillis(combineStart - discoveryStart),
             TimeUnit.NANOSECONDS.toMillis(assembleStart - combineStart),
             TimeUnit.NANOSECONDS.toMillis(end - assembleStart)));
+  }
+
+  private static ImmutableSet<SkyKey> buildFrontierKeys(
+      List<State<Label>> frontier,
+      Map<PackageIdentifier, DirectTargetHashFunction.PackageHashes> packages)
+      throws InterruptedException {
+    if (packages.isEmpty()
+        && frontier.size() >= MIN_PARALLEL_FRONTIER_KEYS
+        && ForkJoinPool.getCommonPoolParallelism() > 1) {
+      if (Thread.interrupted()) {
+        throw new InterruptedException();
+      }
+      SkyKey[] keys = new SkyKey[frontier.size()];
+      Arrays.parallelSetAll(keys, index -> DirectTargetHashFunction.key(frontier.get(index).key));
+      if (Thread.interrupted()) {
+        throw new InterruptedException();
+      }
+      return ImmutableSet.<SkyKey>builderWithExpectedSize(keys.length).add(keys).build();
+    }
+    ImmutableSet.Builder<SkyKey> keys = ImmutableSet.builderWithExpectedSize(frontier.size());
+    for (State<Label> state : frontier) {
+      if (getPackageHash(packages, state.key) == null) {
+        keys.add(DirectTargetHashFunction.key(state.key));
+      }
+    }
+    return keys.build();
   }
 
   private static Map<PackageIdentifier, DirectTargetHashFunction.PackageHashes>
