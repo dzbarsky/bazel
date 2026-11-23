@@ -810,7 +810,13 @@ public final class UnixGlob {
 
       // ** is special: it can match nothing at all.
       // For example, x/** matches x, **/y matches y, and x/**/y matches x/y.
-      if (isRecursivePattern(pattern)) {
+      boolean recursive = isRecursivePattern(pattern);
+      boolean inlineSuffix =
+          recursive
+              && idx == 0
+              && context.patternParts.length == 2
+              && !isRecursivePattern(context.patternParts[1]);
+      if (recursive && !inlineSuffix) {
         context.queueGlob(base, baseIsDir, idx + 1);
       }
 
@@ -842,6 +848,11 @@ public final class UnixGlob {
             processFileOrDirectory(child, childType == Dirent.Type.DIRECTORY, idx, context);
           }
         }
+      }
+
+      // Queue the descendants first, then match the suffix using this directory's task.
+      if (inlineSuffix) {
+        reallyGlob(base, baseIsDir, idx + 1, context);
       }
     }
 
