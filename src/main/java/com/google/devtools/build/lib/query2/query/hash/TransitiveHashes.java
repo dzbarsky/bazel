@@ -225,11 +225,10 @@ public final class TransitiveHashes {
     long assembleStart = System.nanoTime();
     ImmutableMap.Builder<Label, ByteString> rootHashes =
         ImmutableMap.builderWithExpectedSize(roots.size());
-    for (Label root : rootSet) {
-      State<Label> state = graph.get(root);
+    for (State<Label> state : initial) {
       if (state.hash != null) {
         // The completed digest owns its backing array.
-        rootHashes.put(root, UnsafeByteOperations.unsafeWrap(state.hash));
+        rootHashes.put(state.key, UnsafeByteOperations.unsafeWrap(state.hash));
       } else if (failureImpact != null) {
         failureImpact.record(state.failures);
       }
