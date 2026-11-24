@@ -51,7 +51,7 @@ public final class RegexUtil {
       // engine's optimization pass exploited below - it only applies when the first node is a
       // literal, not a group.
       // Unmatched \Q...\E sequences can have the same effect.
-      return s -> regexPattern.matcher(internalToUnicode(s)).matches();
+      return asMatchingPredicate(regexPattern);
     }
     // If the pattern matches a literal string, optimize to an equals call.
     if (LITERAL_PATTERN_WITH_DOT_UNESCAPED.matcher(pattern).matches()) {
@@ -63,7 +63,7 @@ public final class RegexUtil {
     // determine if a ".*" suffix is safe to drop due to backslash escapes.
     Matcher suffixMatch = EXTRACT_SUFFIX_MATCH.matcher(pattern);
     if (!suffixMatch.matches()) {
-      return s -> regexPattern.matcher(internalToUnicode(s)).matches();
+      return asMatchingPredicate(regexPattern);
     }
     String suffixPattern = suffixMatch.group("suffix");
     // A null suffixPattern implies the regex is equivalent to ".*", which matches any input string.
@@ -91,10 +91,16 @@ public final class RegexUtil {
     // that benefit from the Boyer-Moore optimization in the Java regex engine.
     // https://github.com/openjdk/jdk/blob/50dced88ff1aed23bb4c8fe9e4a08e6cc200b897/src/java.base/share/classes/java/util/regex/Pattern.java#L1959-L1969
     if (MAY_ENABLE_COMMENTS.matcher(suffixPattern).find()) {
-      return s -> regexPattern.matcher(internalToUnicode(s)).matches();
+      return asMatchingPredicate(regexPattern);
     }
-    Pattern compiled = Pattern.compile(suffixPattern + "\\z", Pattern.DOTALL);
-    return s -> compiled.matcher(internalToUnicode(s)).find();
+    ReggiePattern compiled =
+        ReggiePattern.compile(Pattern.compile(suffixPattern + "\\z", Pattern.DOTALL));
+    return s -> compiled.find(internalToUnicode(s));
+  }
+
+  private static Predicate<String> asMatchingPredicate(Pattern pattern) {
+    ReggiePattern compiled = ReggiePattern.compile(pattern);
+    return s -> compiled.matches(internalToUnicode(s));
   }
 
   private RegexUtil() {}

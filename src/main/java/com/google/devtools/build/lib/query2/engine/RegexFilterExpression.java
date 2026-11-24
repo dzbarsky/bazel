@@ -23,9 +23,9 @@ import com.google.devtools.build.lib.query2.engine.QueryEnvironment.Argument;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.FilteringQueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryTaskFuture;
 import com.google.devtools.build.lib.server.FailureDetails.Query;
+import com.google.devtools.build.lib.util.regex.ReggiePattern;
 import java.util.Iterator;
 import java.util.List;
-import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import javax.annotation.Nullable;
 
@@ -48,9 +48,9 @@ public abstract class RegexFilterExpression extends FilteringQueryFunction {
       final List<Argument> args,
       Callback<T> callback) {
     String rawPattern = getPattern(args);
-    final Pattern compiledPattern;
+    final ReggiePattern compiledPattern;
     try {
-      compiledPattern = Pattern.compile(internalToUnicode(rawPattern));
+      compiledPattern = ReggiePattern.compile(internalToUnicode(rawPattern));
     } catch (PatternSyntaxException e) {
       return env.immediateFailedFuture(
           new QueryException(
@@ -66,7 +66,7 @@ public abstract class RegexFilterExpression extends FilteringQueryFunction {
     final Predicate<T> matchFilter =
         target -> {
           for (String str : getFilterStrings(env, args, target)) {
-            if ((str != null) && compiledPattern.matcher(internalToUnicode(str)).find()) {
+            if ((str != null) && compiledPattern.find(internalToUnicode(str))) {
               return !invert;
             }
           }

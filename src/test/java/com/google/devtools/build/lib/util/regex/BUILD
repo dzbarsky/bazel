@@ -33,6 +33,7 @@ java_binary(
     main_class = "org.openjdk.jmh.Main",
     deps = [
         "//src/main/java/com/google/devtools/build/lib/util/regex:regex_util",
+        "//src/main/java/com/google/devtools/build/lib/util/regex:reggie_pattern",
         "//third_party:jmh",
     ],
 )
@@ -57,5 +58,16 @@ java_fuzz_test(
         "//src/main/java/com/google/devtools/build/lib/util:string_encoding",
         "//src/main/java/com/google/devtools/build/lib/util/regex:regex_util",
         "//third_party:jmh",
+    ],
+)
+
+java_test(
+    name = "ReggiePatternTest",
+    srcs = ["ReggiePatternTest.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/util/regex:reggie_pattern",
+        "//third_party:junit4",
+        "//third_party:truth",
+        "@maven//:com_google_testparameterinjector_test_parameter_injector",
     ],
 )
