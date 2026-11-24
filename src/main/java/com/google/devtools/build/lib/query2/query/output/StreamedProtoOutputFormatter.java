@@ -15,7 +15,6 @@ package com.google.devtools.build.lib.query2.query.output;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Iterables;
-import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ExecutorUtil;
 import com.google.devtools.build.lib.concurrent.MoreFutures;
 import com.google.devtools.build.lib.packages.LabelPrinter;
@@ -30,7 +29,6 @@ import java.io.OutputStream;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -64,7 +62,7 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
   public void writeHashedTargets(
       Iterable<Target> targets,
       LabelPrinter labelPrinter,
-      Map<Label, ByteString> hashes,
+      List<ByteString> hashes,
       OutputStream out)
       throws IOException, InterruptedException {
     // Rule-class definitions must appear on the first target of each class in stream order.
@@ -74,22 +72,23 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
       return;
     }
     CodedOutputStream codedOut = CodedOutputStream.newInstance(out);
+    int index = 0;
     for (Target target : targets) {
       if (Thread.interrupted()) {
         throw new InterruptedException();
       }
       codedOut.writeMessageNoTag(
-          toTargetWithHash(target, labelPrinter, hashes.get(target.getLabel())));
+          toTargetWithHash(target, labelPrinter, hashes.get(index++)));
     }
     codedOut.flush();
   }
 
   private Build.Target toTargetWithHash(
-      Target target, LabelPrinter labelPrinter, @Nullable ByteString digest)
+      Target target, LabelPrinter labelPrinter, ByteString digest)
       throws InterruptedException {
     Build.Target.Builder record =
         toTargetProtoBuilder(target, labelPrinter, /* extraDataForAttrHash= */ "");
-    if (digest != null) {
+    if (!digest.isEmpty()) {
       record.setTransitiveHash(digest);
     }
     return record.build();
@@ -124,14 +123,14 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
   private final class ParallelCallback extends OutputFormatterCallback<Target> {
     private final OutputStream out;
     private final LabelPrinter labelPrinter;
-    @Nullable private final Map<Label, ByteString> hashes;
+    @Nullable private final List<ByteString> hashes;
     private final ExecutorService executor;
     private final int maxPendingChunks;
 
     private ParallelCallback(
         OutputStream out,
         LabelPrinter labelPrinter,
-        @Nullable Map<Label, ByteString> hashes,
+        @Nullable List<ByteString> hashes,
         int parallelism) {
       this.out = out;
       this.labelPrinter = labelPrinter;
@@ -147,11 +146,14 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
       // later chunks finish first. The bounded deque also stops consuming input when output lags.
       Deque<Future<byte[]>> pendingChunks = new ArrayDeque<>();
       try {
+        int offset = 0;
         for (List<Target> targets : Iterables.partition(partialResult, TARGETS_PER_CHUNK)) {
           if (pendingChunks.size() == maxPendingChunks) {
             writeChunk(pendingChunks.removeFirst());
           }
-          pendingChunks.addLast(executor.submit(() -> serializeChunk(targets)));
+          int start = offset;
+          pendingChunks.addLast(executor.submit(() -> serializeChunk(targets, start)));
+          offset += targets.size();
         }
         while (!pendingChunks.isEmpty()) {
           writeChunk(pendingChunks.removeFirst());
@@ -161,7 +163,8 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
       }
     }
 
-    private byte[] serializeChunk(List<Target> targets) throws IOException, InterruptedException {
+    private byte[] serializeChunk(List<Target> targets, int index)
+        throws IOException, InterruptedException {
       // Serialization is part of the measured bottleneck, and bytes retain less live object graph
       // than completed Build.Target protos while they wait for ordered output. Target proto sizes
       // vary substantially, so a workload-specific initial capacity could overallocate heavily.
@@ -174,7 +177,7 @@ public class StreamedProtoOutputFormatter extends ProtoOutputFormatter
         codedOut.writeMessageNoTag(
             hashes == null
                 ? toTargetProtoBuffer(target, labelPrinter)
-                : toTargetWithHash(target, labelPrinter, hashes.get(target.getLabel())));
+                : toTargetWithHash(target, labelPrinter, hashes.get(index++)));
       }
       codedOut.flush();
       return bytes.toByteArray();

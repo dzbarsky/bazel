@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.query2.query.output;
 
-import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.query2.engine.OutputFormatterCallback;
@@ -23,8 +22,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
-import java.util.Map;
-import javax.annotation.Nullable;
+import java.util.List;
 
 /**
  * An output formatter that prints a list of targets according to ndjson spec to the output print
@@ -54,20 +52,21 @@ public class StreamedJSONProtoOutputFormatter extends ProtoOutputFormatter
   public void writeHashedTargets(
       Iterable<Target> targets,
       LabelPrinter labelPrinter,
-      Map<Label, ByteString> hashes,
+      List<ByteString> hashes,
       OutputStream out)
       throws IOException, InterruptedException {
+    int index = 0;
     for (Target target : targets) {
-      writeHashedTarget(target, labelPrinter, hashes.get(target.getLabel()), out);
+      writeHashedTarget(target, labelPrinter, hashes.get(index++), out);
     }
   }
 
   private void writeHashedTarget(
-      Target target, LabelPrinter labelPrinter, @Nullable ByteString digest, OutputStream out)
+      Target target, LabelPrinter labelPrinter, ByteString digest, OutputStream out)
       throws IOException, InterruptedException {
     // Hashes contain only hex digits. Target labels and attributes use the normal JSON printer.
     String hash =
-        digest == null ? "null" : "\"" + HEX_FORMAT.formatHex(digest.toByteArray()) + "\"";
+        digest.isEmpty() ? "null" : "\"" + HEX_FORMAT.formatHex(digest.toByteArray()) + "\"";
     out.write(("{\"hash\":" + hash + ",\"target\":").getBytes(StandardCharsets.UTF_8));
     writeTargetJson(target, labelPrinter, out);
     out.write('}');

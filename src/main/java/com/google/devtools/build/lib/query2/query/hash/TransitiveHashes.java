@@ -29,6 +29,7 @@ import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.UnsafeByteOperations;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -72,14 +73,16 @@ public final class TransitiveHashes {
   /**
    * The hashes of the requested targets, and the errors that make hashes missing or unreliable.
    *
-   * @param hashes the hashes of the requested targets that could be hashed
+   * @param hashes digests in first-seen root order, with an empty digest for unknowns
+   * @param knownHashCount the number of roots that received a digest
    * @param errors errors of requested targets that could not be hashed, and of their transitive
    *     dependencies whose hashes may be wrong. A dependency that does not exist is not an error:
    *     it is hashed as missing, so creating it changes the hashes of its dependents.
    * @param timing elapsed time for the computation phases
    */
   public record Result(
-      ImmutableMap<Label, ByteString> hashes,
+      ImmutableList<ByteString> hashes,
+      int knownHashCount,
       ImmutableMap<Label, ErrorInfo> errors,
       ImmutableMap<String, FailureImpact> failureImpact,
       int unlistedFailureImpact,
@@ -222,17 +225,21 @@ public final class TransitiveHashes {
     combineStates(
         graph.values(), edges, Comparator.naturalOrder(), Label::getUnambiguousCanonicalForm);
     long assembleStart = System.nanoTime();
-    ImmutableMap.Builder<Label, ByteString> rootHashes =
-        ImmutableMap.builderWithExpectedSize(roots.size());
-    for (Label root : rootSet) {
-      State<Label> state = graph.get(root);
+    var rootHashes = ImmutableList.<ByteString>builderWithExpectedSize(initial.size());
+    int knownHashCount = 0;
+    for (State<Label> state : initial) {
       if (state.hash != null) {
-        rootHashes.put(root, ByteString.copyFrom(state.hash));
-      } else if (failureImpact != null) {
-        failureImpact.record(state.failures);
+        // The completed digest owns its backing array.
+        rootHashes.add(UnsafeByteOperations.unsafeWrap(state.hash));
+        knownHashCount++;
+      } else {
+        rootHashes.add(ByteString.EMPTY);
+        if (failureImpact != null) {
+          failureImpact.record(state.failures);
+        }
       }
     }
-    var hashes = rootHashes.buildOrThrow();
+    var hashes = rootHashes.build();
     var sortedErrors = ImmutableMap.copyOf(errors);
     ImmutableMap<String, FailureImpact> impact =
         failureImpact == null ? ImmutableMap.of() : failureImpact.build();
@@ -243,6 +250,7 @@ public final class TransitiveHashes {
     profiler.logSimpleTask(assembleStart, end, ProfilerTask.INFO, "NativeQuery.assemble");
     return new Result(
         hashes,
+        knownHashCount,
         sortedErrors,
         impact,
         unlisted,
