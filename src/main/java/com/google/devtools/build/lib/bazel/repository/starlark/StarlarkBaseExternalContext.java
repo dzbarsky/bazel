@@ -1945,7 +1945,7 @@ Strip the given number of leading components from file paths on extraction. Only
    *
    * <p>Callers must have checked recently that the given path points to a directory.
    */
-  protected void maybeWatchDirents(Path path, ShouldWatch shouldWatch)
+  protected void maybeWatchDirents(Path path, ShouldWatch shouldWatch, boolean watchTypes)
       throws EvalException, RepositoryFunctionException, InterruptedException {
     RepoCacheFriendlyPath repoCacheFriendlyPath = toRepoCacheFriendlyPath(path, shouldWatch);
     if (repoCacheFriendlyPath == null) {
@@ -1956,7 +1956,7 @@ Strip the given number of leading components from file paths on extraction. Only
       // the file. When checking for invalidation, the type is verified first and if it doesn't
       // match, the directory entries are never requested.
       getValueAndRecordInput(new RepoRecordedInput.File(repoCacheFriendlyPath));
-      getValueAndRecordInput(new RepoRecordedInput.Dirents(repoCacheFriendlyPath));
+      getValueAndRecordInput(new RepoRecordedInput.Dirents(repoCacheFriendlyPath, watchTypes));
     } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
     }

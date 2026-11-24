@@ -120,6 +120,7 @@ public abstract sealed class RepoRecordedInput {
           File.PARSER,
           File.EXECUTABLE_PARSER,
           Dirents.PARSER,
+          Dirents.TYPED_PARSER,
           DirTree.PARSER,
           EnvVar.PARSER,
           RecordedRepoMapping.PARSER,
@@ -631,28 +632,38 @@ public abstract sealed class RepoRecordedInput {
    * consumers usually have to request a {@link RepoRecordedInput.File} first.
    */
   public static final class Dirents extends RepoRecordedInput {
-    public static final Parser PARSER =
-        new Parser() {
-          @Override
-          public String getPrefix() {
-            return "DIRENTS";
-          }
+    public static final Parser PARSER = createParser(/* watchTypes= */ false);
+    private static final Parser TYPED_PARSER = createParser(/* watchTypes= */ true);
 
-          @Override
-          public RepoRecordedInput parse(String s) {
-            try {
-              return new Dirents(RepoCacheFriendlyPath.parse(s));
-            } catch (LabelSyntaxException e) {
-              // malformed inputs cause refetch
-              return NeverUpToDateRepoRecordedInput.PARSE_FAILURE;
-            }
+    private static Parser createParser(boolean watchTypes) {
+      return new Parser() {
+        @Override
+        public String getPrefix() {
+          return watchTypes ? "DIRENTS_TYPED" : "DIRENTS";
+        }
+
+        @Override
+        public RepoRecordedInput parse(String s) {
+          try {
+            return new Dirents(RepoCacheFriendlyPath.parse(s), watchTypes);
+          } catch (LabelSyntaxException e) {
+            // malformed inputs cause refetch
+            return NeverUpToDateRepoRecordedInput.PARSE_FAILURE;
           }
-        };
+        }
+      };
+    }
 
     private final RepoCacheFriendlyPath path;
+    private final boolean watchTypes;
 
     public Dirents(RepoCacheFriendlyPath path) {
+      this(path, /* watchTypes= */ false);
+    }
+
+    public Dirents(RepoCacheFriendlyPath path, boolean watchTypes) {
       this.path = path;
+      this.watchTypes = watchTypes;
     }
 
     @Override
@@ -663,12 +674,12 @@ public abstract sealed class RepoRecordedInput {
       if (!(o instanceof Dirents that)) {
         return false;
       }
-      return Objects.equals(path, that.path);
+      return watchTypes == that.watchTypes && Objects.equals(path, that.path);
     }
 
     @Override
     public int hashCode() {
-      return path.hashCode();
+      return 31 * path.hashCode() + Boolean.hashCode(watchTypes);
     }
 
     @Override
@@ -678,11 +689,17 @@ public abstract sealed class RepoRecordedInput {
 
     @Override
     public Parser getParser() {
-      return PARSER;
+      return watchTypes ? TYPED_PARSER : PARSER;
     }
 
     private String directoryListingValueToMarkerValue(DirectoryListingValue directoryListingValue) {
       var fp = new Fingerprint();
+      if (watchTypes) {
+        for (var dirent : directoryListingValue.getDirents()) {
+          fp.addString(dirent.getName()).addString(dirent.getType().name());
+        }
+        return fp.hexDigestAndReset();
+      }
       fp.addStrings(
           directoryListingValue.getDirents().stream()
               .map(Dirent::getName)
