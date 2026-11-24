@@ -1770,6 +1770,8 @@ PYTHON
 }
 
 function test_generate_hashes_excludes_only_recursive_discovery() {
+  # The integration harness links the embedded tools into this workspace.
+  printf 'tools\n' >> .bazelignore
   mkdir -p hash_scope_public hash_scope_private/{used,unused}
   cat > hash_scope_public/BUILD <<'EOF'
 filegroup(name = "kept", srcs = ["//hash_scope_private/used:dep"])
