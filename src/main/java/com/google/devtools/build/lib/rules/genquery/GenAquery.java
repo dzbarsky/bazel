@@ -62,6 +62,7 @@ import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
 import com.google.devtools.build.lib.query2.engine.QueryExpressionResolver;
 import com.google.devtools.build.lib.query2.engine.QueryParser;
+import com.google.devtools.build.lib.query2.engine.QueryParser.ParserOptions;
 import com.google.devtools.build.lib.query2.engine.QuerySyntaxException;
 import com.google.devtools.build.lib.query2.engine.QueryUtil;
 import com.google.devtools.build.lib.query2.engine.ThreadSafeOutputFormatterCallback;
@@ -145,14 +146,15 @@ public final class GenAquery
       ruleContext.attributeError("opts", "error while parsing aquery options: " + e.getMessage());
       return null;
     }
+    ParserOptions parserOptions = parser.getOptions(AqueryOptions.class).toParserOptions();
     try {
-      parse(ruleContext.attributes().get("expression", Type.STRING));
+      parse(ruleContext.attributes().get("expression", Type.STRING), parserOptions);
     } catch (QuerySyntaxException | GenAnalysisQueryFunction.QueryException e) {
       ruleContext.attributeError("expression", e.getMessage());
       return null;
     }
     return GenAnalysisQuery.create(
-        ruleContext, GenAnalysisQueryKey.Kind.AQUERY, QUERY_FUNCTIONS, parser, null);
+        ruleContext, GenAnalysisQueryKey.Kind.AQUERY, QUERY_FUNCTIONS, parser, parserOptions, null);
   }
 
   private record ActionQuery(QueryExpression targets, ImmutableList<AqueryActionFilter> filters) {
@@ -166,10 +168,11 @@ public final class GenAquery
     }
   }
 
-  private static ActionQuery parse(String expression)
+  private static ActionQuery parse(String expression, ParserOptions parserOptions)
       throws QuerySyntaxException, GenAnalysisQueryFunction.QueryException {
     QueryExpression targets =
-        QueryExpressionResolver.resolve(QueryParser.parse(expression), QUERY_FUNCTIONS);
+        QueryExpressionResolver.resolve(
+            QueryParser.parse(expression, parserOptions), QUERY_FUNCTIONS);
     var filters = ImmutableList.<AqueryActionFilter>builder();
     while (targets instanceof FunctionExpression function
         && function.getFunction() instanceof ActionFilterFunction) {
@@ -247,7 +250,7 @@ public final class GenAquery
     StoredEventHandler events = new StoredEventHandler();
     try (ScopedEnvironment query =
         new ScopedEnvironment(request, repositoryMapping, semantics, scope, options, events)) {
-      ActionQuery expression = parse(request.expression());
+      ActionQuery expression = parse(request.expression(), options.toParserOptions());
       Iterable<ConfiguredTargetValue> targets;
       if (expression.targets().isSomePathFunction()) {
         var selected = QueryUtil.newOrderedAggregateAllOutputFormatterCallback(query);

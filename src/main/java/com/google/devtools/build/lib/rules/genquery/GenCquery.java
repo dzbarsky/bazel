@@ -153,7 +153,12 @@ public final class GenCquery
     }
 
     return GenAnalysisQuery.create(
-        ruleContext, GenAnalysisQueryKey.Kind.CQUERY, QUERY_FUNCTIONS, parser, source);
+        ruleContext,
+        GenAnalysisQueryKey.Kind.CQUERY,
+        QUERY_FUNCTIONS,
+        parser,
+        parser.getOptions(CqueryOptions.class).toParserOptions(),
+        source);
   }
 
   @Override
@@ -207,7 +212,8 @@ public final class GenCquery
                   options.getOutputFormat().equals("label_kind"),
                   queryEnvironment.getLabelPrinter(),
                   ISO_8859_1);
-      QueryExpression expression = QueryExpression.parse(request.expression(), queryEnvironment);
+      QueryExpression expression =
+          QueryExpression.parse(request.expression(), queryEnvironment, options.toParserOptions());
       Iterable<CqueryNode> orderedTargets;
       if (expression.isSomePathFunction()) {
         var targets = QueryUtil.newOrderedAggregateAllOutputFormatterCallback(queryEnvironment);

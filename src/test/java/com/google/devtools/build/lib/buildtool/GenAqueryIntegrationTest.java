@@ -243,6 +243,23 @@ public final class GenAqueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
+  public void testMaxQueryExpressionDepthIncludesActionFilters() throws Exception {
+    writeActions();
+    String expression = "mnemonic('ExampleAction', inputs('.*a.h', //pkg:root))";
+    report("at_limit", expression, "output = 'proto', opts = ['--max_query_expression_depth=2']");
+    // Parsing must reject the depth before compiling the invalid mnemonic pattern.
+    report(
+        "over_limit",
+        "mnemonic('[', inputs('.*a.h', //pkg:root))",
+        "opts = ['--max_query_expression_depth=1']");
+
+    var graph = ActionGraphContainer.parseFrom(result("//reports/at_limit:q"));
+    assertThat(graph.getActionsList()).hasSize(1);
+    assertThat(graph.getActions(0).getMnemonic()).isEqualTo("ExampleAction");
+    failure("//reports/over_limit:q", "query exceeds maximum nesting depth of 1");
+  }
+
+  @Test
   public void testConfigurationAndTransitiveRuleChangesInvalidateOutput() throws Exception {
     write("pkg/value.bzl", "VALUE = 'first'");
     write(

@@ -49,6 +49,7 @@ import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
 import com.google.devtools.build.lib.query2.engine.QueryExpressionResolver;
 import com.google.devtools.build.lib.query2.engine.QueryParser;
+import com.google.devtools.build.lib.query2.engine.QueryParser.ParserOptions;
 import com.google.devtools.build.lib.query2.engine.QuerySyntaxException;
 import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
@@ -103,6 +104,7 @@ final class GenAnalysisQuery {
       GenAnalysisQueryKey.Kind kind,
       ImmutableMap<String, QueryFunction> queryFunctions,
       OptionsParser parser,
+      ParserOptions parserOptions,
       @Nullable Artifact source)
       throws InterruptedException,
           RuleConfiguredTargetFactory.RuleErrorException,
@@ -111,7 +113,7 @@ final class GenAnalysisQuery {
     var targetPatternPackages = ImmutableSet.<PackageIdentifier>builder();
     try {
       var patterns = new LinkedHashSet<String>();
-      QueryExpressionResolver.resolve(QueryParser.parse(expression), queryFunctions)
+      QueryExpressionResolver.resolve(QueryParser.parse(expression, parserOptions), queryFunctions)
           .collectTargetPatterns(patterns);
       var targetParser =
           new TargetPattern.Parser(

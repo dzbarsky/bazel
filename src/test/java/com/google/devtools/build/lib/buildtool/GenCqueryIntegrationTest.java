@@ -535,6 +535,21 @@ public final class GenCqueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
+  public void testMaxQueryExpressionDepth() throws Exception {
+    write(
+        "pkg/BUILD",
+        """
+        filegroup(name = "root")
+        gencquery(name = "at_limit", expression = "((//pkg:root))", scope = [":root"],
+                  opts = ["--max_query_expression_depth=2"], output = "starlark")
+        gencquery(name = "over_limit", expression = "((//pkg:root))", scope = [":missing"],
+                  opts = ["--max_query_expression_depth=1"])
+        """);
+    assertQueryResult("//pkg:at_limit", "@@//pkg:root");
+    assertFailure("//pkg:over_limit", "query exceeds maximum nesting depth of 1");
+  }
+
+  @Test
   public void testReverseDependenciesAreRestrictedToScope() throws Exception {
     write(
         "pkg/BUILD",
