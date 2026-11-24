@@ -109,7 +109,7 @@ public final class DirectTargetHashFunction implements SkyFunction {
   }
 
   public static Key key(Label label) {
-    return Key.create(label);
+    return new Key(label);
   }
 
   static SkyKey packageKey(PackageIdentifier packageId) {
@@ -171,24 +171,13 @@ public final class DirectTargetHashFunction implements SkyFunction {
 
   /** Key for {@link DirectTargetHashFunction}. */
   public static final class Key extends AbstractSkyKey.WithCachedHashCode<Label> {
-    private static final SkyKeyInterner<Key> interner = SkyKey.newInterner();
-
     private Key(Label arg) {
       super(arg);
-    }
-
-    private static Key create(Label arg) {
-      return interner.intern(new Key(arg));
     }
 
     @Override
     public SkyFunctionName functionName() {
       return NAME;
-    }
-
-    @Override
-    public SkyKeyInterner<Key> getSkyKeyInterner() {
-      return interner;
     }
   }
 
