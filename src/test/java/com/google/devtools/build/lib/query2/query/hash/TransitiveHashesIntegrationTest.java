@@ -175,7 +175,9 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
                     'my_toolchain(name = "impl", src = "a.txt", visibility = ["//visibility:public"])',
                 ]),
             )
-            rctx.file("a.txt", rctx.attr.content)
+            patch = rctx.read(rctx.attr.patch, watch = "yes")
+            template = rctx.read(rctx.attr.template, watch = "yes")
+            rctx.file("a.txt", rctx.attr.content + patch + template)
             rctx.file("b.txt", "b")
             rctx.watch(rctx.attr.linked)
             rctx.symlink(rctx.attr.linked, "linked.txt")
@@ -301,7 +303,7 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   }
 
   @Test
-  public void configuredDirectDigestMatchesQueryWithoutItsDependencyList() throws Exception {
+  public void configuredDirectDigestOmitsQueryDependencies() throws Exception {
     var context =
         EvaluationContext.newBuilder().setParallelism(1).setEventHandler(reporter).build();
     for (String name : ImmutableList.of("//app:lib", "//tc:tc_ext", "//tc:a.txt")) {
@@ -313,7 +315,12 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
           getSkyframeExecutor().prepareAndGet(ImmutableSet.of(queryKey, configuredKey), context);
       var query = (DirectTargetHashFunction.Value) result.get(queryKey);
       var configured = (DirectTargetHashFunction.Value) result.get(configuredKey);
-      assertThat(configured.getDirectHash()).isEqualTo(query.getDirectHash());
+      if (name.equals("//tc:tc_ext")) {
+        // Configured hashes include the external implementation's repository definition.
+        assertThat(configured.getDirectHash()).isNotEqualTo(query.getDirectHash());
+      } else {
+        assertThat(configured.getDirectHash()).isEqualTo(query.getDirectHash());
+      }
       assertThat(configured.getDeps()).isEmpty();
     }
   }
@@ -352,12 +359,11 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
   }
 
   @Test
-  public void externalToolchainImplementation_isHashedByRepoDefinitionWithoutFetchingIt()
+  public void externalToolchainImplementation_isTraversedForQueryHashes()
       throws Exception {
     ImmutableMap<Label, String> before = hashes();
 
-    // @ext//:impl implements //tc:tc_ext. Its repo's definition counts, so a change reaches the
-    // targets that use the toolchain type.
+    // A change to @ext//:impl's source reaches the targets that use its toolchain type.
     writeModuleFile(/* content= */ "changed", /* unused= */ "1");
 
     assertThat(changed(before, hashes())).containsExactly("//app:gen", "//app:lib");
@@ -367,35 +373,30 @@ public final class TransitiveHashesIntegrationTest extends BuildViewTestCase {
     var value =
         (DirectTargetHashFunction.Value)
             getSkyframeExecutor().prepareAndGet(ImmutableSet.of(key), context).get(key);
-    assertThat(value.getDeps().stream().filter(dep -> !dep.getRepository().isMain())).isEmpty();
-    var userKey = DirectTargetHashFunction.key(Label.parseCanonical("//ext_user:uses_ext"));
-    var user =
-        (DirectTargetHashFunction.Value)
-            getSkyframeExecutor().prepareAndGet(ImmutableSet.of(userKey), context).get(userKey);
-    var extDirectory =
-        RepositoryDirectoryValue.key(Iterables.getOnlyElement(user.getDeps()).getRepository());
-    assertThat(getSkyframeExecutor().getEvaluator().getExistingValue(extDirectory)).isNull();
-    // A target in a package of @ext does need it fetched, which shows that the key is right.
-    var unused = extHashes();
+    var implementation =
+        Iterables.getOnlyElement(
+            value.getDeps().stream().filter(dep -> !dep.getRepository().isMain()).toList());
+    assertThat(implementation.getName()).isEqualTo("impl");
+    var extDirectory = RepositoryDirectoryValue.key(implementation.getRepository());
     assertThat(getSkyframeExecutor().getEvaluator().getExistingValue(extDirectory)).isNotNull();
   }
 
   @Test
-  public void externalToolchainImplementation_isHashedByFilesItsRepoDefinitionPointsTo()
+  public void externalToolchainImplementation_tracksEditedRepoRuleInput()
       throws Exception {
     ImmutableMap<Label, String> before = hashes();
 
-    // The definition of @ext points to //tc:patch.txt, like a patch applied to a toolchain repo.
+    // The repo rule reads //tc:patch.txt through an explicitly set attribute.
     assertThat(changed(before, hashesAfterEdit("tc/patch.txt", "changed patch")))
         .containsExactly("//app:gen", "//app:lib");
   }
 
   @Test
-  public void externalToolchainImplementation_isHashedByFilesItsRepoRuleDefaultsPointTo()
+  public void externalToolchainImplementation_tracksEditedRepoRuleDefaultInput()
       throws Exception {
     ImmutableMap<Label, String> before = hashes();
 
-    // The default value of a label attribute of @ext's repo rule points to //tc:template.txt.
+    // The repo rule reads //tc:template.txt through a default attribute value.
     assertThat(changed(before, hashesAfterEdit("tc/template.txt", "changed template")))
         .containsExactly("//app:gen", "//app:lib");
   }
