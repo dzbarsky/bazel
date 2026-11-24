@@ -132,6 +132,57 @@ class BazelLockfileTest(test_base.TestBase):
     }
     self.assertEqual(dirtied.get('SINGLE_EXTENSION_EVAL', 0), 1)
 
+  def testWorkspaceLockfileFactsChangePrunesUnrelatedEvaluations(self):
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'bazel_dep(name = "aaa", version = "1.0")',
+            'alpha = use_extension(":extension.bzl", "alpha")',
+            'use_repo(alpha, alpha = "repo")',
+            'beta = use_extension(":extension.bzl", "beta")',
+            'use_repo(beta, beta = "repo")',
+        ],
+    )
+    self.ScratchFile(
+        'extension.bzl',
+        [
+            'def _repo_impl(ctx):',
+            '    ctx.file("value", "")',
+            "    ctx.file('BUILD.bazel', 'exports_files([\"value\"])')",
+            '_repo = repository_rule(implementation = _repo_impl)',
+            'def _extension_impl(ctx):',
+            '    _repo(name = "repo")',
+            '    return ctx.extension_metadata(facts = {"checksum": "before"})',
+            'alpha = module_extension(implementation = _extension_impl)',
+            'beta = module_extension(implementation = _extension_impl)',
+        ],
+    )
+    self.ScratchFile(
+        'BUILD',
+        ['filegroup(name = "both", srcs = ["@alpha//:value", "@beta//:value"])'],
+    )
+    self.RunBazel(['build', '--nobuild', '//:both'])
+    args = ['build', '--nobuild', '--lockfile_mode=error', '//:both']
+    self.RunBazel(args)
+
+    lockfile_path = pathlib.Path(self.Path('MODULE.bazel.lock'))
+    lockfile = json.loads(lockfile_path.read_text(encoding='utf-8'))
+    lockfile['facts']['//:extension.bzl%alpha']['checksum'] = 'after'
+    lockfile_path.write_text(json.dumps(lockfile), encoding='utf-8')
+
+    self.RunBazel(args + ['--build_event_json_file=events.json'])
+    with open(self.Path('events.json')) as stream:
+      events = (json.loads(line) for line in stream)
+      metrics = next(
+          event['buildMetrics'] for event in events if 'buildMetrics' in event
+      )
+    evaluated = {
+        entry['skyfunctionName']: int(entry.get('count', 0))
+        for entry in metrics['buildGraphMetrics'].get('evaluatedValues', [])
+    }
+    self.assertEqual(evaluated.get('SINGLE_EXTENSION_EVAL', 0), 1)
+    self.assertEqual(evaluated.get('REGISTRY', 0), 0)
+
   def testInvalidLockfile(self):
     self.ScratchFile('BUILD', ['filegroup(name = "hello")'])
     self.RunBazel(['build', '//:all'])

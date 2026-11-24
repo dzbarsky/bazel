@@ -182,13 +182,14 @@ public class SingleExtensionEvalFunction implements SkyFunction {
     // Store workspace lockfile facts separately for validation in ERROR mode
     Facts workspaceLockfileFacts = Facts.EMPTY;
     if (!lockfileMode.equals(LockfileMode.OFF) && !extensionId.isInnate()) {
+      var workspaceKey =
+          new BazelLockFileFunction.WorkspaceExtensionKey(extensionId, extension.getEvalFactors());
       var hiddenKey = BazelLockFileValue.hiddenKey(extensionId);
-      var lockfiles =
-          env.getValuesAndExceptions(ImmutableList.of(BazelLockFileValue.KEY, hiddenKey));
-      BazelLockFileValue workspaceLockfile =
-          (BazelLockFileValue) lockfiles.get(BazelLockFileValue.KEY);
+      var lockfiles = env.getValuesAndExceptions(ImmutableList.of(workspaceKey, hiddenKey));
+      var workspaceEntry =
+          (BazelLockFileFunction.WorkspaceExtensionEntry) lockfiles.get(workspaceKey);
       BazelLockFileValue hiddenLockfile = (BazelLockFileValue) lockfiles.get(hiddenKey);
-      if (workspaceLockfile == null || hiddenLockfile == null) {
+      if (workspaceEntry == null || hiddenLockfile == null) {
         return null;
       }
       // The facts recorded by the most recent actual evaluation of the extension, if there is
@@ -204,21 +205,17 @@ public class SingleExtensionEvalFunction implements SkyFunction {
       // Prefer the workspace lockfile facts when present, falling back to the hidden lockfile.
       // In both cases, facts whose stored factsVersion differs from the current extension's
       // facts_version are discarded: the extension's schema may have changed.
-      if (workspaceLockfile.getFacts().containsKey(extensionId)) {
-        int workspaceFactsVersion =
-            workspaceLockfile.getFactsVersions().getOrDefault(extensionId, 0);
-        if (workspaceFactsVersion == currentFactsVersion) {
-          workspaceLockfileFacts = workspaceLockfile.getFacts().get(extensionId);
+      if (workspaceEntry.facts() != null) {
+        if (workspaceEntry.factsVersion() == currentFactsVersion) {
+          workspaceLockfileFacts = workspaceEntry.facts();
           lockfileFacts = workspaceLockfileFacts;
         }
       } else if (hiddenLockfileFacts != null) {
         lockfileFacts = hiddenLockfileFacts;
       }
-      var lockedExtensionMap = workspaceLockfile.getModuleExtensions().get(extensionId);
-      var lockedExtension =
-          lockedExtensionMap == null ? null : lockedExtensionMap.get(extension.getEvalFactors());
+      var lockedExtension = workspaceEntry.extension();
       if (lockedExtension == null) {
-        lockedExtensionMap = hiddenLockfile.getModuleExtensions().get(extensionId);
+        var lockedExtensionMap = hiddenLockfile.getModuleExtensions().get(extensionId);
         lockedExtension =
             lockedExtensionMap == null ? null : lockedExtensionMap.get(extension.getEvalFactors());
       }

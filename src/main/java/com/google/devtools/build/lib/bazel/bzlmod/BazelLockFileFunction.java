@@ -19,10 +19,12 @@ import static com.google.devtools.build.lib.util.StringEncoding.unicodeToInterna
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.hash.Hashing;
 import com.google.common.io.CharStreams;
 import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.LockfileMode;
+import com.google.devtools.build.lib.bazel.repository.downloader.Checksum;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
@@ -36,6 +38,7 @@ import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
+import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.gson.JsonIOException;
@@ -46,6 +49,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.StringReader;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
@@ -84,10 +88,55 @@ public class BazelLockFileFunction implements SkyFunction {
         .getRelative(name + ".json");
   }
 
+  // Keep the complete read for lockfile validation, but only invalidate each consumer when
+  // its own inputs change.
+  record WorkspaceExtensionKey(ModuleExtensionId extensionId, ModuleExtensionEvalFactors factors)
+      implements SkyKey {
+    @Override
+    public SkyFunctionName functionName() {
+      return BazelLockFileValue.KEY.functionName();
+    }
+  }
+
+  record WorkspaceExtensionEntry(
+      @Nullable LockFileModuleExtension extension, @Nullable Facts facts, int factsVersion)
+      implements SkyValue {}
+
+  enum RegistryInputsKey implements SkyKey {
+    INSTANCE;
+
+    @Override
+    public SkyFunctionName functionName() {
+      return BazelLockFileValue.KEY.functionName();
+    }
+  }
+
+  record RegistryInputs(
+      ImmutableMap<String, Optional<Checksum>> fileHashes,
+      ImmutableMap<ModuleKey, String> selectedYankedVersions) implements SkyValue {}
+
   @Override
   @Nullable
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws BazelLockfileFunctionException, InterruptedException {
+    if (skyKey instanceof WorkspaceExtensionKey key) {
+      var lockfile = (BazelLockFileValue) env.getValue(BazelLockFileValue.KEY);
+      if (lockfile == null) {
+        return null;
+      }
+      var records = lockfile.getModuleExtensions().get(key.extensionId());
+      var facts = lockfile.getFacts().get(key.extensionId());
+      return new WorkspaceExtensionEntry(
+          records == null ? null : records.get(key.factors()),
+          facts,
+          facts == null ? 0 : lockfile.getFactsVersions().getOrDefault(key.extensionId(), 0));
+    }
+    if (skyKey == RegistryInputsKey.INSTANCE) {
+      var lockfile = (BazelLockFileValue) env.getValue(BazelLockFileValue.KEY);
+      return lockfile == null
+          ? null
+          : new RegistryInputs(lockfile.getRegistryFileHashes(), lockfile.getSelectedYankedVersions());
+    }
     if (LOCKFILE_MODE.get(env) == LockfileMode.OFF) {
       return BazelLockFileValue.EMPTY_LOCKFILE;
     }
