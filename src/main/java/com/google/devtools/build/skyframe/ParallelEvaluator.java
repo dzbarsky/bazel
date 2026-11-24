@@ -45,7 +45,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ForkJoinPool;
 import java.util.function.Predicate;
+import java.util.stream.IntStream;
 import javax.annotation.Nullable;
 
 /**
@@ -61,6 +63,8 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
   private static final int MAX_CYCLE_ROOTS_TO_LOG = 100;
+  private static final int ORDERED_RESULT_CHUNK_SIZE = 32_768;
+  private static final int MIN_PARALLEL_ORDERED_RESULT_SIZE = 524_288;
 
   private final UnnecessaryTemporaryStateDropperReceiver unnecessaryTemporaryStateDropperReceiver;
 
@@ -661,12 +665,24 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
   private <T extends SkyValue> EvaluationResult<T> tryOrderedResult(
       ImmutableSet<SkyKey> keys) throws InterruptedException {
     SkyValue[] values = new SkyValue[keys.size()];
+    // This entry point runs after evaluation and the progress callbacks are quiescent. Only
+    // prefetch for the plain in-memory graph. Alternate graphs can override lookup behavior.
+    boolean prefetched =
+        keys.size() >= MIN_PARALLEL_ORDERED_RESULT_SIZE
+            && graph.getClass() == InMemoryGraphImpl.class
+            && ForkJoinPool.getCommonPoolParallelism() > 1;
+    if (prefetched && !prefetchOrderedResults((InMemoryGraphImpl) graph, keys.asList(), values)) {
+      return null;
+    }
     Map<SkyKey, ErrorInfo> errors = new HashMap<>();
     Exception catastrophe = null;
     int position = 0;
     for (SkyKey key : keys) {
       SkyValue metadata =
-          maybeGetValueFromError(key, graph.get(null, Reason.PRE_OR_POST_EVALUATION, key), null);
+          prefetched
+              ? values[position]
+              : maybeGetValueFromError(
+                  key, graph.get(null, Reason.PRE_OR_POST_EVALUATION, key), null);
       if (metadata == null) {
         // A callback may have removed a key. Defer to normal cycle/error handling.
         return null;
@@ -675,6 +691,7 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
       ErrorInfo error = ValueWithMetadata.getMaybeErrorInfo(metadata);
       Preconditions.checkState(value != null || error != null, key);
       if (value == null || (error != null && !evaluatorContext.keepGoing(key))) {
+        values[position] = null;
         errors.put(key, error);
         if (error.isCatastrophic()) {
           catastrophe = error.getException();
@@ -685,6 +702,39 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
       position++;
     }
     return EvaluationResult.ordered(keys, values, errors, catastrophe);
+  }
+
+  private static boolean prefetchOrderedResults(
+      InMemoryGraphImpl graph, ImmutableList<SkyKey> keys, SkyValue[] values)
+      throws InterruptedException {
+    if (Thread.interrupted()) {
+      throw new InterruptedException();
+    }
+    int chunks = (keys.size() - 1) / ORDERED_RESULT_CHUNK_SIZE + 1;
+    boolean complete =
+        IntStream.range(0, chunks)
+            .parallel()
+            .allMatch(
+                chunk -> {
+                  int start = chunk * ORDERED_RESULT_CHUNK_SIZE;
+                  int end = start + Math.min(ORDERED_RESULT_CHUNK_SIZE, keys.size() - start);
+                  for (int i = start; i < end; i++) {
+                    InMemoryNodeEntry entry = graph.getIfPresent(keys.get(i));
+                    if (!isDoneForBuild(entry)) {
+                      return false;
+                    }
+                    SkyValue metadata = entry.getValueMaybeWithMetadata();
+                    if (metadata == null) {
+                      return false;
+                    }
+                    values[i] = metadata;
+                  }
+                  return true;
+                });
+    if (Thread.interrupted()) {
+      throw new InterruptedException();
+    }
+    return complete;
   }
 
   /**
