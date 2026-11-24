@@ -63,6 +63,7 @@ import com.google.devtools.build.lib.buildtool.buildevent.ExecutionStartingEvent
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.clock.BlazeClock.NanosToMillisSinceEpochConverter;
 import com.google.devtools.build.lib.dynamic.DynamicExecutionFinishedEvent;
+import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.metrics.MetricsModule.Options;
 import com.google.devtools.build.lib.metrics.PostGCMemoryUseRecorder.PeakHeap;
 import com.google.devtools.build.lib.packages.StarlarkProvider;
@@ -73,11 +74,13 @@ import com.google.devtools.build.lib.packages.metrics.PackageMetricsRecorder;
 import com.google.devtools.build.lib.profiler.MemoryProfiler;
 import com.google.devtools.build.lib.profiler.NetworkMetricsCollector;
 import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.query2.query.output.QueryOptions;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.LocationPrinter;
 import com.google.devtools.build.lib.runtime.SpawnStats;
 import com.google.devtools.build.lib.skyframe.BuildResultListener;
 import com.google.devtools.build.lib.skyframe.ExecutionFinishedEvent;
+import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.SkyframeStats;
 import com.google.devtools.build.lib.skyframe.TopLevelStatusEvents.SomeExecutionStartedEvent;
 import com.google.devtools.build.lib.skyframe.TopLevelStatusEvents.TopLevelTargetPendingExecutionEvent;
@@ -113,9 +116,20 @@ import java.util.stream.Stream;
 
 class MetricsCollector {
 
+  private static final ImmutableList<SkyFunctionName> QUERY_WORK_FUNCTIONS =
+      ImmutableList.of(
+          SkyFunctions.PACKAGE,
+          SkyFunctions.BZL_LOAD,
+          SkyFunctions.GLOB,
+          SkyFunctions.GLOBS,
+          SkyFunctions.REPOSITORY_DIRECTORY,
+          SkyFunctions.REPO_SPEC,
+          SkyFunctions.SINGLE_EXTENSION_EVAL);
+
   private final CommandEnvironment env;
   private final boolean recordMetricsForAllMnemonics;
   private final boolean recordSkyframeMetrics;
+  private final boolean logQuerySkyframeCounts;
   // For ActionSummary.
   private final ConcurrentHashMap<String, ActionStats> actionStatsMap = new ConcurrentHashMap<>();
 
@@ -150,6 +164,11 @@ class MetricsCollector {
     this.recordMetricsForAllMnemonics =
         options != null && options.getRecordMetricsForAllMnemonics();
     this.recordSkyframeMetrics = options != null && options.getRecordSkyframeMetrics();
+    QueryOptions queryOptions = env.getOptions().getOptions(QueryOptions.class);
+    this.logQuerySkyframeCounts =
+        queryOptions != null
+            && queryOptions.getGenerateHashes()
+            && queryOptions.getLogQuerySkyframeCounts();
     this.numAnalyses = numAnalyses;
     this.numBuilds = numBuilds;
     this.instanceId = env.getRuntime().getInstanceId().toString();
@@ -329,6 +348,21 @@ class MetricsCollector {
     buildGraphMetrics.addAllCleanedValues(toEvaluationStats(evaluationStats.cleaned()));
     buildGraphMetrics.addAllEvaluatedValues(toEvaluationStats(evaluationStats.evaluated()));
     buildGraphMetrics.setPostInvocationSkyframeNodeCount(event.getGraphSize());
+    if (logQuerySkyframeCounts) {
+      StringBuilder counts = new StringBuilder("Query Skyframe work (evaluated/built/cleaned):");
+      for (SkyFunctionName function : QUERY_WORK_FUNCTIONS) {
+        counts
+            .append(' ')
+            .append(function.getName())
+            .append('=')
+            .append(evaluationStats.evaluated().getOrDefault(function, 0))
+            .append('/')
+            .append(evaluationStats.built().getOrDefault(function, 0))
+            .append('/')
+            .append(evaluationStats.cleaned().getOrDefault(function, 0));
+      }
+      env.getReporter().handle(Event.info(counts.toString()));
+    }
   }
 
   // This needs to be done in CommandPrecompleteEvent because the metrics are reported on the BEP,

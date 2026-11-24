@@ -69,6 +69,18 @@ public abstract class QueryOptions extends CommonQueryOptions {
   public abstract boolean getGenerateHashes();
 
   @Option(
+      name = "experimental_log_query_skyframe_counts",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "With --experimental_generate_hashes, log work counts for selected SkyFunctions. "
+              + "The counts include evaluation attempts and completed built or cleaned values. "
+              + "Report key counts, errors, and evaluation time for each direct-hash wave.")
+  public abstract boolean getLogQuerySkyframeCounts();
+
+  @Option(
       name = "experimental_query_batch_direct_rule_hashes",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.QUERY,

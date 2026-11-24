@@ -130,6 +130,18 @@ public final class TransitiveHashes {
       boolean reportFailureImpact,
       boolean batchDirectRuleHashes)
       throws InterruptedException {
+    return compute(roots, evaluator, progress, reportFailureImpact, batchDirectRuleHashes, null);
+  }
+
+  /** Computes hashes and optionally reports counts for the direct-hash wave at each depth. */
+  public static Result compute(
+      Collection<Label> roots,
+      Evaluator evaluator,
+      Consumer<String> progress,
+      boolean reportFailureImpact,
+      boolean batchDirectRuleHashes,
+      @Nullable Consumer<String> waveCounts)
+      throws InterruptedException {
     long discoveryStart = System.nanoTime();
     Map<Label, State<Label>> graph = CompactHashMap.createWithExpectedSize(roots.size());
     Set<Label> failed = new HashSet<>();
@@ -155,8 +167,21 @@ public final class TransitiveHashes {
             : Map.of();
     while (!frontier.isEmpty()) {
       ImmutableSet<SkyKey> keys = buildFrontierKeys(frontier, packageHashes);
+      long waveStart = waveCounts == null || keys.isEmpty() ? 0 : System.nanoTime();
       var result =
           keys.isEmpty() ? EvaluationResult.<SkyValue>builder().build() : evaluator.evaluate(keys);
+      if (waveCounts != null && !keys.isEmpty()) {
+        long evaluationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - waveStart);
+        waveCounts.accept(
+            "Native query direct hash wave: depth="
+                + level
+                + " keys="
+                + keys.size()
+                + " errors="
+                + result.errorMap().size()
+                + " evaluation_ms="
+                + evaluationMs);
+      }
       List<State<Label>> next = new ArrayList<>();
       var keyIterator = keys.iterator();
       var orderedValues = result.orderedValuesFor(keys);
