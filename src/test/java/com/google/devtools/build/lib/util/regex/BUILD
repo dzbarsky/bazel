@@ -9,6 +9,11 @@ package(
 
 licenses(["notice"])
 
+_REGGIE_JVM_FLAGS = [
+    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    "-Dbazel.experimental.reggie=true",
+]
+
 filegroup(
     name = "srcs",
     testonly = 0,
@@ -64,6 +69,7 @@ java_fuzz_test(
 java_test(
     name = "ReggiePatternTest",
     srcs = ["ReggiePatternTest.java"],
+    jvm_flags = _REGGIE_JVM_FLAGS,
     deps = [
         "//src/main/java/com/google/devtools/build/lib/util/regex:reggie_pattern",
         "//third_party:junit4",
@@ -75,6 +81,7 @@ java_test(
 java_test(
     name = "BazelPatternsTest",
     srcs = ["BazelPatternsTest.java"],
+    jvm_flags = _REGGIE_JVM_FLAGS,
     deps = [
         "//src/main/java/com/google/devtools/build/lib/util/regex:bazel_patterns",
         "//third_party:junit4",
@@ -87,9 +94,21 @@ java_test(
 java_test(
     name = "RegexSyntaxTest",
     srcs = ["RegexSyntaxTest.java"],
+    jvm_flags = _REGGIE_JVM_FLAGS,
     deps = [
         "//src/main/java/com/google/devtools/build/lib/util/regex:bazel_patterns",
         "//src/main/java/com/google/devtools/build/lib/util/regex:regex_util",
         "//third_party:junit4",
+    ],
+)
+
+java_test(
+    name = "ReggieDefaultOffTest",
+    srcs = ["ReggieDefaultOffTest.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/util/regex:bazel_patterns",
+        "//src/main/java/com/google/devtools/build/lib/util/regex:reggie_pattern",
+        "//third_party:junit4",
+        "//third_party:truth",
     ],
 )

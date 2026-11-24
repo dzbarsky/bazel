@@ -61,8 +61,7 @@ public abstract class RegexFilterExpression extends FilteringQueryFunction {
               Query.Code.SYNTAX_ERROR));
     }
 
-    // Note that Patttern#matcher is thread-safe and so this Predicate can safely be used
-    // concurrently.
+    // The compiled pattern supports concurrent matching.
     final Predicate<T> matchFilter =
         target -> {
           for (String str : getFilterStrings(env, args, target)) {

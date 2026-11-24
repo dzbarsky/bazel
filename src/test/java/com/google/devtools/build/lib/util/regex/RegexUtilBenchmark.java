@@ -65,6 +65,12 @@ public class RegexUtilBenchmark {
   }
 
   @Benchmark
+  @Fork(
+      value = 3,
+      jvmArgsAppend = {
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "-Dbazel.experimental.reggie=true"
+      })
   public boolean reggie() {
     return reggiePattern.matches(haystack);
   }
