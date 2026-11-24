@@ -50,16 +50,23 @@ public class RegexUtilBenchmark {
 
   private Pattern originalPattern;
   private Predicate<String> optimizedMatcher;
+  private ReggiePattern reggiePattern;
 
   @Setup
   public void compile() {
     originalPattern = Pattern.compile(needle);
     optimizedMatcher = RegexUtil.asOptimizedMatchingPredicate(originalPattern);
+    reggiePattern = ReggiePattern.compile(originalPattern);
   }
 
   @Benchmark
   public boolean baseline() {
     return originalPattern.matcher(haystack).matches();
+  }
+
+  @Benchmark
+  public boolean reggie() {
+    return reggiePattern.matches(haystack);
   }
 
   @Benchmark

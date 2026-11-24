@@ -178,6 +178,15 @@ public class RegexFilterTest {
                 .stream()
                 .map(RegexFilterTest::safeCreateFilter)
                 .collect(toImmutableList()))
+        .setVerificationFunction(
+            (RegexFilter original, RegexFilter deserialized) -> {
+              assertThat(deserialized).isEqualTo(original);
+              for (String input : ImmutableList.of("", "a/b", "a/b/d", "c", "_test", "a,b", "é")) {
+                String internalInput = unicodeToInternal(input);
+                assertThat(deserialized.isIncluded(internalInput))
+                    .isEqualTo(original.isIncluded(internalInput));
+              }
+            })
         .runTests();
   }
 
