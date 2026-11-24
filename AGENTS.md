@@ -75,7 +75,10 @@ A push to `master` does not publish. `.github/scripts/bazel-release-tag.sh`
 must derive the exact tag from the branch and reject a mismatched manual
 `release_tag`. The workflow tests release publication, builds and checks
 Linux, macOS, and Windows on x86_64 and ARM64, validates fork regressions,
-and publishes only when every required job passes.
+and publishes only when every required job passes. If GitHub repeatedly cancels the
+macOS ARM64 job before assigning a `macos-26` runner, dispatch the same
+workflow from the dated branch with `macos_arm64_runner=macos-15`. The
+macOS ARM64 job checks the binary's macOS 11 deployment target on both runners.
 
 Check the Actions run against the exact source SHA. After publication, use the
 GitHub API to verify the release tag points to that SHA, the release is

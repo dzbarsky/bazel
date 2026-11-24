@@ -10,6 +10,13 @@ on:
         description: Optional exact branch tag (for release-10.0.0-pre.20261021.1rc1, use 10.0.0-pre.20261021.1)
         required: false
         type: string
+      macos_arm64_runner:
+        description: GitHub-hosted runner for the macOS ARM64 build
+        type: choice
+        default: macos-26
+        options:
+          - macos-26
+          - macos-15
 
 permissions:
   contents: read
@@ -147,7 +154,7 @@ jobs:
             bazelisk_arch: amd64
             artifact_os: darwin
             artifact_arch: x86_64
-          - runner: macos-26
+          - runner: ${{ inputs.macos_arm64_runner == 'macos-15' && 'macos-15' || 'macos-26' }}
             bazelisk_os: darwin
             bazelisk_arch: arm64
             artifact_os: darwin
