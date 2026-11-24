@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote.options;
 
+import com.google.devtools.build.lib.util.regex.BazelPatterns;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.Converters;
 import com.google.devtools.common.options.Converters.RegexPatternConverter;
@@ -25,7 +26,6 @@ import com.google.devtools.common.options.OptionsParsingException;
 import com.google.devtools.common.options.RegexPatternOption;
 import java.time.Duration;
 import java.util.List;
-import java.util.regex.Pattern;
 
 /** Options for remote execution and distributed caching that shared between Bazel and Blaze. */
 @OptionsClass
@@ -61,12 +61,9 @@ public abstract class CommonRemoteOptions extends OptionsBase {
 
   /** Returns the specified duration. Assumes seconds if unitless. */
   public static class RemoteDurationConverter extends Converter.Contextless<Duration> {
-
-    private static final Pattern UNITLESS_REGEX = Pattern.compile("^[0-9]+$");
-
     @Override
     public Duration convert(String input) throws OptionsParsingException {
-      if (UNITLESS_REGEX.matcher(input).matches()) {
+      if (BazelPatterns.isUnitlessDuration(input)) {
         input += "s";
       }
       return new Converters.DurationConverter().convert(input, /* conversionContext= */ null);

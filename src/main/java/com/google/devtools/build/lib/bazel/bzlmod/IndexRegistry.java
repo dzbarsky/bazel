@@ -38,6 +38,7 @@ import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.util.OS;
+import com.google.devtools.build.lib.util.regex.BazelPatterns;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.gson.FieldNamingPolicy;
@@ -633,7 +634,7 @@ public class IndexRegistry implements Registry {
               "Invalid remote URL scheme: \"%s\" for module %s. Only %s are allowed.",
               sourceJson.remote, key, String.join(", ", ALLOWED_GIT_SCHEMES)));
     }
-    if (sourceJson.commit != null && !sourceJson.commit.matches("^[0-9a-fA-F]{7,64}$")) {
+    if (sourceJson.commit != null && !BazelPatterns.isGitCommit(sourceJson.commit)) {
       throw new IOException(
           String.format(
               "Invalid commit: \"%s\" for module %s. Must be a valid commit hash.",

@@ -53,6 +53,7 @@ import com.google.devtools.build.lib.skyframe.serialization.autocodec.Serializat
 import com.google.devtools.build.lib.starlarkbuildapi.StarlarkSubruleApi;
 import com.google.devtools.build.lib.util.HashCodes;
 import com.google.devtools.build.lib.util.StringUtil;
+import com.google.devtools.build.lib.util.regex.BazelPatterns;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.FormatMethod;
@@ -65,7 +66,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Pattern;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.Immutable;
 import net.starlark.java.eval.EvalException;
@@ -334,8 +334,6 @@ public class RuleClass implements RuleClassData {
    * already exists. Use {@link #overrideAttribute} in that case.
    */
   public static final class Builder {
-    private static final Pattern RULE_NAME_PATTERN = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
-
     /** The type of the rule class, which determines valid names and required attributes. */
     public enum RuleClassType {
       /**
@@ -385,7 +383,7 @@ public class RuleClass implements RuleClassData {
         @Override
         public void checkName(String name) {
           Preconditions.checkArgument(
-              !TargetUtils.isTestRuleName(name) && RULE_NAME_PATTERN.matcher(name).matches(),
+              !TargetUtils.isTestRuleName(name) && BazelPatterns.isRuleName(name),
               "Invalid rule name: %s",
               name);
         }
@@ -436,7 +434,7 @@ public class RuleClass implements RuleClassData {
         @Override
         public void checkName(String name) {
           Preconditions.checkArgument(
-              TargetUtils.isTestRuleName(name) && RULE_NAME_PATTERN.matcher(name).matches());
+              TargetUtils.isTestRuleName(name) && BazelPatterns.isRuleName(name));
         }
 
         @Override
@@ -468,7 +466,7 @@ public class RuleClass implements RuleClassData {
       PLACEHOLDER {
         @Override
         public void checkName(String name) {
-          Preconditions.checkArgument(RULE_NAME_PATTERN.matcher(name).matches(), name);
+          Preconditions.checkArgument(BazelPatterns.isRuleName(name), name);
         }
 
         @Override
