@@ -18,13 +18,14 @@ import static com.google.devtools.build.lib.util.StringEncoding.internalToUnicod
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Multimap;
+import com.google.devtools.build.lib.util.regex.ReggiePattern;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.regex.Pattern;
 
 /** Encapsulate the action filters parsed from aquery command. */
 public class AqueryActionFilter {
   // TODO(leba): Use Enum for list of filters.
-  private final ImmutableMultimap<String, Pattern> filterMap;
+  private final ImmutableMultimap<String, ReggiePattern> filterMap;
 
   private AqueryActionFilter(Builder builder) {
     filterMap = ImmutableMultimap.copyOf(builder.filterMap);
@@ -55,13 +56,12 @@ public class AqueryActionFilter {
     }
 
     String unicodeInput = internalToUnicode(input);
-    return filterMap.get(function).stream()
-        .allMatch(pattern -> pattern.matcher(unicodeInput).matches());
+    return filterMap.get(function).stream().allMatch(pattern -> pattern.matches(unicodeInput));
   }
 
   /** Builder class for {@code AqueryActionFilter} */
   public static class Builder {
-    private final Multimap<String, Pattern> filterMap;
+    private final Multimap<String, ReggiePattern> filterMap;
 
     public Builder() {
       filterMap = HashMultimap.create();
@@ -69,7 +69,7 @@ public class AqueryActionFilter {
 
     @CanIgnoreReturnValue
     public Builder put(String key, Pattern value) {
-      filterMap.put(key, value);
+      filterMap.put(key, ReggiePattern.compile(value));
       return this;
     }
 

@@ -210,6 +210,7 @@ maven.install(
         # keep sorted
         "args4j:args4j:2.37",
         "com.beust:jcommander:1.82",
+        "com.datadoghq:reggie:0.5.0",
         "com.dylibso.chicory:compiler:1.7.5",
         "com.dylibso.chicory:log:1.7.5",
         "com.dylibso.chicory:runtime:1.7.5",

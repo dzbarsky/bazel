@@ -19,6 +19,7 @@ import static com.google.devtools.build.lib.util.StringEncoding.unicodeToInterna
 
 import com.google.common.base.Joiner;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.util.regex.ReggiePattern;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.util.ArrayList;
@@ -26,7 +27,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.TreeSet;
 import java.util.function.Predicate;
-import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import javax.annotation.Nullable;
 
@@ -40,8 +40,8 @@ import javax.annotation.Nullable;
 @Immutable
 public final class RegexFilter implements Predicate<String> {
   // Null inclusion or exclusion pattern means those patterns are not used.
-  @Nullable private final Pattern inclusionPattern;
-  @Nullable private final Pattern exclusionPattern;
+  @Nullable private final ReggiePattern inclusionPattern;
+  @Nullable private final ReggiePattern exclusionPattern;
   private final int hashCode;
 
   @Nullable private final String originalInput;
@@ -102,8 +102,8 @@ public final class RegexFilter implements Predicate<String> {
    * matching will not be applied, respectively.
    */
   private RegexFilter(
-      @Nullable Pattern inclusionPattern,
-      @Nullable Pattern exclusionPattern,
+      @Nullable ReggiePattern inclusionPattern,
+      @Nullable ReggiePattern exclusionPattern,
       @Nullable String originalInput) {
     this.inclusionPattern = inclusionPattern;
     this.exclusionPattern = exclusionPattern;
@@ -128,14 +128,15 @@ public final class RegexFilter implements Predicate<String> {
    * the list is empty.
    */
   @Nullable
-  private static Pattern takeUnionOfRegexes(List<String> regexList) {
+  private static ReggiePattern takeUnionOfRegexes(List<String> regexList) {
     if (regexList.isEmpty()) {
       return null;
     }
     TreeSet<String> deduped = new TreeSet<>(regexList);
     // Wraps each individual regex into an independent group, then combines them using '|' and
     // wraps the result in a non-capturing group.
-    return Pattern.compile(internalToUnicode("(?:(?>" + Joiner.on(")|(?>").join(deduped) + "))"));
+    return ReggiePattern.compile(
+        internalToUnicode("(?:(?>" + Joiner.on(")|(?>").join(deduped) + "))"));
   }
 
   /**
@@ -144,13 +145,13 @@ public final class RegexFilter implements Predicate<String> {
    */
   public boolean isIncluded(String value) {
     String unicodeValue = internalToUnicode(value);
-    if (exclusionPattern != null && exclusionPattern.matcher(unicodeValue).find()) {
+    if (exclusionPattern != null && exclusionPattern.find(unicodeValue)) {
       return false;
     }
     if (inclusionPattern == null) {
       return true;
     }
-    return inclusionPattern.matcher(unicodeValue).find();
+    return inclusionPattern.find(unicodeValue);
   }
 
   @Override
@@ -200,12 +201,12 @@ public final class RegexFilter implements Predicate<String> {
     if (this.inclusionPattern == null ^ otherFilter.inclusionPattern == null) {
       return false;
     }
-    if (this.exclusionPattern != null && !this.exclusionPattern.pattern().equals(
-        otherFilter.exclusionPattern.pattern())) {
+    if (this.exclusionPattern != null
+        && !this.exclusionPattern.pattern().equals(otherFilter.exclusionPattern.pattern())) {
       return false;
     }
-    if (this.inclusionPattern != null && !this.inclusionPattern.pattern().equals(
-        otherFilter.inclusionPattern.pattern())) {
+    if (this.inclusionPattern != null
+        && !this.inclusionPattern.pattern().equals(otherFilter.inclusionPattern.pattern())) {
       return false;
     }
     return true;
