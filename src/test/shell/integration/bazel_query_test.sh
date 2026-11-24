@@ -1769,6 +1769,70 @@ PYTHON
   expect_log "Streamed 1 query hash records (0 unknown, $(wc -c < snapshot.pb | tr -d ' ') bytes)"
 }
 
+function test_generate_hashes_excludes_only_recursive_discovery() {
+  # The integration harness links the embedded tools into this workspace.
+  printf 'tools\n' >> .bazelignore
+  mkdir -p hash_scope_public hash_scope_private/{used,unused}
+  cat > hash_scope_public/BUILD <<'EOF'
+filegroup(name = "kept", srcs = ["//hash_scope_private/used:dep"])
+EOF
+  cat > hash_scope_private/used/BUILD <<'EOF'
+filegroup(name = "dep", srcs = ["input.txt"], visibility = ["//visibility:public"])
+EOF
+  echo 'filegroup(name = "unused")' > hash_scope_private/unused/BUILD
+  echo before > hash_scope_private/used/input.txt
+
+  local -a query=(query --experimental_generate_hashes --keep_going --order_output=no
+    --output=streamed_proto --noproto:locations)
+  local -a scoped=("${query[@]}" --experimental_query_hash_exclude_directory=hash_scope_private)
+  local expression='//... except //hash_scope_private/...'
+  bazel "${query[@]}" "$expression" > stock.pb 2> "$TEST_log" || fail "Expected full discovery"
+  bazel "${scoped[@]}" '//...' > before.pb 2> "$TEST_log" || fail "Expected scoped discovery"
+  cmp stock.pb before.pb || fail "Expected the same hashes"
+
+  echo after > hash_scope_private/used/input.txt
+  bazel "${query[@]}" "$expression" > stock.pb 2> "$TEST_log" || fail "Expected full discovery"
+  bazel "${scoped[@]}" '//...' > after.pb 2> "$TEST_log" || fail "Expected scoped discovery"
+  cmp stock.pb after.pb || fail "Expected the same hashes after changing an excluded dependency"
+  cmp -s before.pb after.pb && fail "Expected the kept target hash to change"
+
+  echo 'broken_rule()' > hash_scope_private/unused/BUILD
+  bazel "${scoped[@]}" '//...' > scoped.pb 2> "$TEST_log" || fail "Expected the unused package to be skipped"
+  cmp after.pb scoped.pb || fail "Expected unchanged hashes"
+  bazel "${query[@]}" "$expression" > stock.pb 2> "$TEST_log" \
+    && fail "Expected ordinary query to report the error"
+  [[ ! -s stock.pb ]] || fail "Expected no incomplete snapshot"
+
+  echo 'broken_rule()' > hash_scope_private/used/BUILD
+  local status=0
+  bazel "${scoped[@]}" '//...' > scoped.pb 2> "$TEST_log" || status=$?
+  assert_equals 7 "$status"
+  expect_log "query hash records (1 unknown"
+  [[ -s scoped.pb ]] || fail "Expected the unresolved target in the snapshot"
+
+  echo 'broken_rule()' > hash_scope_public/BUILD
+  bazel "${scoped[@]}" '//...' > scoped.pb 2> "$TEST_log" && fail "Expected included package error"
+  [[ ! -s scoped.pb ]] || fail "Expected no incomplete snapshot"
+}
+
+function test_generate_hashes_rejects_unsupported_scope_options() {
+  local -a query=(query --output=streamed_proto --order_output=no)
+  local flag=--experimental_query_hash_exclude_directory
+  local -a scoped=("${query[@]}" --experimental_generate_hashes "$flag=private")
+  bazel "${scoped[@]}" 'deps(//...)' > snapshot.pb 2> "$TEST_log" && fail "Expected compound query rejection"
+  expect_log "requires a graphless //... query"
+  bazel "${scoped[@]}" --universe_scope=//... '//...' > snapshot.pb 2> "$TEST_log" \
+    && fail "Expected SkyQuery rejection"
+  expect_log "requires a graphless //... query"
+  bazel "${query[@]}" "$flag=private" '//...' > snapshot.pb 2> "$TEST_log" \
+    && fail "Expected missing hash option rejection"
+  expect_log "requires a graphless //... query"
+  bazel "${query[@]}" --experimental_generate_hashes "$flag=../private" '//...' \
+    > snapshot.pb 2> "$TEST_log" && fail "Expected an invalid path error"
+  expect_log "Invalid --experimental_query_hash_exclude_directory"
+  [[ ! -s snapshot.pb ]] || fail "Expected no output for unsupported query"
+}
+
 function test_generate_hashes_report_overlapping_failures() {
   mkdir -p hash_failures
   cat > hash_failures/repos.bzl <<'EOF'

@@ -22,6 +22,7 @@ import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionMetadataTag;
 import com.google.devtools.common.options.OptionsClass;
 import com.google.devtools.common.options.TriState;
+import java.util.List;
 import java.util.Set;
 
 /** Command-line options for the Blaze query language, revision 2. */
@@ -67,6 +68,20 @@ public abstract class QueryOptions extends CommonQueryOptions {
               + " build options are not taken into account; use cquery"
               + " --experimental_generate_hashes for the latter two.")
   public abstract boolean getGenerateHashes();
+
+  @Option(
+      name = "experimental_query_hash_exclude_directory",
+      defaultValue = "null",
+      allowMultiple = true,
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT, OptionEffectTag.LOADING_AND_ANALYSIS},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "Omits a normalized workspace-relative directory from a graphless //... hash snapshot. "
+              + "Dependencies of included targets are still hashed, even in excluded directories. "
+              + "May be repeated. Requires --experimental_generate_hashes and streamed hash "
+              + "output.")
+  public abstract List<String> getQueryHashExcludedDirectories();
 
   @Option(
       name = "experimental_query_batch_direct_rule_hashes",

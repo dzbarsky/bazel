@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.runtime.commands;
 import static com.google.devtools.build.lib.packages.Rule.ALL_LABELS;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.NoBuildEvent;
 import com.google.devtools.build.lib.analysis.NoBuildRequestFinishedEvent;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
@@ -62,6 +63,7 @@ import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Either;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.InterruptedFailureDetails;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.WalkableGraph;
 import com.google.devtools.common.options.OptionsParsingResult;
 import com.google.devtools.common.options.TriState;
@@ -160,6 +162,25 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
       }
     }
 
+    ImmutableSet<PathFragment> excludedDirectories = ImmutableSet.of();
+    if (!queryOptions.getQueryHashExcludedDirectories().isEmpty()) {
+      var directories = ImmutableSet.<PathFragment>builder();
+      for (String directory : queryOptions.getQueryHashExcludedDirectories()) {
+        PathFragment path = PathFragment.create(directory);
+        if (path.isEmpty()
+            || path.isAbsolute()
+            || path.containsUplevelReferences()
+            || !path.getPathString().equals(directory)) {
+          return reportAndCreateFailureResult(
+              env,
+              "Invalid --experimental_query_hash_exclude_directory: '" + directory + "'",
+              Query.Code.ILLEGAL_FLAG_COMBINATION);
+        }
+        directories.add(path);
+      }
+      excludedDirectories = directories.build();
+    }
+
     Set<Setting> settings = queryOptions.toSettings();
     boolean streamResults = QueryOutputUtils.shouldStreamResults(queryOptions, formatter);
     boolean useGraphlessQuery =
@@ -198,7 +219,8 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
               settings,
               useGraphlessQuery,
               mainRepoTargetParser,
-              labelPrinter)) {
+              labelPrinter,
+              excludedDirectories)) {
         result =
             doQuery(
                 query, env, queryOptions, streamResults, formatter, queryEnv, queryRuntimeHelper);
@@ -258,7 +280,7 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
       AbstractBlazeQueryEnvironment<Target> queryEnv,
       QueryRuntimeHelper queryRuntimeHelper);
 
-  public static AbstractBlazeQueryEnvironment<Target> newQueryEnvironment(
+  static AbstractBlazeQueryEnvironment<Target> newQueryEnvironment(
       CommandEnvironment env,
       boolean keepGoing,
       boolean orderedResults,
@@ -267,7 +289,8 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
       Set<Setting> settings,
       boolean useGraphlessQuery,
       TargetPattern.Parser mainRepoTargetParser,
-      LabelPrinter labelPrinter) {
+      LabelPrinter labelPrinter,
+      ImmutableSet<PathFragment> excludedDirectories) {
 
     WalkableGraph walkableGraph = env.getSkyframeExecutor().getWalkableGraph();
 
@@ -291,7 +314,7 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
             env.getSkyframeExecutor(),
             targetProviderForQueryEnvironment,
             env.getPackageManager(),
-            new SkyframeTargetPatternEvaluator(env.getSkyframeExecutor()),
+            new SkyframeTargetPatternEvaluator(env.getSkyframeExecutor(), excludedDirectories),
             mainRepoTargetParser,
             env.getRelativeWorkingDirectory(),
             keepGoing,
@@ -329,7 +352,7 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
     return filters.build();
   }
 
-  private static BlazeCommandResult reportAndCreateFailureResult(
+  protected static BlazeCommandResult reportAndCreateFailureResult(
       CommandEnvironment env, String message, Query.Code detailedCode) {
     env.getReporter().handle(Event.error(message));
     return createFailureResult(message, detailedCode);
