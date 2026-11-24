@@ -15,8 +15,10 @@ java_library(
     name = "regex_util",
     srcs = ["RegexUtil.java"],
     deps = [
+        ":bazel_patterns",
         ":reggie_pattern",
         "//src/main/java/com/google/devtools/build/lib/util:string_encoding",
+        "//third_party/java/jsr305_annotations",
     ],
 )
 
@@ -24,6 +26,7 @@ java_library(
     name = "reggie_pattern",
     srcs = ["ReggiePattern.java"],
     deps = [
+        ":bazel_patterns",
         "//third_party/java/jsr305_annotations",
         "@maven//:com_datadoghq_reggie",
     ],

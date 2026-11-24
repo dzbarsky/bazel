@@ -19,11 +19,11 @@ import com.datadoghq.reggie.annotations.RegexPattern;
 import com.datadoghq.reggie.runtime.ReggieMatcher;
 
 /**
- * Fixed ASCII validators compiled to matcher bytecode by Reggie's annotation processor.
+ * Fixed validators and regex-syntax detectors compiled by Reggie's annotation processor.
  *
- * <p>These use full-string matching. Anchors are unnecessary, and explicit ASCII classes preserve
- * Java's default character-class semantics without relying on Unicode or inline flag handling. No
- * runtime pattern compilation or JDK fallback is needed for these validators.
+ * <p>Validators use full-string matching and explicit ASCII classes. Syntax detectors search for
+ * literal flag prefixes in pattern strings. None of these matchers needs runtime pattern
+ * compilation or JDK fallback.
  */
 public abstract class BazelPatterns implements ReggiePatterns {
   private static final BazelPatterns INSTANCE = Reggie.patterns(BazelPatterns.class);
@@ -75,5 +75,33 @@ public abstract class BazelPatterns implements ReggiePatterns {
 
   public static boolean isBazelCompatibilityVersion(String input) {
     return INSTANCE.bazelCompatibilityVersion().matches(input);
+  }
+
+  @RegexPattern("[a-zA-Z0-9][-.A-Za-z0-9_]*")
+  protected abstract ReggieMatcher userProvidedRepositoryName();
+
+  public static boolean isUserProvidedRepositoryName(String input) {
+    return INSTANCE.userProvidedRepositoryName().matches(input);
+  }
+
+  @RegexPattern("[a-z](?:[a-z0-9._-]*[a-z0-9])?")
+  protected abstract ReggieMatcher moduleName();
+
+  public static boolean isModuleName(String input) {
+    return INSTANCE.moduleName().matches(input);
+  }
+
+  @RegexPattern("\\(\\?[a-zA-Z-]*x")
+  protected abstract ReggieMatcher commentsFlag();
+
+  public static boolean mayEnableRegexComments(String input) {
+    return INSTANCE.commentsFlag().find(input);
+  }
+
+  @RegexPattern("\\(\\?[idmsuxU-]")
+  protected abstract ReggieMatcher inlineRegexFlags();
+
+  public static boolean hasInlineRegexFlags(String input) {
+    return INSTANCE.inlineRegexFlags().find(input);
   }
 }

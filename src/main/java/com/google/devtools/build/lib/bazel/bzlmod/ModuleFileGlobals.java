@@ -63,7 +63,7 @@ public class ModuleFileGlobals {
 
   @VisibleForTesting
   static void validateModuleName(String moduleName) throws EvalException {
-    if (!RepositoryName.VALID_MODULE_NAME.matcher(moduleName).matches()) {
+    if (!RepositoryName.isValidModuleName(moduleName)) {
       throw Starlark.errorf(
           "invalid module name '%s': valid names must 1) only contain lowercase letters (a-z),"
               + " digits (0-9), dots (.), hyphens (-), and underscores (_); 2) begin with a"

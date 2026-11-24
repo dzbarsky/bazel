@@ -30,7 +30,6 @@ import javax.annotation.Nullable;
  * and splitting continue to use the JDK API.
  */
 public final class ReggiePattern {
-  private static final Pattern INLINE_FLAGS = Pattern.compile("\\(\\?[idmsuxU-]");
   private final Pattern pattern;
   // DynamicCodec serializes the Pattern, then reconstructs the runtime-only engine on first use.
   @Nullable private transient volatile Engine engine;
@@ -59,7 +58,7 @@ public final class ReggiePattern {
         || regex.indexOf('^') >= 0
         || regex.indexOf('$') >= 0
         || regex.contains("&&")
-        || INLINE_FLAGS.matcher(regex).find()) {
+        || BazelPatterns.hasInlineRegexFlags(regex)) {
       return new Engine(null);
     }
     final int flags;

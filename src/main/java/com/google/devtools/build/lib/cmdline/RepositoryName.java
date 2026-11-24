@@ -29,12 +29,12 @@ import com.google.devtools.build.lib.skyframe.serialization.autocodec.Serializat
 import com.google.devtools.build.lib.util.HashCodes;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.StringUtilities;
+import com.google.devtools.build.lib.util.regex.BazelPatterns;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.protobuf.CodedInputStream;
 import com.google.protobuf.CodedOutputStream;
 import java.io.IOException;
 import java.util.Objects;
-import java.util.regex.Pattern;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Starlark;
@@ -59,14 +59,13 @@ public class RepositoryName {
           .or(CharMatcher.anyOf("_-.+"))
           .precomputed();
 
-  // Must start with a letter. Can contain ASCII letters and digits, underscore, dash, and dot.
-  private static final Pattern VALID_USER_PROVIDED_NAME = Pattern.compile("[a-zA-Z0-9][-.\\w]*$");
-
   /**
    * A valid module name must: 1) begin with a lowercase letter; 2) end with a lowercase letter or a
    * digit; 3) contain only lowercase letters, digits, or one of * '._-'.
    */
-  public static final Pattern VALID_MODULE_NAME = Pattern.compile("[a-z]([a-z0-9._-]*[a-z0-9])?");
+  public static boolean isValidModuleName(String name) {
+    return BazelPatterns.isModuleName(name);
+  }
 
   /**
    * Makes sure that name is a valid repository name and creates a new RepositoryName using it.
@@ -170,7 +169,7 @@ public class RepositoryName {
    * they can only start with a letter, and cannot contain a plus (+).
    */
   public static void validateUserProvidedRepoName(String name) throws EvalException {
-    if (!VALID_USER_PROVIDED_NAME.matcher(name).matches()) {
+    if (!BazelPatterns.isUserProvidedRepositoryName(name)) {
       throw Starlark.errorf(
           "invalid user-provided repo name '%s': valid names may contain only A-Z, a-z, 0-9, '-',"
               + " '_', '.', and must start with a letter or a number",
