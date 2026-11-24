@@ -40,6 +40,19 @@ Build and test software of any size, quickly and reliably.
   * [Write tests](https://bazel.build/reference/test-encyclopedia)
   * [Who is using Bazel?](https://bazel.build/community/users)
 
+## Experimental Reggie regex engine
+
+This fork uses Java's regex engine by default. To opt into the Reggie experiment,
+pass the following startup option before the command:
+
+```sh
+bazel --host_jvm_args=-Dbazel.experimental.reggie=true query 'filter("foo", //...)'
+```
+
+Remove the option to return to the default. The setting is fixed at Bazel server
+startup. Unsupported expressions and inputs fall back to Java; capture
+extraction, replacement, and splitting still use Java.
+
 ## Reporting a Vulnerability
 
 To report a security issue, please email security@bazel.build with a description

@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
 import javax.annotation.Nullable;
 
 /**
- * A reusable boolean regex backed by Reggie's bytecode compiler.
+ * A reusable boolean regex that can opt in to Reggie's bytecode compiler.
  *
  * <p>Inputs and patterns use Unicode strings, not Bazel's internal string encoding. The JDK
  * validates syntax and supplies a compatibility fallback for flags or constructs Reggie cannot
@@ -34,11 +34,13 @@ public final class ReggiePattern {
   // DynamicCodec serializes the Pattern, then reconstructs the runtime-only engine on first use.
   @Nullable private transient volatile Engine engine;
 
-  private record Engine(@Nullable ThreadLocal<ReggieMatcher> matchers) {}
+  private record Engine(@Nullable ThreadLocal<ReggieMatcher> matchers) {
+    private static final Engine JDK = new Engine(null);
+  }
 
-  private ReggiePattern(Pattern pattern, Engine engine) {
+  private ReggiePattern(Pattern pattern) {
     this.pattern = pattern;
-    this.engine = engine;
+    this.engine = compileEngine(pattern);
   }
 
   public static ReggiePattern compile(String pattern) {
@@ -46,46 +48,46 @@ public final class ReggiePattern {
   }
 
   public static ReggiePattern compile(Pattern pattern) {
-    return new ReggiePattern(pattern, compileEngine(pattern));
+    return new ReggiePattern(pattern);
   }
 
   private static Engine compileEngine(Pattern pattern) {
+    if (!BazelPatterns.REGGIE_ENABLED) {
+      return Engine.JDK;
+    }
     String regex = pattern.pattern();
     // Reggie 0.5.0 differs from the JDK on anchors and character-class intersections.
     // Inline flags also cannot be reapplied using Pattern.flags(): those flags describe the end
     // of the pattern, whereas a mid-pattern flag must not affect the preceding expression.
-    if (!isAscii(regex)
+    if (!isCompatibleText(regex)
         || regex.indexOf('^') >= 0
         || regex.indexOf('$') >= 0
         || regex.contains("&&")
         || BazelPatterns.hasInlineRegexFlags(regex)) {
-      return new Engine(null);
+      return Engine.JDK;
     }
     final int flags;
     try {
-      flags = JdkPatternCompatibility.toReggieFlags(pattern.pattern(), pattern.flags());
+      flags = JdkPatternCompatibility.toReggieFlags(regex, pattern.flags());
       // Compile eagerly so unsupported patterns select the fallback before parallel evaluation.
-      Reggie.compile(pattern.pattern(), flags);
+      Reggie.compile(regex, flags);
     } catch (IllegalArgumentException | UnsupportedPatternException e) {
-      return new Engine(null);
+      return Engine.JDK;
     }
     // NFA-backed Reggie matchers carry mutable scratch state. Never share one between workers.
-    return new Engine(ThreadLocal.withInitial(() -> Reggie.compile(pattern.pattern(), flags)));
+    return new Engine(ThreadLocal.withInitial(() -> Reggie.compile(regex, flags)));
   }
 
-  private static boolean isAscii(String value) {
-    for (int i = 0; i < value.length(); i++) {
-      if (value.charAt(i) > 0x7f) {
+  private static boolean isCompatibleText(String text) {
+    // Reggie uses UTF-16 code units where the JDK matches Unicode code points. Its dot also
+    // does not exclude carriage returns the way the JDK does.
+    for (int i = 0; i < text.length(); i++) {
+      char c = text.charAt(i);
+      if (c > 0x7f || c == '\r') {
         return false;
       }
     }
     return true;
-  }
-
-  private static boolean isCompatibleInput(String input) {
-    // Reggie uses UTF-16 code units where the JDK matches Unicode code points, and its dot
-    // handling does not exclude all of the JDK's line terminators (notably carriage return).
-    return isAscii(input) && input.indexOf('\r') < 0;
   }
 
   private Engine engine() {
@@ -107,26 +109,28 @@ public final class ReggiePattern {
   }
 
   public boolean matches(String input) {
+    return evaluate(input, /* find= */ false);
+  }
+
+  public boolean find(String input) {
+    return evaluate(input, /* find= */ true);
+  }
+
+  boolean usesReggie() {
+    return engine().matchers() != null;
+  }
+
+  private boolean evaluate(String input, boolean find) {
     ThreadLocal<ReggieMatcher> matchers = engine().matchers();
-    if (matchers != null && isCompatibleInput(input)) {
+    if (matchers != null && isCompatibleText(input)) {
       try {
-        return matchers.get().matches(input);
+        ReggieMatcher matcher = matchers.get();
+        return find ? matcher.find(input) : matcher.matches(input);
       } catch (MatchBudgetExceededException e) {
         // A valid JDK pattern must not become an internal error on a particular input.
       }
     }
-    return pattern.matcher(input).matches();
-  }
-
-  public boolean find(String input) {
-    ThreadLocal<ReggieMatcher> matchers = engine().matchers();
-    if (matchers != null && isCompatibleInput(input)) {
-      try {
-        return matchers.get().find(input);
-      } catch (MatchBudgetExceededException e) {
-        // Preserve the existing Java regex behavior when Reggie's bounded engine gives up.
-      }
-    }
-    return pattern.matcher(input).find();
+    var matcher = pattern.matcher(input);
+    return find ? matcher.find() : matcher.matches();
   }
 }

@@ -142,6 +142,12 @@ public class ReggiePatternTest {
   }
 
   @Test
+  public void optInUsesReggieForSupportedPatterns() {
+    assertThat(ReggiePattern.compile("foo[0-9]+").usesReggie()).isTrue();
+    assertThat(ReggiePattern.compile("^foo$").usesReggie()).isFalse();
+  }
+
+  @Test
   public void sharedPatternCanBeUsedByConcurrentWorkers() throws Exception {
     ReggiePattern pattern = ReggiePattern.compile("(a|ab)*b");
     try (var executor = Executors.newFixedThreadPool(8)) {
