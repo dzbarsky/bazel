@@ -293,6 +293,7 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
       long evaluationNanos,
       long sortNanos)
       throws IOException, InterruptedException {
+    // The query aggregator sorts and deduplicates targets by label before hashing.
     ImmutableSet<Label> labels = targets.stream().map(Target::getLabel).collect(toImmutableSet());
     EvaluationContext evaluationContext =
         EvaluationContext.newBuilder()
@@ -332,10 +333,11 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
     if (catalog != null) {
       catalog.writeHashedTargets(targets, labelPrinter, result.hashes(), out);
     } else {
+      int index = 0;
       for (Target target : targets) {
         Label label = target.getLabel();
-        var hash = result.hashes().get(label);
-        if (hash != null) {
+        var hash = result.hashes().get(index++);
+        if (!hash.isEmpty()) {
           out.write(
               (labelPrinter.toString(label)
                       + " "
@@ -364,7 +366,7 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
                                 error.getException() != null
                                     ? error.getException().getMessage()
                                     : error.toString()))));
-    int omitted = labels.size() - result.hashes().size();
+    int omitted = labels.size() - result.knownHashCount();
     if (binary != null) {
       long flushStart = System.nanoTime();
       binary.flush();
