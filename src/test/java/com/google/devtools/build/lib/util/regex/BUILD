@@ -83,3 +83,13 @@ java_test(
         "@maven//:com_google_testparameterinjector_test_parameter_injector",
     ],
 )
+
+java_test(
+    name = "RegexSyntaxTest",
+    srcs = ["RegexSyntaxTest.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/util/regex:bazel_patterns",
+        "//src/main/java/com/google/devtools/build/lib/util/regex:regex_util",
+        "//third_party:junit4",
+    ],
+)

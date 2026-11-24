@@ -41,7 +41,10 @@ public class BazelPatternsTest {
     FULL_GIT_COMMIT("[0-9a-f]{40}", BazelPatterns::isFullGitCommit, "a".repeat(40)),
     GIT_COMMIT("^[0-9a-fA-F]{7,64}$", BazelPatterns::isGitCommit, "012AbCd"),
     BAZEL_COMPATIBILITY_VERSION(
-        "(>|<|-|<=|>=)(\\d+\\.){2}\\d+", BazelPatterns::isBazelCompatibilityVersion, ">=1.2.3");
+        "(>|<|-|<=|>=)(\\d+\\.){2}\\d+", BazelPatterns::isBazelCompatibilityVersion, ">=1.2.3"),
+    USER_REPOSITORY_NAME(
+        "[a-zA-Z0-9][-.\\w]*$", BazelPatterns::isUserProvidedRepositoryName, "foo.bar-1"),
+    MODULE_NAME("[a-z]([a-z0-9._-]*[a-z0-9])?", BazelPatterns::isModuleName, "foo.bar-1");
 
     private final Pattern jdk;
     private final Predicate<String> generated;
@@ -129,7 +132,10 @@ public class BazelPatternsTest {
                   return false;
                 }
               }
-              return true;
+              return BazelPatterns.mayEnableRegexComments("(?ix:foo)")
+                  && !BazelPatterns.mayEnableRegexComments("(?i:foo)")
+                  && BazelPatterns.hasInlineRegexFlags("(?s:foo)")
+                  && !BazelPatterns.hasInlineRegexFlags("(?:foo)");
             });
       }
       for (var result : executor.invokeAll(tasks)) {
@@ -143,6 +149,8 @@ public class BazelPatternsTest {
     for (Validator validator : Validator.values()) {
       assertThat(validator.generated.test(validator.validInput)).isTrue();
     }
+    assertThat(BazelPatterns.mayEnableRegexComments("(?x:foo)")).isTrue();
+    assertThat(BazelPatterns.hasInlineRegexFlags("(?s:foo)")).isTrue();
     assertThat(Reggie.cacheSize()).isEqualTo(0);
   }
 }
