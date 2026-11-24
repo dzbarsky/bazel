@@ -45,6 +45,7 @@ import com.google.devtools.build.lib.server.FailureDetails.TargetPatterns;
 import com.google.devtools.build.lib.skyframe.TargetPatternValue.TargetPatternKey;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.DetailedIOException;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.ErrorInfo;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -62,9 +63,17 @@ import javax.annotation.Nullable;
 /** Skyframe-based target pattern parsing. */
 public final class SkyframeTargetPatternEvaluator implements TargetPatternPreloader {
   private final SkyframeExecutor skyframeExecutor;
+  private final ImmutableSet<PathFragment> rootPatternExclusions;
 
   public SkyframeTargetPatternEvaluator(SkyframeExecutor skyframeExecutor) {
+    this(skyframeExecutor, ImmutableSet.of());
+  }
+
+  /** Uses the exclusions for the main repository's recursive //... pattern only. */
+  public SkyframeTargetPatternEvaluator(
+      SkyframeExecutor skyframeExecutor, ImmutableSet<PathFragment> rootPatternExclusions) {
     this.skyframeExecutor = skyframeExecutor;
+    this.rootPatternExclusions = rootPatternExclusions;
   }
 
   @Override
@@ -187,17 +196,20 @@ public final class SkyframeTargetPatternEvaluator implements TargetPatternPreloa
   }
 
   @Nullable
-  private static PatternLookup createPatternLookup(
+  private PatternLookup createPatternLookup(
       TargetPattern.Parser mainRepoTargetParser,
       ExtendedEventHandler eventHandler,
       String targetPattern,
       boolean keepGoing)
       throws TargetParsingException {
     try {
+      SignedTargetPattern parsed = SignedTargetPattern.parse(targetPattern, mainRepoTargetParser);
+      ImmutableSet<PathFragment> exclusions =
+          !rootPatternExclusions.isEmpty() && targetPattern.equals("//...")
+              ? rootPatternExclusions
+              : ImmutableSet.of();
       TargetPatternKey key =
-          TargetPatternValue.key(
-              SignedTargetPattern.parse(targetPattern, mainRepoTargetParser),
-              FilteringPolicies.NO_FILTER);
+          TargetPatternValue.key(parsed, FilteringPolicies.NO_FILTER, exclusions);
       return isSimple(key.getParsedPattern())
           ? new SimpleLookup(targetPattern, key)
           : new NormalLookup(targetPattern, key);

@@ -37,7 +37,9 @@ import com.google.devtools.build.lib.query2.engine.QueryExpression;
 import com.google.devtools.build.lib.query2.engine.QuerySyntaxException;
 import com.google.devtools.build.lib.query2.engine.QueryUtil;
 import com.google.devtools.build.lib.query2.engine.QueryUtil.AggregateAllOutputFormatterCallback;
+import com.google.devtools.build.lib.query2.engine.TargetLiteral;
 import com.google.devtools.build.lib.query2.engine.ThreadSafeOutputFormatterCallback;
+import com.google.devtools.build.lib.query2.query.GraphlessBlazeQueryEnvironment;
 import com.google.devtools.build.lib.query2.query.hash.DirectTargetHashFunction;
 import com.google.devtools.build.lib.query2.query.hash.TransitiveHashes;
 import com.google.devtools.build.lib.query2.query.output.HashOutputFormatter;
@@ -126,6 +128,20 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
     } catch (QueryException e) {
       env.getReporter().handle(Event.error(e.getMessage()));
       return Either.ofLeft(BlazeCommandResult.failureDetail(e.getFailureDetail()));
+    }
+
+    if (!queryOptions.getQueryHashExcludedDirectories().isEmpty()
+        && (!queryOptions.getGenerateHashes()
+            || !(formatter instanceof HashOutputFormatter)
+            || !(queryEnv instanceof GraphlessBlazeQueryEnvironment)
+            || !(expr instanceof TargetLiteral literal)
+            || !literal.getPattern().equals("//..."))) {
+      return Either.ofLeft(
+          reportAndCreateFailureResult(
+              env,
+              "--experimental_query_hash_exclude_directory requires a graphless //... query "
+                  + "with --experimental_generate_hashes and streamed hash output",
+              Code.ILLEGAL_FLAG_COMBINATION));
     }
 
     expr = queryEnv.transformParsedQuery(expr);
