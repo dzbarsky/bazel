@@ -85,7 +85,9 @@ public class RegistryFunction implements SkyFunction {
       LAST_INVALIDATION.get(env);
     }
 
-    BazelLockFileValue lockfile = (BazelLockFileValue) env.getValue(BazelLockFileValue.KEY);
+    var lockfile =
+        (BazelLockFileFunction.RegistryInputs)
+            env.getValue(BazelLockFileFunction.RegistryInputsKey.INSTANCE);
     if (lockfile == null) {
       return null;
     }
@@ -99,8 +101,8 @@ public class RegistryFunction implements SkyFunction {
       return registryFactory.createRegistry(
           url,
           lockfileMode,
-          lockfile.getRegistryFileHashes(),
-          lockfile.getSelectedYankedVersions(),
+          lockfile.fileHashes(),
+          lockfile.selectedYankedVersions(),
           vendorDir,
           ImmutableSet.copyOf(MODULE_MIRRORS.get(env).getOrDefault(key.url(), ImmutableList.of())));
     } catch (URISyntaxException e) {
