@@ -14,7 +14,6 @@
 
 package com.google.devtools.build.lib.bazel.repository;
 
-import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelDepGraphValue;
 import com.google.devtools.build.lib.bazel.bzlmod.ModuleExtensionId;
@@ -143,8 +142,7 @@ final class RepoDefinitionInputs {
                 specs.put(repo, spec);
               }
             });
-    return new Resolved(
-        specs.buildOrThrow(), ImmutableBiMap.copyOf(graph.getExtensionUniqueNames()).inverse());
+    return new Resolved(specs.buildOrThrow(), graph.getExtensionUniqueNames().inverse());
   }
 
   // A change to one module's spec should not recreate unrelated repository definitions.
