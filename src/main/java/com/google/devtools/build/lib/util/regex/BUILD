@@ -1,4 +1,4 @@
-load("@rules_java//java:defs.bzl", "java_library")
+load("@rules_java//java:defs.bzl", "java_library", "java_plugin")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -27,4 +27,17 @@ java_library(
         "//third_party/java/jsr305_annotations",
         "@maven//:com_datadoghq_reggie",
     ],
+)
+
+java_plugin(
+    name = "reggie_processor",
+    processor_class = "com.datadoghq.reggie.processor.RegexPatternProcessor",
+    deps = ["@maven//:com_datadoghq_reggie"],
+)
+
+java_library(
+    name = "bazel_patterns",
+    srcs = ["BazelPatterns.java"],
+    plugins = [":reggie_processor"],
+    deps = ["@maven//:com_datadoghq_reggie"],
 )

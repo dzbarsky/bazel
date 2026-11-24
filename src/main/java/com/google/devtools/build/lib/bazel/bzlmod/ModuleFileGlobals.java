@@ -32,10 +32,10 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.packages.StarlarkExportable;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
+import com.google.devtools.build.lib.util.regex.BazelPatterns;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.Map;
 import java.util.Optional;
-import java.util.regex.Pattern;
 import javax.annotation.Nullable;
 import net.starlark.java.annot.Param;
 import net.starlark.java.annot.ParamType;
@@ -60,12 +60,6 @@ import net.starlark.java.syntax.Location;
 @GlobalMethodDocs(environment = Environment.MODULE)
 @StarlarkLibrary
 public class ModuleFileGlobals {
-
-  /* Valid bazel compatibility argument must 1) start with (<,<=,>,>=,-);
-     2) then contain a version number in form of X.X.X where X has one or two digits
-  */
-  private static final Pattern VALID_BAZEL_COMPATIBILITY_VERSION =
-      Pattern.compile("(>|<|-|<=|>=)(\\d+\\.){2}\\d+");
 
   @VisibleForTesting
   static void validateModuleName(String moduleName) throws EvalException {
@@ -276,7 +270,7 @@ public class ModuleFileGlobals {
       Iterable<?> iterable, String where) throws EvalException {
     Sequence<String> list = Sequence.cast(iterable, String.class, where);
     for (String version : list) {
-      if (!VALID_BAZEL_COMPATIBILITY_VERSION.matcher(version).matches()) {
+      if (!BazelPatterns.isBazelCompatibilityVersion(version)) {
         throw Starlark.errorf(
             "invalid version argument '%s': valid argument must 1) start with (<,<=,>,>=,-); "
                 + "2) contain a version number in form of X.X.X where X is a number",

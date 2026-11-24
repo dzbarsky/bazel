@@ -26,7 +26,7 @@ import com.google.devtools.build.lib.packages.LabelConverter;
 import com.google.devtools.build.lib.packages.Package;
 import com.google.devtools.build.lib.starlarkbuildapi.test.TestingModuleApi;
 import com.google.devtools.build.lib.util.Fingerprint;
-import java.util.regex.Pattern;
+import com.google.devtools.build.lib.util.regex.BazelPatterns;
 import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Sequence;
@@ -39,8 +39,6 @@ import net.starlark.java.syntax.Location;
 
 /** A class that exposes testing infrastructure to Starlark. */
 public class StarlarkTestingModule implements TestingModuleApi {
-  private static final Pattern RULE_NAME_PATTERN = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
-
   @Override
   public ExecutionInfo.ExecutionInfoProvider executionInfo() {
     return ExecutionInfo.PROVIDER;
@@ -76,7 +74,7 @@ public class StarlarkTestingModule implements TestingModuleApi {
       throw Starlark.errorf("analysis_test can only be called in a BUILD thread");
     }
 
-    if (!RULE_NAME_PATTERN.matcher(name).matches()) {
+    if (!BazelPatterns.isRuleName(name)) {
       throw Starlark.errorf("'name' is limited to Starlark identifiers, got %s", name);
     }
     Dict<String, Object> attrValues =
