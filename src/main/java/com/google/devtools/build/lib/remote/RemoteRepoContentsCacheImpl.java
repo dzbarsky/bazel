@@ -311,15 +311,8 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     ListenableFuture<byte[]> markerFileContentFuture;
     ListenableFuture<Tree> repoDirectoryContentFuture;
     try (var span = profile(repoName, "Read cache marker and Tree")) {
-      var markerFile = finalEntry.markerFile();
-      // Inlining is an optional feature, so we have to be prepared to download the marker file.
-      if (markerFile.getContents().isEmpty()) {
-        markerFileContentFuture =
-            cache.downloadBlob(
-                context, MARKER_FILE_PATH, /* execPath= */ null, markerFile.getDigest());
-      } else {
-        markerFileContentFuture = immediateFuture(markerFile.getContents().toByteArray());
-      }
+      markerFileContentFuture =
+          fetchMarker(context, finalEntry.markerFile(), predeclaredInputHash);
       var repoDirectory = finalEntry.repoDirectory();
       repoDirectoryContentFuture =
           transformAsync(
@@ -711,6 +704,22 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
   private static boolean hasStdout(ActionResult actionResult) {
     return !actionResult.getStdoutRaw().isEmpty()
         || actionResult.getStdoutDigest().getSizeBytes() > 0;
+  }
+
+  private ListenableFuture<byte[]> fetchMarker(
+      RemoteActionExecutionContext context, OutputFile marker, String predeclaredInputHash) {
+    if (!marker.getContents().isEmpty()) {
+      return immediateFuture(marker.getContents().toByteArray());
+    }
+    var digest = marker.getDigest();
+    // With no recorded inputs, DigestWriter writes only the predeclared hash and a newline.
+    if (digest.getSizeBytes() == predeclaredInputHash.length() + 1) {
+      byte[] emptyMarker = getInternalStringBytes(predeclaredInputHash + '\n');
+      if (digest.equals(cache.digestUtil().compute(emptyMarker))) {
+        return immediateFuture(emptyMarker);
+      }
+    }
+    return cache.downloadBlob(context, MARKER_FILE_PATH, /* execPath= */ null, digest);
   }
 
   private ListenableFuture<String> fetchStdout(
