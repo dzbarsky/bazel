@@ -75,6 +75,7 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.CodedOutputStream;
 import com.google.protobuf.Timestamp;
@@ -94,6 +95,8 @@ import javax.annotation.Nullable;
 
 /** UploadManifest adds output metadata to a {@link ActionResult}. */
 public class UploadManifest {
+  static final String INLINE_TREE_TYPE_URL =
+      "type.googleapis.com/build.bazel.remote.execution.v2.Tree";
   private final DigestUtil digestUtil;
   private final RemotePathResolver remotePathResolver;
   private final ActionResult.Builder result;
@@ -320,6 +323,22 @@ public class UploadManifest {
   @VisibleForTesting
   public Map<Digest, Path> getDigestToFile() {
     return digestToFile;
+  }
+
+  /** Adds an advisory copy of the only output Tree without changing the ordinary CAS upload. */
+  void inlineSingleOutputTree(int maxBytes) {
+    if (result.getOutputDirectoriesCount() != 1) {
+      return;
+    }
+    Digest digest = result.getOutputDirectories(0).getTreeDigest();
+    if (digest.getSizeBytes() > 0 && digest.getSizeBytes() <= maxBytes) {
+      result
+          .getExecutionMetadataBuilder()
+          .addAuxiliaryMetadata(
+              Any.newBuilder()
+                  .setTypeUrl(INLINE_TREE_TYPE_URL)
+                  .setValue(checkNotNull(digestToBlobs.get(digest))));
+    }
   }
 
   /** Returns a directory tree already serialized for this upload. */
