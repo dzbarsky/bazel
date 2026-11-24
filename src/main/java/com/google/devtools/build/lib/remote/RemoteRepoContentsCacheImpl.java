@@ -136,11 +136,15 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
   private static final Directory INPUT_ROOT = Directory.getDefaultInstance();
 
   private static final int MAX_YIELDED_ACTION_RESULT_READS = 32;
+  private static final int MAX_YIELDED_EAGER_PREFETCHES = 8;
+  private static final boolean YIELD_EAGER_REPOSITORY_PREFETCH =
+      Boolean.getBoolean("bazel.private_yield_eager_repository_prefetch");
 
   private final BlazeDirectories directories;
   private final CombinedCache cache;
   // Bound the number of unfinished ActionCache reads that can yield per command.
   private final Semaphore pendingActionReads = new Semaphore(MAX_YIELDED_ACTION_RESULT_READS);
+  private final Semaphore pendingEagerPrefetches = new Semaphore(MAX_YIELDED_EAGER_PREFETCHES);
   private final String buildRequestId;
   private final String commandId;
   private final boolean acceptCached;
@@ -376,7 +380,30 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     }
 
     try (var span = profile(repoName, "Install cached repository")) {
-      return remoteFs.injectRemoteRepo(repoName, repoContents, markerFileContent);
+      return remoteFs.injectRemoteRepo(
+          repoName,
+          repoContents,
+          markerFileContent,
+          future -> awaitEagerPrefetch(env, repoName, future));
+    }
+  }
+
+  private void awaitEagerPrefetch(
+      SkyFunction.Environment env, RepositoryName repoName, ListenableFuture<Void> future)
+      throws IOException, InterruptedException {
+    try (var span = profile(repoName, "Wait for eager repository files")) {
+      if (YIELD_EAGER_REPOSITORY_PREFETCH
+          && !future.isDone()
+          && pendingEagerPrefetches.tryAcquire()) {
+        future.addListener(pendingEagerPrefetches::release, directExecutor());
+        try (var yielded = profile(repoName, "Yield pending eager repository files")) {
+          WorkerSkyKeyComputeState.yieldForFuture(env, future);
+        } catch (InterruptedException e) {
+          future.cancel(true);
+          throw e;
+        }
+      }
+      getFromFuture(future);
     }
   }
 
