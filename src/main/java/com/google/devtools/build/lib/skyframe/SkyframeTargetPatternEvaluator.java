@@ -53,6 +53,7 @@ import com.google.devtools.build.skyframe.WalkableGraph;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -62,9 +63,16 @@ import javax.annotation.Nullable;
 /** Skyframe-based target pattern parsing. */
 public final class SkyframeTargetPatternEvaluator implements TargetPatternPreloader {
   private final SkyframeExecutor skyframeExecutor;
+  private final boolean preloadRecursivePackages;
 
   public SkyframeTargetPatternEvaluator(SkyframeExecutor skyframeExecutor) {
+    this(skyframeExecutor, false);
+  }
+
+  public SkyframeTargetPatternEvaluator(
+      SkyframeExecutor skyframeExecutor, boolean preloadRecursivePackages) {
     this.skyframeExecutor = skyframeExecutor;
+    this.preloadRecursivePackages = preloadRecursivePackages;
   }
 
   @Override
@@ -86,6 +94,13 @@ public final class SkyframeTargetPatternEvaluator implements TargetPatternPreloa
       } else {
         patternLookups.add(patternLookup);
         allKeys.add(patternLookup.skyKey);
+      }
+    }
+
+    if (preloadRecursivePackages && keepGoing && patternLookups.size() == patterns.size()) {
+      var loaded = tryPreloadRecursivePackages(patternLookups, eventHandler);
+      if (loaded != null) {
+        return loaded;
       }
     }
 
@@ -164,6 +179,55 @@ public final class SkyframeTargetPatternEvaluator implements TargetPatternPreloa
       }
     }
     return resultBuilder.buildOrThrow();
+  }
+
+  @Nullable
+  private Map<String, Collection<Target>> tryPreloadRecursivePackages(
+      List<PatternLookup> lookups, ExtendedEventHandler eventHandler)
+      throws InterruptedException {
+    if (lookups.isEmpty()) {
+      return null;
+    }
+    Map<String, TargetPatternValue.RecursivePackagesKey> keys = new LinkedHashMap<>();
+    for (PatternLookup lookup : lookups) {
+      if (!(lookup.skyKey instanceof TargetPatternKey key)
+          || !(key.getParsedPattern() instanceof TargetPattern.TargetsBelowDirectory pattern)
+          || !pattern.getRepository().isMain()
+          || !pattern.getRulesOnly()
+          || key.getPolicy() != FilteringPolicies.NO_FILTER) {
+        return null;
+      }
+      keys.put(lookup.pattern, new TargetPatternValue.RecursivePackagesKey(key));
+    }
+    var result =
+        skyframeExecutor.targetPatterns(
+            keys.values(), SkyframeExecutor.DEFAULT_THREAD_COUNT, true, eventHandler);
+    if (result.hasError()) {
+      return null;
+    }
+    var graph = Preconditions.checkNotNull(result.getWalkableGraph());
+    var output = ImmutableMap.<String, Collection<Target>>builderWithExpectedSize(keys.size());
+    for (var entry : keys.entrySet()) {
+      if (!(result.get(entry.getValue()) instanceof TargetPatternValue.RecursivePackages value)
+          || value.packages().isEmpty()) {
+        return null;
+      }
+      var targets = ImmutableList.<Target>builder();
+      for (PackageIdentifier id : value.packages()) {
+        // Recursive package discovery validates the status of each current PackageValue.
+        if (!(graph.getValue(id) instanceof PackageValue packageValue)
+            || packageValue.getPackage().containsErrors()) {
+          return null;
+        }
+        for (Target target : packageValue.getPackage().getTargets()) {
+          if (FilteringPolicies.RULES_ONLY.shouldRetain(target, false)) {
+            targets.add(target);
+          }
+        }
+      }
+      output.put(entry.getKey(), targets.build());
+    }
+    return output.buildOrThrow();
   }
 
   private static TargetParsingException wrapException(Exception exception, Object debugging) {

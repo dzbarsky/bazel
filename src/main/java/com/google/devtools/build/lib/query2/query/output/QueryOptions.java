@@ -81,6 +81,17 @@ public abstract class QueryOptions extends CommonQueryOptions {
   public abstract boolean getQueryBatchDirectRuleHashes();
 
   @Option(
+      name = "experimental_query_preload_packages",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "For graphless hash queries in keep-going mode, preload main-repository recursive rule"
+              + " patterns as packages. This can reduce repeated work after BUILD file edits.")
+  public abstract boolean getQueryPreloadPackages();
+
+  @Option(
       name = "experimental_query_hash_failure_impact",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.QUERY,
