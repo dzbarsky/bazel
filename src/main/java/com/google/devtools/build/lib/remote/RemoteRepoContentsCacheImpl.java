@@ -57,6 +57,7 @@ import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext.CachePolicy;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.Blob;
 import com.google.devtools.build.lib.remote.common.RemotePathResolver;
+import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.rules.repository.RepoRecordedInput;
 import com.google.devtools.build.lib.runtime.RemoteRepoContentsCache;
@@ -67,8 +68,10 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.WorkerSkyKeyComputeState;
+import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.ExtensionRegistryLite;
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -114,6 +117,10 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
   private static final String MARKER_FILE_PATH = ".recorded_inputs";
   private static final String REPO_DIRECTORY_PATH = "repo_contents";
   private static final int MAX_INLINE_RECORDED_INPUT_BYTES = 4096;
+
+  private static final int MAX_INLINE_TERMINAL_TREE_BYTES = 4096;
+  private static final boolean INLINE_TERMINAL_TREE =
+      Boolean.getBoolean("bazel.repo_cache_inline_terminal_tree");
   private static final Splitter SPLIT_ON_SPACE = Splitter.on(' ');
   private static final Splitter SPLIT_ON_NEWLINE = Splitter.on('\n').omitEmptyStrings();
 
@@ -230,6 +237,9 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
                 /* wallTimeInMs= */ 0,
                 /* preserveExecutableBit= */ true);
       }
+      if (INLINE_TERMINAL_TREE) {
+        manifest.inlineSingleOutputTree(MAX_INLINE_TERMINAL_TREE_BYTES);
+      }
       ActionResult result;
       try (var span = profile(repoName, "Upload repository contents")) {
         result = manifest.upload(context, cache, reporter, /* force= */ false);
@@ -320,18 +330,22 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
       } else {
         markerFileContentFuture = immediateFuture(markerFile.getContents().toByteArray());
       }
-      var repoDirectory = finalEntry.repoDirectory();
+      var treeDigest = finalEntry.repoDirectory().getTreeDigest();
+      Tree inlineTree =
+          INLINE_TERMINAL_TREE
+              ? readInlineTerminalTree(
+                  cache.digestUtil(), treeDigest, finalEntry.auxiliaryMetadata())
+              : null;
       repoDirectoryContentFuture =
-          transformAsync(
-              cache.downloadBlobAsByteString(
-                  context,
-                  REPO_DIRECTORY_PATH,
-                  /* execPath= */ null,
-                  repoDirectory.getTreeDigest()),
-              (treeBytes) ->
-                  immediateFuture(
-                      Tree.parseFrom(treeBytes, ExtensionRegistryLite.getEmptyRegistry())),
-              directExecutor());
+          inlineTree != null
+              ? immediateFuture(inlineTree)
+              : transformAsync(
+                  cache.downloadBlobAsByteString(
+                      context, REPO_DIRECTORY_PATH, /* execPath= */ null, treeDigest),
+                  (treeBytes) ->
+                      immediateFuture(
+                          Tree.parseFrom(treeBytes, ExtensionRegistryLite.getEmptyRegistry())),
+                  directExecutor());
       waitForBulkTransfer(ImmutableList.of(markerFileContentFuture, repoDirectoryContentFuture));
     }
 
@@ -378,6 +392,30 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
     try (var span = profile(repoName, "Install cached repository")) {
       return remoteFs.injectRemoteRepo(repoName, repoContents, markerFileContent);
     }
+  }
+
+  @Nullable
+  private static Tree readInlineTerminalTree(
+      DigestUtil digestUtil, Digest digest, List<Any> metadata) {
+    if (digest.getSizeBytes() <= 0 || digest.getSizeBytes() > MAX_INLINE_TERMINAL_TREE_BYTES) {
+      return null;
+    }
+    for (var hint : metadata) {
+      if (!hint.getTypeUrl().equals(UploadManifest.INLINE_TREE_TYPE_URL)) {
+        continue;
+      }
+      ByteString bytes = hint.getValue();
+      if (bytes.size() != digest.getSizeBytes() || !digest.equals(digestUtil.compute(bytes))) {
+        continue;
+      }
+      try {
+        return Tree.parseFrom(bytes, ExtensionRegistryLite.getEmptyRegistry());
+      } catch (InvalidProtocolBufferException e) {
+        // The advisory copy is unavailable. Let the ordinary CAS read determine the result.
+        return null;
+      }
+    }
+    return null;
   }
 
   private static SilentCloseable profile(RepositoryName repo, String phase) {
@@ -536,8 +574,10 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
      *
      * @param repoDirectory the contents of the repository directory
      * @param markerFile the contents of the repository's marker file
+     * @param auxiliaryMetadata any advisory repository metadata returned by the action cache
      */
-    record Final(OutputDirectory repoDirectory, OutputFile markerFile) implements CacheEntry {}
+    record Final(OutputDirectory repoDirectory, OutputFile markerFile, List<Any> auxiliaryMetadata)
+        implements CacheEntry {}
 
     /**
      * An intermediate cache entry that points to the keys of any number of further AC entries,
@@ -644,7 +684,9 @@ public final class RemoteRepoContentsCacheImpl implements RemoteRepoContentsCach
         && actionResult.getOutputDirectoriesCount() == 1
         && actionResult.getOutputSymlinksCount() == 0) {
       return new CacheEntry.Final(
-          actionResult.getOutputDirectories(0), actionResult.getOutputFiles(0));
+          actionResult.getOutputDirectories(0),
+          actionResult.getOutputFiles(0),
+          actionResult.getExecutionMetadata().getAuxiliaryMetadataList());
     }
     if (!(actionResult.getOutputFilesCount() == 0
         && actionResult.getOutputDirectoriesCount() == 0
