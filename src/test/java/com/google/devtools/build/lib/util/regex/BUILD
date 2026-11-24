@@ -71,3 +71,15 @@ java_test(
         "@maven//:com_google_testparameterinjector_test_parameter_injector",
     ],
 )
+
+java_test(
+    name = "BazelPatternsTest",
+    srcs = ["BazelPatternsTest.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/util/regex:bazel_patterns",
+        "//third_party:junit4",
+        "//third_party:truth",
+        "@maven//:com_datadoghq_reggie",
+        "@maven//:com_google_testparameterinjector_test_parameter_injector",
+    ],
+)

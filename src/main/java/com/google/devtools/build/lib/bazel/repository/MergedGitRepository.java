@@ -24,6 +24,7 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.shell.Command;
 import com.google.devtools.build.lib.shell.CommandException;
+import com.google.devtools.build.lib.util.regex.BazelPatterns;
 import com.google.devtools.build.lib.vfs.Dirent;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
@@ -120,7 +121,7 @@ public final class MergedGitRepository {
     String name = PathFragment.create(spec.remote()).getBaseName().replaceFirst("\\.git$", "");
     Path views = cache.getChild("workspace");
     ensureDirectory(views);
-    Path root = views.getChild(name.matches("[A-Za-z0-9_][A-Za-z0-9_.-]*") ? name : "root");
+    Path root = views.getChild(BazelPatterns.isRepositoryViewName(name) ? name : "root");
     project(
         new Directory(workspace, snapshot, root, PathFragment.EMPTY_FRAGMENT),
         spec.preferImported());
@@ -242,7 +243,7 @@ public final class MergedGitRepository {
       }
       commit = FileSystemUtils.readContent(pin, ISO_8859_1).strip();
     }
-    if (!commit.matches("[0-9a-f]{40}")) {
+    if (!BazelPatterns.isFullGitCommit(commit)) {
       throw error(
           "expected a full 40-character lowercase Git commit ID"
               + (commitFile == null ? "" : " in " + commitFile));

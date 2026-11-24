@@ -36,6 +36,7 @@ import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.StringValueP
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.StringUtil;
+import com.google.devtools.build.lib.util.regex.BazelPatterns;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.errorprone.annotations.FormatMethod;
 import javax.annotation.Nullable;
@@ -91,7 +92,7 @@ public class CcToolchainFeaturesLib {
           featureStruct, "A feature must either have a nonempty 'name' field or be enabled.");
     }
 
-    if (!name.matches("^[_a-z0-9+\\-\\.]*$")) {
+    if (!BazelPatterns.isCppFeatureName(name)) {
       throw infoError(
           featureStruct,
           "A feature's name must consist solely of lowercase ASCII letters, digits, '.', "
@@ -417,7 +418,7 @@ public class CcToolchainFeaturesLib {
           actionConfigStruct,
           "The 'action_name' field of action_config must be a nonempty string.");
     }
-    if (!actionName.matches("^[_a-z0-9+\\-\\.]*$")) {
+    if (!BazelPatterns.isCppFeatureName(actionName)) {
       throw infoError(
           actionConfigStruct,
           "An action_config's name must consist solely of lowercase ASCII letters, digits, "
