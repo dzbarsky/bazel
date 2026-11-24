@@ -29,6 +29,7 @@ import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.UnsafeByteOperations;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -227,7 +228,8 @@ public final class TransitiveHashes {
     for (Label root : rootSet) {
       State<Label> state = graph.get(root);
       if (state.hash != null) {
-        rootHashes.put(root, ByteString.copyFrom(state.hash));
+        // The completed digest owns its backing array.
+        rootHashes.put(root, UnsafeByteOperations.unsafeWrap(state.hash));
       } else if (failureImpact != null) {
         failureImpact.record(state.failures);
       }
