@@ -674,7 +674,7 @@ public abstract class RepositoryOptions extends OptionsBase {
       throw new OptionsParsingException(kind + " must be of the form 'module-name=path'", input);
     }
 
-    if (!RepositoryName.VALID_MODULE_NAME.matcher(pieces[0]).matches()) {
+    if (!RepositoryName.isValidModuleName(pieces[0])) {
       throw new OptionsParsingException(
           String.format(
               "invalid module name '%s': valid names must 1) only contain lowercase letters"

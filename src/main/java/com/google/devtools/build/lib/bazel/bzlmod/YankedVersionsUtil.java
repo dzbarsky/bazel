@@ -86,7 +86,7 @@ public final class YankedVersionsUtil {
             context);
       }
 
-      if (!RepositoryName.VALID_MODULE_NAME.matcher(pieces.get(0)).matches()) {
+      if (!RepositoryName.isValidModuleName(pieces.get(0))) {
         throw ExternalDepsException.withMessage(
             FailureDetails.ExternalDeps.Code.VERSION_RESOLUTION_ERROR,
             "Parsing %s failed, invalid module name '%s': valid names must 1) only contain"
