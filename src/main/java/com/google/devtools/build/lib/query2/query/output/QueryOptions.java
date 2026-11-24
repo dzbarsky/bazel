@@ -76,7 +76,8 @@ public abstract class QueryOptions extends CommonQueryOptions {
       metadataTags = {OptionMetadataTag.EXPERIMENTAL},
       help =
           "With --experimental_generate_hashes, log work counts for selected SkyFunctions. "
-              + "The counts include evaluation attempts and completed built or cleaned values.")
+              + "The counts include evaluation attempts and completed built or cleaned values. "
+              + "Report key counts, errors, and evaluation time for each direct-hash wave.")
   public abstract boolean getLogQuerySkyframeCounts();
 
   @Option(

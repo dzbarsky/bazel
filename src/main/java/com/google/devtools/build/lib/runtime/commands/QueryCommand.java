@@ -321,7 +321,10 @@ public final class QueryCommand extends QueryEnvironmentBasedCommand {
             },
             message -> env.getReporter().handle(Event.progress(message)),
             queryOptions.getQueryHashFailureImpact(),
-            queryOptions.getQueryBatchDirectRuleHashes());
+            queryOptions.getQueryBatchDirectRuleHashes(),
+            queryOptions.getLogQuerySkyframeCounts()
+                ? message -> env.getReporter().handle(Event.info(message))
+                : null);
     CountingOutputStream binary = null;
     if (catalog instanceof StreamedProtoOutputFormatter) {
       binary = new CountingOutputStream(out);
