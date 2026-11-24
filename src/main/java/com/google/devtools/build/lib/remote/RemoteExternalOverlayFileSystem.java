@@ -29,6 +29,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.devtools.build.lib.actions.ActionInputHelper;
@@ -267,6 +268,17 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem implements
    */
   public boolean injectRemoteRepo(RepositoryName repo, Tree remoteContents, String markerFile)
       throws IOException, InterruptedException {
+    return injectRemoteRepo(repo, remoteContents, markerFile, future -> getFromFuture(future));
+  }
+
+  @FunctionalInterface
+  interface PrefetchWaiter {
+    void await(ListenableFuture<Void> future) throws IOException, InterruptedException;
+  }
+
+  boolean injectRemoteRepo(
+      RepositoryName repo, Tree remoteContents, String markerFile, PrefetchWaiter waiter)
+      throws IOException, InterruptedException {
     var repoDir = externalDirectory.getChild(repo.getName());
     deleteTree(repoDir);
     materializedRepos.remove(repo.getName());
@@ -278,7 +290,7 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem implements
     try {
       // TODO: This prefetches a large number of small files. Investigate whether BatchReadBlobs
       // would be more efficient.
-      prefetch(filesToPrefetch);
+      waiter.await(startPrefetch(filesToPrefetch));
     } catch (BulkTransferException e) {
       if (e.allCausedByCacheNotFoundException()) {
         // The cache has lost the prefetched files, which should be treated just like a cache miss.
@@ -617,19 +629,21 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem implements
   }
 
   private void prefetch(Iterable<PathFragment> paths) throws IOException, InterruptedException {
+    getFromFuture(startPrefetch(paths));
+  }
+
+  private ListenableFuture<Void> startPrefetch(Iterable<PathFragment> paths) {
     // These paths may have been prefetched and then deleted again earlier in this invocation, e.g.
     // by an injection whose fetch was subsequently restarted due to memory pressure. The
     // prefetcher's download cache would otherwise consider them downloaded already and not even
     // verify they exist on the local file system.
     inputPrefetcher.invalidateDownloads(paths);
-    var unused =
-        getFromFuture(
-            inputPrefetcher.prefetchFilesInterruptibly(
-                /* action= */ null,
-                Iterables.transform(paths, ActionInputHelper::fromPath),
-                actionInput -> externalFs.getMetadata(actionInput.getExecPath()),
-                ActionInputPrefetcher.Priority.CRITICAL,
-                ActionInputPrefetcher.Reason.INPUTS));
+    return inputPrefetcher.prefetchFilesInterruptibly(
+        /* action= */ null,
+        Iterables.transform(paths, ActionInputHelper::fromPath),
+        actionInput -> externalFs.getMetadata(actionInput.getExecPath()),
+        ActionInputPrefetcher.Priority.CRITICAL,
+        ActionInputPrefetcher.Reason.INPUTS);
   }
 
   /**
