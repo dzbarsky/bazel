@@ -750,6 +750,11 @@ public class ParallelEvaluator extends AbstractParallelEvaluator {
     try (SilentCloseable c =
         Profiler.instance().profile(ProfilerTask.SKYFRAME_EVAL, "Parallel Evaluator evaluation")) {
       return doMutatingEvaluation(skyKeySet, doneBeforeEvaluation, ordered);
+    } catch (InterruptedException e) {
+      // Give suspended workers a chance to cancel and join their own work even when the caller
+      // supplies no temporary-state dropper.
+      stateCache.invalidateAll();
+      throw e;
     } finally {
       unnecessaryTemporaryStateDropperReceiver.onEvaluationFinished();
     }
