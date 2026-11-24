@@ -20,8 +20,6 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assume.assumeTrue;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.packages.LabelPrinter;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.packages.util.PackageLoadingTestCase;
@@ -38,6 +36,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.AbstractList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -45,6 +44,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.IntFunction;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -184,9 +184,12 @@ public final class StreamedProtoOutputFormatterTest extends PackageLoadingTestCa
     ByteString digest = ByteString.fromHex("0080ff");
     Set<Thread> hashThreads = ConcurrentHashMap.newKeySet();
     var hashes =
-        Maps.asMap(
-            ImmutableSet.of(ruleA.getLabel()),
-            unused -> {
+        hashesByPosition(
+            targets.size(),
+            index -> {
+              if (!targets.get(index).equals(ruleA)) {
+                return ByteString.EMPTY;
+              }
               hashThreads.add(Thread.currentThread());
               return digest;
             });
@@ -230,13 +233,16 @@ public final class StreamedProtoOutputFormatterTest extends PackageLoadingTestCa
             .build();
     var laterChunks = new CountDownLatch(workers);
     var hashes =
-        Maps.asMap(
-            ImmutableSet.of(ruleB.getLabel()),
-            unused -> {
-              // Once every worker reaches a ruleB chunk, every ruleA chunk has completed.
-              laterChunks.countDown();
-              assertThat(awaitUninterruptibly(laterChunks, TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-                  .isTrue();
+        hashesByPosition(
+            targets.size(),
+            index -> {
+              if (targets.get(index).equals(ruleB)) {
+                // Once every worker reaches a ruleB chunk, every ruleA chunk has completed.
+                laterChunks.countDown();
+                assertThat(
+                        awaitUninterruptibly(laterChunks, TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                    .isTrue();
+              }
               return ByteString.EMPTY;
             });
     var output =
@@ -260,6 +266,20 @@ public final class StreamedProtoOutputFormatterTest extends PackageLoadingTestCa
       Thread.interrupted();
     }
     assertThat(output.size()).isGreaterThan(0);
+  }
+
+  private static List<ByteString> hashesByPosition(int size, IntFunction<ByteString> digestAt) {
+    return new AbstractList<>() {
+      @Override
+      public ByteString get(int index) {
+        return digestAt.apply(index);
+      }
+
+      @Override
+      public int size() {
+        return size;
+      }
+    };
   }
 
   private StreamedProtoOutputFormatter hashedFormatter(QueryOptions queryOptions) {
