@@ -19,6 +19,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets;
 import com.google.devtools.build.lib.cmdline.SignedTargetPattern;
 import com.google.devtools.build.lib.cmdline.SignedTargetPattern.Sign;
@@ -194,6 +195,18 @@ public final class TargetPatternValue implements SkyValue {
 
   public ResolvedTargets<Label> getTargets() {
     return targets;
+  }
+
+  record RecursivePackagesKey(TargetPatternKey pattern) implements SkyKey {
+    @Override
+    public SkyFunctionName functionName() {
+      return SkyFunctions.TARGET_PATTERN;
+    }
+  }
+
+  /** Empty when package discovery needs the standard target-pattern diagnostics. */
+  record RecursivePackages(ImmutableList<PackageIdentifier> packages) implements SkyValue {
+    static final RecursivePackages FALLBACK = new RecursivePackages(ImmutableList.of());
   }
 
   /**

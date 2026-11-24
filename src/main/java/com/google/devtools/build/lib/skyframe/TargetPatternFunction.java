@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.cmdline.BatchCallback.SafeBatchCallback;
 import com.google.devtools.build.lib.cmdline.IgnoredSubdirectories;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.QueryExceptionMarkerInterface;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
@@ -27,6 +28,7 @@ import com.google.devtools.build.lib.io.InconsistentFilesystemException;
 import com.google.devtools.build.lib.io.ProcessPackageDirectoryException;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.pkgcache.TargetPatternResolverUtil;
 import com.google.devtools.build.lib.pkgcache.AbstractRecursivePackageProvider.MissingDepException;
 import com.google.devtools.build.lib.pkgcache.ParsingFailedEvent;
 import com.google.devtools.build.lib.server.FailureDetails;
@@ -49,8 +51,11 @@ public class TargetPatternFunction implements SkyFunction {
   @Nullable
   public SkyValue compute(SkyKey key, Environment env)
       throws TargetPatternFunctionException, InterruptedException {
-    TargetPatternValue.TargetPatternKey patternKey =
-        ((TargetPatternValue.TargetPatternKey) key.argument());
+    boolean packagesOnly = key instanceof TargetPatternValue.RecursivePackagesKey;
+    var patternKey =
+        packagesOnly
+            ? ((TargetPatternValue.RecursivePackagesKey) key).pattern()
+            : (TargetPatternValue.TargetPatternKey) key.argument();
     TargetPattern parsedPattern = patternKey.getParsedPattern();
 
     IgnoredSubdirectoriesValue ignoredSubdirectories =
@@ -58,6 +63,18 @@ public class TargetPatternFunction implements SkyFunction {
             env.getValue(IgnoredSubdirectoriesValue.key(parsedPattern.getRepository()));
     if (ignoredSubdirectories == null) {
       return null;
+    }
+
+    ImmutableSet<PathFragment> excludedSubdirectories = patternKey.getExcludedSubdirectories();
+    // Prune excluded subtrees before RecursivePkgValue loads their packages.
+    IgnoredSubdirectories traversalExclusions =
+        excludedSubdirectories.isEmpty()
+            ? ignoredSubdirectories.asIgnoredSubdirectories()
+            : ignoredSubdirectories
+                .asIgnoredSubdirectories()
+                .union(IgnoredSubdirectories.of(excludedSubdirectories));
+    if (packagesOnly) {
+      return collectRecursivePackages(parsedPattern, traversalExclusions, env);
     }
 
     ResolvedTargets<Target> resolvedTargets;
@@ -72,14 +89,6 @@ public class TargetPatternFunction implements SkyFunction {
               MultisetSemaphore.unbounded(),
               /* maxConcurrentGetTargetsTasks= */ Optional.empty(),
               SimplePackageIdentifierBatchingCallback::new);
-      ImmutableSet<PathFragment> excludedSubdirectories = patternKey.getExcludedSubdirectories();
-      // Prune excluded subtrees before RecursivePkgValue loads their packages.
-      IgnoredSubdirectories traversalExclusions =
-          excludedSubdirectories.isEmpty()
-              ? ignoredSubdirectories.asIgnoredSubdirectories()
-              : ignoredSubdirectories
-                  .asIgnoredSubdirectories()
-                  .union(IgnoredSubdirectories.of(excludedSubdirectories));
       ResolvedTargets.Builder<Target> resolvedTargetsBuilder = ResolvedTargets.builder();
       SafeBatchCallback<Target> callback =
           partialResult -> {
@@ -137,6 +146,36 @@ public class TargetPatternFunction implements SkyFunction {
       resolvedLabelsBuilder.remove(target.getLabel());
     }
     return new TargetPatternValue(resolvedLabelsBuilder.build());
+  }
+
+  @Nullable
+  private static SkyValue collectRecursivePackages(
+      TargetPattern pattern, IgnoredSubdirectories ignored, Environment env)
+      throws InterruptedException {
+    PackageIdentifier directory = pattern.getDirectory();
+    if (ignored.matchingEntry(directory.getPackageFragment()) != null) {
+      return TargetPatternValue.RecursivePackages.FALLBACK;
+    }
+    var provider = new EnvironmentBackedRecursivePackageProvider(env);
+    var packages = ImmutableSet.<PackageIdentifier>builder();
+    try {
+      provider.streamPackagesUnderDirectory(
+          packages::addAll,
+          env.getListener(),
+          directory.getRepository(),
+          TargetPatternResolverUtil.getPathFragment(directory.getPackageFragment().getPathString()),
+          ignored,
+          ImmutableSet.of());
+    } catch (MissingDepException e) {
+      return null;
+    } catch (NoSuchPackageException
+        | ProcessPackageDirectoryException
+        | TargetParsingException e) {
+      return env.valuesMissing() ? null : TargetPatternValue.RecursivePackages.FALLBACK;
+    }
+    return provider.encounteredPackageErrors()
+        ? TargetPatternValue.RecursivePackages.FALLBACK
+        : new TargetPatternValue.RecursivePackages(packages.build().asList());
   }
 
   private static void maybeThrowEncounteredException(

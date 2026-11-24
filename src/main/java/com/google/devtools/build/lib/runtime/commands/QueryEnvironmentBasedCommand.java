@@ -269,6 +269,13 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
       TargetPattern.Parser mainRepoTargetParser,
       LabelPrinter labelPrinter) {
 
+    QueryOptions queryOptions = env.getOptions().getOptions(QueryOptions.class);
+    boolean preloadRecursivePackages =
+        useGraphlessQuery
+            && universeScope.isEmpty()
+            && queryOptions != null
+            && queryOptions.getGenerateHashes()
+            && queryOptions.getQueryPreloadPackages();
     WalkableGraph walkableGraph = env.getSkyframeExecutor().getWalkableGraph();
 
     TargetProviderForQueryEnvironment targetProviderForQueryEnvironment =
@@ -291,7 +298,8 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
             env.getSkyframeExecutor(),
             targetProviderForQueryEnvironment,
             env.getPackageManager(),
-            new SkyframeTargetPatternEvaluator(env.getSkyframeExecutor()),
+            new SkyframeTargetPatternEvaluator(
+                env.getSkyframeExecutor(), preloadRecursivePackages),
             mainRepoTargetParser,
             env.getRelativeWorkingDirectory(),
             keepGoing,

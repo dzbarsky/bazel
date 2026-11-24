@@ -1872,4 +1872,33 @@ function test_generate_hashes_independent_of_output_base() {
   diff output1 output2 || fail "Expected the same hashes in different output bases"
 }
 
+function test_generate_hashes_preload_packages_after_membership_edit() {
+  mkdir -p recursive_hashes/p
+  cat > recursive_hashes/p/BUILD.bazel <<'EOF'
+filegroup(name = "first")
+EOF
+  local -a args=(query --keep_going --order_output=no --output=streamed_proto
+    --experimental_generate_hashes '//recursive_hashes/...')
+  bazel "${args[@]}" --experimental_query_preload_packages > initial 2> "$TEST_log" \
+    || fail "Expected initial native hashes"
+
+  echo 'filegroup(name = "second")' >> recursive_hashes/p/BUILD.bazel
+  bazel "${args[@]}" --experimental_query_preload_packages > edited 2> "$TEST_log" \
+    || fail "Expected updated native hashes"
+  bazel "${args[@]}" > expected 2> "$TEST_log" || fail "Expected ordinary native hashes"
+  cmp edited expected || fail "Expected identical catalogs after editing the package"
+  cmp -s initial edited && fail "Expected the new rule in the catalog"
+
+  echo 'invalid = [' >> recursive_hashes/p/BUILD.bazel
+  bazel "${args[@]}" --experimental_query_preload_packages > failed 2> "$TEST_log" \
+    && fail "Expected the package error"
+  expect_log "syntax error"
+  [[ ! -s failed ]] || fail "Expected no partial hash catalog"
+  grep '^ERROR:' "$TEST_log" > fast_errors
+  bazel "${args[@]}" > expected_failure 2> "$TEST_log" && fail "Expected the ordinary package error"
+  [[ ! -s expected_failure ]] || fail "Expected no ordinary partial hash catalog"
+  grep '^ERROR:' "$TEST_log" > normal_errors
+  diff -u normal_errors fast_errors || fail "Expected identical package diagnostics"
+}
+
 run_suite "${PRODUCT_NAME} query tests"
