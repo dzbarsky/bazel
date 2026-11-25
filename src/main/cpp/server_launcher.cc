@@ -147,6 +147,11 @@ vector<string> GetServerExeArgs(const blaze_util::Path& jvm_path,
   result.push_back("-XX:-BytecodeVerificationLocal");
   result.push_back("-XX:-BytecodeVerificationRemote");
 
+  // Include the daemon cwd policy when comparing server startup arguments.
+  if (startup_options.server_cwd_in_output_base && !startup_options.batch) {
+    result.push_back("-Dbazel.server_cwd_in_output_base=true");
+  }
+
   vector<string> user_options = startup_options.host_jvm_args;
 
   // Add JVM arguments particular to building blaze64 and particular JVM

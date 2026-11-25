@@ -542,7 +542,16 @@ static void StartServerAndConnect(
                         server_dir.GetRelative("cmdline"));
 
   // Do this here instead of in the daemon so the user can see if it fails.
-  GoToWorkspace(workspace_layout, workspace);
+  if (startup_options.server_cwd_in_output_base) {
+    const string output_base = startup_options.output_base.AsCommandLineArgument();
+    if (!blaze_util::ChangeDirectory(output_base)) {
+      BAZEL_DIE(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR)
+          << "changing directory into " << output_base
+          << " failed: " << GetLastErrorString();
+    }
+  } else {
+    GoToWorkspace(workspace_layout, workspace);
+  }
 
   logging_info->SetRestartReasonIfNotSet(NO_DAEMON);
 
@@ -750,6 +759,11 @@ static ATTRIBUTE_NORETURN void RunClientServerMode(
     const std::optional<DurationMillis> command_wait_duration,
     BlazeServer *server, StartupInterceptor *interceptor,
     const string &build_label) {
+  const blaze_util::Path expected_server_cwd =
+      startup_options.server_cwd_in_output_base
+          ? blaze_util::Path(blaze_util::MakeCanonical(
+                startup_options.output_base.AsCommandLineArgument().c_str()))
+          : blaze_util::Path(workspace);
   while (true) {
     if (!server->Connected()) {
       StartServerAndConnect(server_exe, server_exe_args, server_dir,
@@ -758,8 +772,8 @@ static ATTRIBUTE_NORETURN void RunClientServerMode(
                             interceptor);
     }
 
-    // Check for the case when the workspace directory deleted and then gets
-    // recreated while the server is running.
+    // The server must retain its startup working directory. An opted-in
+    // server uses the output base so a new mount can replace the workspace.
 
     std::unique_ptr<blaze_util::Path> server_cwd =
         GetProcessCWD(server->ProcessInfo().server_pid_);
@@ -775,8 +789,7 @@ static ATTRIBUTE_NORETURN void RunClientServerMode(
     // the cwd.
 
     if (server_cwd != nullptr &&
-        (*server_cwd != blaze_util::Path(workspace) ||  // changed
-         server_cwd->Contains(" (deleted)"))) {         // deleted.
+        (*server_cwd != expected_server_cwd || server_cwd->Contains(" (deleted)"))) {
       // There's a distant possibility that the two paths look the same yet are
       // actually different because the two processes have different mount
       // tables.
