@@ -80,6 +80,36 @@ function test_multiple_requests_same_server() {
   expect_not_log "WARNING.* Running B\\(azel\\|laze\\) server needs to be killed"
 }
 
+function test_server_cwd_can_survive_workspace_replacement() {
+  is_linux || return 0
+
+  local workspace="$PWD"
+  local replacement="${workspace}.replacement"
+  local startup_flag=--experimental_server_cwd_in_output_base
+  local first_pid second_pid output_base
+  output_base=$(bazel "$startup_flag" info output_base 2>"$TEST_log") \
+    || fail "Could not determine output base"
+  first_pid=$(bazel "$startup_flag" info server_pid 2>"$TEST_log") \
+    || fail "Could not start server"
+  assert_equals "$output_base" "$(readlink "/proc/$first_pid/cwd")"
+
+  # Recreate the workspace path without changing its server arguments.
+  cp -a "$workspace" "$replacement" || fail "Could not prepare replacement"
+  cd "$(dirname "$workspace")"
+  mv "$workspace" "${workspace}.retired" || fail "Could not move workspace"
+  mv "$replacement" "$workspace" || fail "Could not install replacement"
+  cd "$workspace"
+  second_pid=$(bazel "$startup_flag" info server_pid 2>"$TEST_log") \
+    || fail "Could not connect to server"
+  assert_equals "$first_pid" "$second_pid"
+
+  second_pid=$(bazel info server_pid 2>"$TEST_log") \
+    || fail "Could not disable stable server cwd"
+  assert_not_equals "$first_pid" "$second_pid"
+  assert_equals "$workspace" "$(readlink "/proc/$second_pid/cwd")"
+  rm -rf -- "${workspace}.retired"
+}
+
 function test_no_server_restart_if_options_order_changes() {
   local server_pid1=$(bazel \
                       --host_jvm_args=-Dfoo \

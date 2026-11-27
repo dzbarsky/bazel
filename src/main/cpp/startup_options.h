@@ -191,6 +191,9 @@ class StartupOptions {
 
   bool batch;
 
+  // Keep the daemon's process working directory outside a replaceable source tree.
+  bool server_cwd_in_output_base = false;
+
   // From the man page: "This policy is useful for workloads that are
   // non-interactive, but do not want to lower their nice value, and for
   // workloads that want a deterministic scheduling policy without

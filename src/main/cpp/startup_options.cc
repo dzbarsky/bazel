@@ -129,6 +129,8 @@ StartupOptions::StartupOptions(const string& product_name,
   // core team member that knows the internal procedure for adding/deprecating
   // startup flags.
   RegisterNullaryStartupFlag("batch", &batch);
+  RegisterNullaryStartupFlag("experimental_server_cwd_in_output_base",
+                             &server_cwd_in_output_base);
   RegisterNullaryStartupFlag("batch_cpu_scheduling", &batch_cpu_scheduling);
   RegisterSpecialNullaryStartupFlag("block_for_lock", [this](bool enabled) {
     this->block_for_lock_timeout =
